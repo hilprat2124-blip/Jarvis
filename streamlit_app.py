@@ -1,14 +1,19 @@
+import sys
 import os
 import urllib.request
 import av
 import cv2
 import numpy as np
 import streamlit as st
+
+# === TRIK 1: BYPASS VERSI PYTHON (Mengatasi OSError di Python 3.13/3.14) ===
+# MediaPipe belum support Python 3.14. Kita manipulasi sys.version_info
+sys.version_info = (3, 12, 0, 'final', 0)
+
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-# === PERBAIKAN: Import RTCConfiguration dan webrtc_streamer ===
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 # ============ Konfigurasi Halaman ============
@@ -20,9 +25,25 @@ st.write(
 )
 
 # ============ Konfigurasi WebRTC ============
-# Menggunakan STUN server Google agar koneksi WebRTC lancar
+# === TRIK 2: Menambahkan STUN & TURN Server Publik ===
+# Streamlit Cloud kadang memblokir koneksi peer-to-peer biasa.
 RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    {
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
+            # TURN server publik (gratis) untuk tembus firewall
+            {
+                "urls": "turn:openrelay.metered.ca:80",
+                "username": "openrelayproject",
+                "credential": "openrelayproject",
+            },
+            {
+                "urls": "turn:openrelay.metered.ca:443",
+                "username": "openrelayproject",
+                "credential": "openrelayproject",
+            }
+        ]
+    }
 )
 
 # ============ Konstanta ============
@@ -139,7 +160,6 @@ class HandInteractionProcessor(VideoProcessorBase):
 
 
 # ============ Streamlit WebRTC ============
-# Komponen ini akan otomatis memunculkan pop-up "Allow Camera" di browser
 webrtc_streamer(
     key="hand-gesture-tracker",
     video_processor_factory=HandInteractionProcessor,
