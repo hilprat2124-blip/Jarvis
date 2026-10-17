@@ -13,7 +13,7 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="Interactive 3D Hand Tracking", layout="wide")
-st.title("🧊 3D Free View - Hand Tracking (Anti-Lag)")
+st.title("🧊 3D Free View - Hand Tracking")
 st.write("""
 **Panduan Gestur:**
 - ✋ **Swipe 5 Jari:** Putar objek dengan gaya *Inertia*.
@@ -66,7 +66,6 @@ class Hand3DProcessor(VideoProcessorBase):
             base_options=base_options,
             running_mode=vision.RunningMode.VIDEO,
             num_hands=1,
-            # --- MENURUNKAN CONFIDENCE UNTUK GERAKAN CEPAT ---
             min_hand_detection_confidence=0.3, 
             min_hand_presence_confidence=0.3,
             min_tracking_confidence=0.5         
@@ -134,13 +133,15 @@ class Hand3DProcessor(VideoProcessorBase):
         
         pts_2d = []
         fov = 4.0
+        # --- UKURAN KUBUS DIPERKECIL (dari 150 menjadi 110) ---
+        cube_size = 110 
         for v in transformed:
             v_scaled = v * self.scale
             z = v_scaled[2] + fov
             if z <= 0.1: z = 0.1
             
-            px = int((v_scaled[0] / z) * 150) + cx + self.offset_x
-            py = int((v_scaled[1] / z) * 150) + cy + self.offset_y
+            px = int((v_scaled[0] / z) * cube_size) + cx + self.offset_x
+            py = int((v_scaled[1] / z) * cube_size) + cy + self.offset_y
             pts_2d.append((px, py, v_scaled[2]))
 
         for edge in self.edges:
@@ -149,7 +150,7 @@ class Hand3DProcessor(VideoProcessorBase):
             intensity = np.clip(1.0 - (depth_avg / 2.0), 0.2, 1.0)
             color = (int(255 * intensity), int(255 * intensity), 0)
             
-            cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), color, 6, cv2.LINE_AA)
+            cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), color, 5, cv2.LINE_AA) # Garis sedikit lebih tipis
             cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), (255, 255, 255), 1, cv2.LINE_AA)
 
         for p in pts_2d:
@@ -169,7 +170,6 @@ class Hand3DProcessor(VideoProcessorBase):
         h, w, _ = img.shape
 
         # --- TRIK MOTION BLUR REDUCTION (SHARPENING) ---
-        # Menajamkan gambar agar AI lebih mudah melacak tangan yang blur
         gaussian = cv2.GaussianBlur(img, (0, 0), 3.0)
         img_sharp = cv2.addWeighted(img, 1.5, gaussian, -0.5, 0)
 
@@ -191,13 +191,13 @@ class Hand3DProcessor(VideoProcessorBase):
         if abs(self.vel_ry) < 0.001: self.vel_ry = 0.0
         if abs(self.vel_rx) < 0.001: self.vel_rx = 0.0
 
-        # --- TIMEOUT TOLERANSI (Mencegah hilang) ---
+        # --- TIMEOUT TOLERANSI ---
         hand_detected = False
         if results.hand_landmarks:
             hand_detected = True
             self.last_seen_time = current_time
         else:
-            if current_time - self.last_seen_time > 0.4: # Ditingkatkan jadi 0.4 detik
+            if current_time - self.last_seen_time > 0.4:
                 self.active_mode = None
                 self.candidate_mode = None
                 self.prev_palm_pos = None
@@ -363,7 +363,6 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.zoom_base_index = None
                     self.zoom_base_middle = None
 
-            # Indikator titik
             cv2.circle(img, thumb, 5, color_text, -1)
             cv2.circle(img, index, 5, color_text, -1)
             cv2.circle(img, middle, 5, color_text, -1)
@@ -391,6 +390,7 @@ webrtc_streamer(
     key="hand-3d-tracker",
     video_processor_factory=Hand3DProcessor,
     rtc_configuration=RTC_CONFIGURATION,
-    media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
+    # --- UKURAN FRAME KAMERA DIPERKECIL (dari 640x480 menjadi 480x360) ---
+    media_stream_constraints={"video": {"width": 480, "height": 360}, "audio": False},
     async_processing=True,
 )
