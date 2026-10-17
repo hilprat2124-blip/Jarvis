@@ -21,29 +21,38 @@ try:
 except ImportError:
     GROQ_AVAILABLE = False
 
+# Untuk autoplay audio di browser
+try:
+    from streamlit_TTS import auto_play
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+
 try:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 except Exception:
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-# Model Groq yang mendukung vision (gambar)
-JARVIS_VISION_MODEL = "qwen/qwen3.8-27b" 
+# Model Groq
+JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
+JARVIS_TTS_MODEL = "playai-tts"           # Model TTS Groq
+JARVIS_TTS_VOICE = "Fritz-PlayAI"         # Suara cowok (bisa ganti: Arista-PlayAI, dll)
 
 # ============ Konfigurasi Halaman ============
 st.set_page_config(
-    page_title="Hand Tracking + Jarvis Live",
+    page_title="Hand Tracking + Jarvis (Voice)",
     page_icon="🧊",
     layout="wide"
 )
 
-st.title("🧊 3D Hand Tracking + 🤖 Jarvis (Live Eyes)")
+st.title("🧊 3D Hand Tracking + 🤖 Jarvis (Live Eyes + Voice)")
 st.markdown("""
-**Fitur Spesial:** Jarvis sekarang punya **"Mata Live"**. 
-Selama kamera menyala, kamu tidak perlu klik tombol apapun. Langsung ketik chat (misal: *"Apa yang kamu lihat di kamera?"*), dan Jarvis akan otomatis mengambil gambar dari kamera saat itu juga untuk dianalisis.
+**Fitur Spesial:** Jarvis punya **"Mata Live"** dan **"Suara"**. 
+Ketik chat (misal: *"Apa yang kamu lihat?"*), Jarvis akan otomatis melihat kamera dan **menjawab dengan suara**.
 """)
 
-# ============ WebRTC & Konstanta ============
+# ============ WebRTC & Konstanta (Tidak Diubah) ============
 RTC_CONFIGURATION = RTCConfiguration(
     {
         "iceServers": [
@@ -77,7 +86,7 @@ HAND_CONNECTIONS = [
     (15, 16), (13, 17), (17, 18), (18, 19), (19, 20), (0, 17)
 ]
 
-# ============ Download Model ============
+# ============ Download Model (Tidak Diubah) ============
 MODEL_PATH = "hand_landmarker.task"
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
@@ -90,7 +99,7 @@ if not os.path.exists(MODEL_PATH):
     st.success("✅ Model siap!")
 
 # ============================================================
-# 🔒 KELAS KAMERA — TIDAK DIUBAH (Fungsi Utama Utuh)
+# 🔒 KELAS KAMERA — TIDAK DIUBAH SAMA SEKALI
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
     def __init__(self):
@@ -105,7 +114,6 @@ class Hand3DProcessor(VideoProcessorBase):
         )
         self.detector = vision.HandLandmarker.create_from_options(options)
         self.frame_timestamp = 0
-
         self.rx, self.ry = 0.5, 0.5
         self.scale = 1.0
         self.offset_x, self.offset_y = 0.0, 0.0
@@ -131,7 +139,6 @@ class Hand3DProcessor(VideoProcessorBase):
         self.smoothed_dist_mid_index = None
         self.prev_palm_pos = None
         self.swipe_vel_smooth = np.array([0.0, 0.0])
-
         self.vertices = np.array([
             [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
             [-1, -1,  1], [1, -1,  1], [1, 1,  1], [-1, 1,  1]
@@ -140,7 +147,7 @@ class Hand3DProcessor(VideoProcessorBase):
             (0,1), (1,2), (2,3), (3,0), (4,5), (5,6), (6,7), (7,4),
             (0,4), (1,5), (2,6), (3,7)
         ]
-        self.latest_frame_bgr = None # Buffer untuk Jarvis
+        self.latest_frame_bgr = None
 
     def _to_pixel(self, landmark, w, h):
         return int(landmark.x * w), int(landmark.y * h)
@@ -415,7 +422,7 @@ class Hand3DProcessor(VideoProcessorBase):
         cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
         cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
-        self.latest_frame_bgr = img.copy() # Simpan untuk Jarvis
+        self.latest_frame_bgr = img.copy()
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
     def __del__(self):
@@ -423,7 +430,7 @@ class Hand3DProcessor(VideoProcessorBase):
         except: pass
 
 # ============================================================
-# 🤖 HELPER JARVIS
+# 🤖 HELPER JARVIS (Vision + TTS)
 # ============================================================
 def image_to_base64(pil_img: Image.Image, max_size=1024, quality=85) -> str:
     img = pil_img.copy()
@@ -433,9 +440,8 @@ def image_to_base64(pil_img: Image.Image, max_size=1024, quality=85) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def ask_jarvis(api_messages: list, use_vision: bool) -> str:
-    if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall. Jalankan: `pip install groq`"
+    if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall."
     if not GROQ_API_KEY: return "❌ GROQ_API_KEY belum diset."
-
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     try:
         client = Groq(api_key=GROQ_API_KEY)
@@ -446,18 +452,40 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     except Exception as e:
         return f"❌ Error Jarvis: {str(e)}"
 
+def generate_tts_audio(text: str) -> dict or None:
+    """Generate audio dari teks menggunakan Groq TTS, return dict untuk auto_play."""
+    if not GROQ_AVAILABLE or not TTS_AVAILABLE:
+        return None
+    try:
+        client = Groq(api_key=GROQ_API_KEY)
+        response = client.audio.speech.create(
+            model=JARVIS_TTS_MODEL,
+            voice=JARVIS_TTS_VOICE,
+            input=text,
+            response_format="wav",
+        )
+        # Response berupa binary audio, kita simpan ke bytes
+        audio_bytes = response.content  # atau response.read()
+        # auto_play butuh format: {'bytes': ..., 'sample_rate': ..., 'sample_width': ...}
+        # Groq TTS mengembalikan WAV. Kita bisa parsing header atau asumsikan default.
+        # Untuk aman, kita gunakan sample_rate 24000 (default Groq) dan sample_width 2 (16-bit)
+        return {
+            "bytes": audio_bytes,
+            "sample_rate": 24000,
+            "sample_width": 2,
+        }
+    except Exception as e:
+        st.error(f"Gagal generate suara: {e}")
+        return None
+
 # ============================================================
-# 🧠 SESSION STATE JARVIS
+# 🧠 SESSION STATE
 # ============================================================
 if "jarvis_messages" not in st.session_state:
     st.session_state.jarvis_messages = [
         {
             "role": "system",
-            "content": (
-                "Kamu adalah Jarvis, asisten AI cerdas yang terintegrasi dengan kamera hand-tracking. "
-                "Jawab dalam Bahasa Indonesia natural. Jika user bertanya tentang apa yang kamu lihat, "
-                "jelaskan objek yang ada di gambar kamera dengan detail."
-            )
+            "content": "Kamu adalah Jarvis, asisten AI cerdas yang terintegrasi dengan kamera. Jawab dalam Bahasa Indonesia natural. Jika user bertanya tentang apa yang kamu lihat, jelaskan objek di gambar kamera dengan detail."
         }
     ]
 
@@ -486,35 +514,30 @@ with col2:
     st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
 
 # ============================================================
-# 🤖 JARVIS CHAT (LIVE VISION OTOMATIS SAAT CHAT)
+# 🤖 JARVIS CHAT + VOICE
 # ============================================================
 st.markdown("---")
-st.header("💬 Ngobrol dengan Jarvis")
+st.header("💬 Ngobrol dengan Jarvis (dengan Suara)")
 
-st.caption("Ketik pertanyaanmu (misal: *'Apa yang kamu lihat di kamera?'*). Jarvis akan otomatis mengambil frame kamera saat ini juga.")
+st.caption("Ketik pertanyaanmu. Jarvis akan melihat kamera dan **menjawab dengan suara otomatis**.")
 
-# Tampilkan riwayat chat
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Input Chat
 user_q = st.chat_input("Tanya Jarvis...")
 
 if user_q:
-    # 1. Cek apakah kamera aktif dan punya frame
     has_img = False
     pil_img = None
-    
+
     if ctx.state.playing and ctx.video_processor is not None and ctx.video_processor.latest_frame_bgr is not None:
-        # Ambil frame langsung dari kamera (TANPA TOMBOL SNAPSHOT)
         frame_bgr = ctx.video_processor.latest_frame_bgr.copy()
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(frame_rgb)
         has_img = True
 
-    # 2. Siapkan pesan untuk API
     if has_img:
         b64 = image_to_base64(pil_img)
         user_api_msg = {
@@ -531,14 +554,12 @@ if user_q:
         if ctx.state.playing:
             st.warning("⚠️ Kamera aktif tapi belum ada frame. Tunggu 1 detik lalu kirim lagi.")
 
-    # 3. Simpan & tampilkan chat user
     st.session_state.jarvis_messages.append({"role": "user", "content": display_text})
     with st.chat_message("user"):
         if has_img:
             st.image(pil_img, width=250, caption="Frame yang dikirim ke Jarvis")
         st.markdown(user_q)
 
-    # 4. Panggil Jarvis
     with st.chat_message("assistant"):
         with st.spinner("Jarvis sedang menganalisis gambar..."):
             api_messages = [st.session_state.jarvis_messages[0]]
@@ -550,6 +571,15 @@ if user_q:
             st.markdown(answer)
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
+
+    # === TAMBAHAN: Generate dan Putar Suara Otomatis ===
+    if TTS_AVAILABLE and answer and not answer.startswith("❌"):
+        with st.spinner("Menyiapkan suara Jarvis..."):
+            audio_dict = generate_tts_audio(answer)
+            if audio_dict:
+                auto_play(audio_dict, wait=False)  # wait=False agar tidak memblokir UI
+    elif not TTS_AVAILABLE:
+        st.info("💡 Install `streamlit-TTS` untuk fitur suara otomatis: `pip install streamlit-TTS`")
 
 # ============================================================
 # SIDEBAR
@@ -570,5 +600,13 @@ with st.sidebar:
     elif not GROQ_API_KEY: st.warning("⚠️ GROQ_API_KEY belum diset.")
     else: st.success("✅ Jarvis siap!")
 
+    if not TTS_AVAILABLE:
+        st.warning("⚠️ `streamlit-TTS` belum terinstall. Suara otomatis nonaktif.")
+        st.code("pip install streamlit-TTS")
+
+    st.markdown("---")
+    st.caption(f"Vision: `{JARVIS_VISION_MODEL}`")
+    st.caption(f"TTS: `{JARVIS_TTS_MODEL}` • Voice: `{JARVIS_TTS_VOICE}`")
+
 st.markdown("---")
-st.caption("💡 Gunakan Chrome/Edge/Firefox terbaru. Izinkan akses kamera saat diminta.")
+st.caption("💡 Gunakan Chrome/Edge/Firefox terbaru. Izinkan akses kamera dan audio saat diminta.")
