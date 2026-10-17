@@ -3,4 +3,4 @@ openai
 edge-tts
 pydub
 requests
-streamlit-mic-recorder
+numpy
