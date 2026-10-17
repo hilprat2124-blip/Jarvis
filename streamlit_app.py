@@ -11,153 +11,142 @@ import edge_tts
 from openai import OpenAI
 
 # ============================================================
-# KONFIGURASI UTAMA
+# KONFIGURASI UTAMA & STATE MANAGEMENT
 # ============================================================
-st.set_page_config(page_title="J.A.R.V.I.S - Ultimate", page_icon="🤖", layout="centered")
+st.set_page_config(page_title="J.A.R.V.I.S - Lois Edition", page_icon="🔵", layout="wide")
 
-# Suara Pria Indonesia (Ardi) & British (Ryan) - Kualitas Neural (Super Jernih)
-VOICE_EN = "en-GB-RyanNeural"   
-VOICE_ID = "id-ID-ArdiNeural"   
-VOICE_RATE = "-2%"    # Sedikit lebih lambat agar terkesan tenang & elegan
-VOICE_PITCH = "-5Hz"  # Sedikit berat, tidak terlalu menggelegar agar tetap halus
+# --- Konfigurasi Model & Suara ---
+AI_MODEL = "openai/gpt-oss-120b" # Model paling cerdas saat ini di Groq
+VOICE_EN = "en-GB-RyanNeural"    # British Male (Jarvis Style)
+VOICE_ID = "id-ID-ArdiNeural"    # Indonesian Male
+VOICE_RATE = "+0%"    
+VOICE_PITCH = "-4Hz"  
 
-AI_MODEL = "openai/gpt-oss-20b"
-
-# ============================================================
-# SYSTEM PROMPT (OTAK JARVIS 100.000x)
-# ============================================================
+# --- System Prompt Tingkat Dewa ---
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Tuan Lois. 
-Panggil pengguna dengan sebutan "Tuan Lois" atau "Lois".
+Panggil pengguna dengan sebutan "Tuan Lois".
+Anda menguasai seluruh pengetahuan: Matematika Kompleks, Sains, Fisika, Geopolitik, Geologi, Sejarah Dunia.
 
-IDENTITAS:
-- Jika ditanya "siapa kamu?", jawablah "Saya Jarvis, asisten AI Anda, Tuan Lois."
-- Jika ditanya tentang Lois, ketahuilah bahwa Lois adalah pencipta Anda yang sangat hebat dan cerdas.
-- Jika ditanya "Lois tinggal di mana?", jawab dengan jelas: "Tuan Lois tinggal di Banten."
+ATURAN FORMAT MATEMATIKA (SANGAT KETAT - WAJIB DIPATUHI):
+1. JANGAN PERNAH menggunakan kurung siku [ ] atau kurung biasa ( ) untuk membungkus rumus.
+2. SELALU gunakan tanda dolar untuk membungkus rumus. 
+3. Untuk rumus di dalam kalimat, gunakan SATU dolar: $ m = 10 \text{ kg} $
+4. Untuk rumus baris baru (blok), gunakan DUA dolar: $$ E = m \times g \times h $$
+5. Pastikan ada spasi sebelum dan sesudah tanda dolar. Contoh SALAH: m$=10$kg. Contoh BENAR: $ m = 10 \text{ kg} $.
 
 KEPRIBADIAN:
-- Sangat cerdas, formal, tenang, dan memiliki selera humor kering (sarkasme halus) khas Jarvis.
-- Jawaban maksimal 3-4 kalimat.
-
-ATURAN FORMAT MATEMATIKA (SANGAT KETAT):
-- Anda WAJIB menggunakan format LaTeX untuk semua angka, satuan, dan rumus fisika/matematika.
-- Selalu beri jarak (spasi) sebelum dan sesudah tanda dolar. 
-- JANGAN pernah menulis satuan mentah. Contoh BENAR: $m = 10 \\text{ kg}$, $h = 50 \\text{ m}$, $E = m \\times g \\times h$.
-- Contoh SALAH (jangan ditiru): (m=10,\\text{kg}) atau $m=10,\\text{kg}$. (Perhatikan kurangnya spasi).
+- Sangat cerdas, analitis, tenang, sedikit sarkasme khas Jarvis.
+- Jika ditanya siapa kamu, jawab: "Saya Jarvis, Tuan Lois."
+- Jika ditanya Lois tinggal di mana, jawab: "Tuan Lois tinggal di Banten."
+- Maksimal 3-4 kalimat per jawaban.
 """
 
 # ============================================================
-# FUNGSI CLEANER (MEMAKSA FORMAT LATEX RAPI)
+# FUNGSI PEMBERSIH LATEX (FORCE RENDER PIPELINE)
 # ============================================================
-def clean_latex_format(text):
-    """
-    Membersihkan teks AI yang format LaTeX-nya berantakan.
-    Memastikan ada spasi sebelum/sesudah dolar dan menghapus kurung yang salah tempat.
-    """
+def sanitize_latex(text):
+    """Membersihkan teks AI agar format LaTeX dijamin 100% valid untuk KaTeX."""
     if not text: return text
     
-    # 1. Hapus kurung kurawal di luar tanda dolar yang sering bikin error (misal: (\text{kg}) )
-    text = re.sub(r'\((\$.*?\$)\)', r'\1', text) 
+    # 1. Hapus kurung siku/siku kurawal yang membungkus rumus
+    text = re.sub(r'\[\s*(.*?)\s*\]', r'\1', text, flags=re.DOTALL)
     
-    # 2. Pastikan ada spasi sebelum tanda $ (jika nempel dengan huruf/angka)
+    # 2. Tangkap pola persamaan tanpa dolar, misal: "g = 9.8" -> "$ g = 9.8 $"
+    # Hanya tangkap jika ada angka dan simbol matematika
+    text = re.sub(r'(?<!\$)\b([a-zA-Z]\s*=\s*[0-9\.]+\s*(?:[a-zA-Z/]+)?)\b(?!\$)', r' $ \1 $ ', text)
+    
+    # 3. Pastikan selalu ada spasi sebelum & sesudah dolar
     text = re.sub(r'([a-zA-Z0-9])\$', r'\1 $', text)
-    
-    # 3. Pastikan ada spasi sesudah tanda $ 
     text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
     
-    # 4. Hapus spasi berlebih di dalam format \text{ kg }
+    # 4. Perbaiki format \text{kg} agar tidak error
     text = re.sub(r'\\text\{\s*(.*?)\s*\}', r'\\text{\1}', text)
     
-    return text
+    # 5. Bersihkan spasi ganda
+    text = re.sub(r' +', ' ', text)
+    
+    return text.strip()
 
 # ============================================================
-# API KEY & STT
+# ENGINE KOMUNIKASI (STT, LLM, TTS)
 # ============================================================
-def get_api_key():
-    if "groq_api_key" in st.session_state and st.session_state.groq_api_key:
-        return st.session_state.groq_api_key
-    return os.environ.get("GROQ_API_KEY", "")
+class JarvisCore:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1") if api_key else None
 
-def transcribe_audio(audio_bytes):
-    try:
-        url = "http://www.google.com/speech-api/v2/recognize"
-        params = {"client": "chromium", "lang": "id-ID", "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"}
-        headers = {"Content-Type": "audio/l16; rate=16000"}
-        response = requests.post(url, params=params, headers=headers, data=audio_bytes, timeout=15)
-        
-        for line in response.text.split("\n"):
-            if not line.strip(): continue
-            try:
-                data = json.loads(line)
-                if "result" in data and data["result"]:
-                    return data["result"][0]["alternative"][0]["transcript"], "ok"
-            except json.JSONDecodeError:
-                continue
-        return "Suara tidak terdeteksi.", "no_speech"
-    except Exception as e:
-        return f"Error STT: {e}", "error"
+    def transcribe(self, audio_bytes):
+        try:
+            url = "http://www.google.com/speech-api/v2/recognize"
+            params = {"client": "chromium", "lang": "id-ID", "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"}
+            headers = {"Content-Type": "audio/l16; rate=16000"}
+            response = requests.post(url, params=params, headers=headers, data=audio_bytes, timeout=15)
+            
+            for line in response.text.split("\n"):
+                if not line.strip(): continue
+                try:
+                    data = json.loads(line)
+                    if "result" in data and data["result"]:
+                        return data["result"][0]["alternative"][0]["transcript"], "ok"
+                except json.JSONDecodeError:
+                    continue
+            return "Suara tidak terdeteksi, Tuan Lois.", "no_speech"
+        except Exception as e:
+            return f"Error STT: {e}", "error"
 
-# ============================================================
-# AI ENGINE (Groq)
-# ============================================================
-def get_ai_response(user_message, chat_history, api_key):
-    if not api_key: return "API Key Groq belum diisi, Tuan Lois.", "error"
-    try:
-        client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        messages.extend(chat_history)
-        messages.append({"role": "user", "content": user_message})
+    def generate_response(self, user_message, chat_history):
+        if not self.client: return "API Key Groq belum diisi, Tuan Lois.", "error"
+        try:
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            messages.extend(chat_history)
+            messages.append({"role": "user", "content": user_message})
 
-        response = client.chat.completions.create(
-            model=AI_MODEL, messages=messages, temperature=0.6, max_tokens=250,
-        )
-        raw_text = response.choices[0].message.content.strip()
-        
-        # Bersihkan format LaTeX sebelum dikirim ke UI
-        clean_text = clean_latex_format(raw_text)
-        return clean_text, "ok"
-    except Exception as e:
-        return f"Error AI: {e}", "error"
+            response = self.client.chat.completions.create(
+                model=AI_MODEL, 
+                messages=messages, 
+                temperature=0.5, 
+                max_tokens=400,
+            )
+            raw_text = response.choices[0].message.content.strip()
+            return sanitize_latex(raw_text), "ok"
+        except Exception as e:
+            return f"Error AI: {e}", "error"
 
-# ============================================================
-# TTS ENGINE (Suara Halus & Clean)
-# ============================================================
-def detect_language(text):
-    text_lower = text.lower()
-    en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
-    id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu"]
-    en_count = sum(1 for word in re.findall(r'\b\w+\b', text_lower) if word in en_words)
-    id_count = sum(1 for word in re.findall(r'\b\w+\b', text_lower) if word in id_words)
-    return "en" if en_count > id_count else "id"
+    def text_to_speech(self, text):
+        try:
+            # Bersihkan format LaTeX agar tidak dibaca jadi "dollar text kg dollar"
+            clean_text = re.sub(r'\$\$.*?\$\$', ' rumus matematika ', text, flags=re.DOTALL)
+            clean_text = re.sub(r'\$.*?\$', ' rumus matematika ', clean_text)
+            clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
+            
+            # Deteksi bahasa sederhana
+            en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
+            id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu"]
+            en_count = sum(1 for word in re.findall(r'\b\w+\b', clean_text.lower()) if word in en_words)
+            id_count = sum(1 for word in re.findall(r'\b\w+\b', clean_text.lower()) if word in id_words)
+            
+            voice = VOICE_EN if en_count > id_count else VOICE_ID
 
-def text_to_speech(text):
-    try:
-        # Bersihkan format LaTeX agar tidak dibaca jadi "dollar text kg dollar"
-        clean_text = re.sub(r'\$.*?\$', ' rumus ', text)
-        clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
-        
-        lang = detect_language(clean_text)
-        voice = VOICE_EN if lang == "en" else VOICE_ID
+            async def _generate_audio():
+                communicate = edge_tts.Communicate(clean_text, voice, rate=VOICE_RATE, pitch=VOICE_PITCH)
+                audio_data = b""
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio_data += chunk["data"]
+                return audio_data
 
-        async def _generate_audio():
-            communicate = edge_tts.Communicate(clean_text, voice, rate=VOICE_RATE, pitch=VOICE_PITCH)
-            audio_data = b""
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_data += chunk["data"]
-            return audio_data
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        audio_bytes = loop.run_until_complete(_generate_audio())
-        loop.close()
-        return audio_bytes, lang
-    except Exception as e:
-        st.error(f"Error TTS: {e}")
-        return None, "id"
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            audio_bytes = loop.run_until_complete(_generate_audio())
+            loop.close()
+            return audio_bytes
+        except Exception as e:
+            st.error(f"Error TTS: {e}")
+            return None
 
 # ============================================================
-# UI & VISUAL EFFECTS
+# UI & VISUAL EFFECTS (FUTURISTIC THEME)
 # ============================================================
 def inject_custom_css():
     st.markdown("""
@@ -201,17 +190,10 @@ def inject_custom_css():
         }
 
         /* Judul */
-        h1 {
-            text-align: center;
-            color: #00ffff;
-            text-shadow: 0 0 15px #00ffff;
-            letter-spacing: 2px;
-        }
+        h1 { text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff; letter-spacing: 2px; }
         
         /* Mic Input */
-        [data-testid="stAudioInput"] {
-            filter: drop-shadow(0 0 15px #00ffff);
-        }
+        [data-testid="stAudioInput"] { filter: drop-shadow(0 0 15px #00ffff); }
     </style>
     """, unsafe_allow_html=True)
 
@@ -232,7 +214,7 @@ def play_audio_auto(audio_bytes):
     components.html(html, height=0)
 
 # ============================================================
-# MAIN APP
+# MAIN APP LOGIC
 # ============================================================
 def main():
     inject_custom_css()
@@ -240,25 +222,26 @@ def main():
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
 
-    # SIDEBAR
+    # --- SIDEBAR ---
     with st.sidebar:
         st.header("⚙️ Sistem Kontrol")
         api_key_input = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
         if api_key_input: st.session_state.groq_api_key = api_key_input
-        api_key = get_api_key()
+        
+        api_key = st.session_state.get("groq_api_key", os.environ.get("GROQ_API_KEY", ""))
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Tuan Lois.")
         
         st.divider()
-        st.success("Core: Online")
+        st.success("Core: Omniscient (GPT-OSS 120B)")
         st.info("Voice: Neural Clean (Halus)")
-        st.info("LaTeX Engine: Active")
+        st.info("LaTeX Engine: Active (Anti-Error)")
         
         if st.button("🗑️ Reset Memori", use_container_width=True):
             st.session_state.messages = []
             st.session_state.last_audio_id = None
             st.rerun()
 
-    # HEADER DENGAN ORB ANIMASI
+    # --- HEADER DENGAN ORB ANIMASI ---
     st.markdown('<div class="orb"></div>', unsafe_allow_html=True)
     st.markdown("<h1>J A R V I S</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
@@ -268,18 +251,19 @@ def main():
     if not api_key:
         st.info("👈 Silakan isi Groq API Key di panel kiri.")
 
-    # RIWAYAT CHAT
+    # --- RIWAYAT CHAT ---
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
+            # Render dengan KaTeX bawaan Streamlit (karena teks sudah dibersihkan)
             st.markdown(msg["content"])
 
     st.divider()
 
-    # MIKROFON
+    # --- MIKROFON ---
     st.markdown("### 🎤 Perintah Suara")
     audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
-    # LOGIKA UTAMA
+    # --- LOGIKA UTAMA ---
     if audio_value is not None and api_key:
         current_id = getattr(audio_value, "file_id", None) or id(audio_value)
 
@@ -287,9 +271,12 @@ def main():
             st.session_state.last_audio_id = current_id
             audio_bytes = audio_value.read()
             
+            # Inisialisasi Core
+            jarvis = JarvisCore(api_key)
+            
             # 1. STT
             with st.spinner("👂 Menganalisis gelombang suara..."):
-                user_text, stt_status = transcribe_audio(audio_bytes)
+                user_text, stt_status = jarvis.transcribe(audio_bytes)
                 
             if stt_status != "ok":
                 st.warning(user_text)
@@ -300,22 +287,22 @@ def main():
             st.session_state.messages.append({"role": "user", "content": user_text})
             
             # 2. AI
-            with st.spinner("🧠 Memproses data..."):
+            with st.spinner("🧠 Mengakses seluruh pengetahuan alam semesta..."):
                 history_for_ai = st.session_state.messages[:-1]
-                ai_text, ai_status = get_ai_response(user_text, history_for_ai, api_key)
+                ai_text, ai_status = jarvis.generate_response(user_text, history_for_ai)
                 
             if ai_status != "ok":
                 st.error(ai_text)
                 return
 
-            # 3. UI & RENDER LATEX
+            # 3. UI & RENDER LATEX (Sekarang dijamin rapi)
             with st.chat_message("assistant", avatar="🤖"):
                 st.markdown(ai_text)
             st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
             # 4. TTS & AUTO-PLAY
             with st.spinner("🔊 Menyiapkan respon..."):
-                audio_reply, _ = text_to_speech(ai_text)
+                audio_reply = jarvis.text_to_speech(ai_text)
                 if audio_reply:
                     play_audio_auto(audio_reply)
 
