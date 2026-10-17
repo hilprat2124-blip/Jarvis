@@ -148,31 +148,24 @@ def inject_custom_css():
     </style>
     """, unsafe_allow_html=True)
 
-def play_audio_auto(audio_bytes):
-    """Memaksa pemutaran audio secara otomatis."""
-    if not audio_bytes: return
-    b64 = base64.b64encode(audio_bytes).decode()
-    html = f"""
-    <audio id="jarvis-audio" autoplay>
-        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-    </audio>
+def force_autoplay_audio():
+    """Script JS untuk mengklik tombol play pada elemen audio Streamlit secara otomatis."""
+    js = """
     <script>
-        var audio = document.getElementById("jarvis-audio");
-        // Coba putar otomatis
-        var playPromise = audio.play();
-        if (playPromise !== undefined) {{
-            playPromise.then(_ => {{
-                // Berhasil diputar
-            }}).catch(error => {{
-                // Jika diblokir, tunggu user klik sekali, lalu putar
-                document.body.addEventListener('click', function() {{
-                    audio.play();
-                }}, {{ once: true }});
-            }});
-        }}
+        // Tunggu sebentar agar komponen audio Streamlit selesai dirender
+        setTimeout(function() {
+            var audios = window.parent.document.querySelectorAll('audio');
+            if (audios.length > 0) {
+                // Ambil elemen audio yang paling terakhir muncul
+                var lastAudio = audios[audios.length - 1];
+                lastAudio.play().catch(function(e) {
+                    console.log("Autoplay diblokir browser. Harap klik 1 kali di layar.");
+                });
+            }
+        }, 500);
     </script>
     """
-    components.html(html, height=0)
+    components.html(js, height=0)
 
 # ============================================================
 # MAIN APP
@@ -182,6 +175,7 @@ def main():
     
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
+    if "last_audio_bytes" not in st.session_state: st.session_state.last_audio_bytes = None
 
     # --- SIDEBAR ---
     with st.sidebar:
@@ -201,6 +195,7 @@ def main():
         if st.button("🗑️ Reset Memori", use_container_width=True):
             st.session_state.messages = []
             st.session_state.last_audio_id = None
+            st.session_state.last_audio_bytes = None
             st.rerun()
 
     # --- HEADER DENGAN ORB ANIMASI ---
@@ -228,6 +223,12 @@ def main():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
+
+    # --- TAMPILKAN AUDIO TERAKHIR & PAKSA AUTOPLAY ---
+    # Jika ada audio dari proses sebelumnya, tampilkan di sini
+    if st.session_state.last_audio_bytes:
+        st.audio(st.session_state.last_audio_bytes, format="audio/mp3")
+        force_autoplay_audio()
 
     # --- LOGIKA UTAMA ---
     if audio_value is not None and api_key:
@@ -264,13 +265,13 @@ def main():
             
             st.session_state.messages.append({"role": "assistant", "content": clean_response})
             
-            # 3. TTS & AUTO-PLAY
+            # 3. TTS
             with st.spinner("🔊 Menyiapkan respon suara..."):
                 audio_reply = jarvis.text_to_speech(clean_response)
                 if audio_reply:
-                    play_audio_auto(audio_reply)
+                    st.session_state.last_audio_bytes = audio_reply
             
-            # RERUN DITEMPATKAN DI SINI (Setelah audio diputar)
+            # MEMUAT ULANG HALAMAN (Agar history masuk ke pop-up, dan audio terpanggil)
             st.rerun()
 
 if __name__ == "__main__":
