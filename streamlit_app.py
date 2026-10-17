@@ -17,8 +17,9 @@ st.title("🧊 3D Free View - Hand Tracking")
 st.write("""
 **Panduan Gestur:**
 - **Rotasi:** Pinch cepat (sentuh jempol+telunjuk) lalu lepaskan, gerakkan tangan.
-- **Zoom:** Buka jari (tidak pinch) dan **tahan diam sejenak**, lalu dekatkan/jauhkan jari secara perlahan.
-- **Geser (Pan):** Tahan pinch >1 detik (tunggu lingkaran penuh), lalu geser tangan.
+- **Zoom In:** Mulai dari posisi Pinch -> **Tahan 1 detik** -> Jauhkan jari.
+- **Zoom Out:** Mulai dari posisi Jari Terbuka -> **Tahan 1 detik** -> Dekatkan jari (sampai pinch).
+- **Geser (Pan):** Tahan pinch >1 detik, lalu geser tangan tanpa melepas pinch.
 """)
 
 # ============ Konfigurasi WebRTC ============
@@ -28,12 +29,10 @@ RTC_CONFIGURATION = RTCConfiguration(
 
 # ============ Konstanta ============
 PINCH_THRESHOLD = 40      # Jarak (px) deteksi pinch
-HOLD_THRESHOLD = 1.0      # Waktu (detik) untuk Pan
-ZOOM_DELAY = 0.5          # Jeda (detik) sebelum fitur zoom aktif (mencegah tidak sengaja)
-MAX_ZOOM_SPEED = 0.05     # Kecepatan transisi zoom
+HOLD_THRESHOLD = 1.0      # Waktu tahan (detik) untuk memicu aksi
+ZOOM_SENSITIVITY = 0.015  # Kecepatan zoom
 
 MIN_SCALE, MAX_SCALE = 0.5, 3.0
-MIN_DIST, MAX_DIST = 60, 200 
 
 THUMB_TIP = 4
 INDEX_TIP = 8
@@ -75,14 +74,19 @@ class Hand3DProcessor(VideoProcessorBase):
         self.scale = 1.0
         self.offset_x, self.offset_y = 0, 0
         
-        # State Gestur
+        # --- State Latch / Timer ---
         self.is_pinching = False
         self.pinch_start_time = 0.0
-        self.is_panning = False
-        self.prev_index_pos = None
+        self.open_start_time = 0.0
         
-        # --- State Anti-Error untuk Zoom ---
-        self.zoom_unlock_time = 0.0 # Waktu saat zoom diizinkan
+        # Mode: "IDLE", "ROTATE", "PAN", "ZOOM_IN", "ZOOM_OUT"
+        self.mode = "IDLE" 
+        
+        # Timer untuk mendeteksi tahanan (hold)
+        self.hold_start_time = 0.0
+        self.hold_candidate = None # "PINCH" atau "OPEN"
+        
+        self.prev_index_pos = None
         self.prev_dist = None
 
         # Vertex Kubus 3D
@@ -141,6 +145,10 @@ class Hand3DProcessor(VideoProcessorBase):
         for p in pts_2d:
             cv2.circle(img, (p[0], p[1]), 3, (0, 0, 255), -1, cv2.LINE_AA)
 
+    def _draw_progress_ring(self, img, center, progress, color):
+        # Menggambar lingkaran loading di sekitar jari
+        cv2.ellipse(img, center, (25, 25), -90, 0, int(360 * min(progress, 1.0)), color, 3, cv2.LINE_AA)
+
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)  
@@ -154,6 +162,7 @@ class Hand3DProcessor(VideoProcessorBase):
 
         currently_pinching = False
         dist = 0
+        current_time = time.time()
 
         if results.hand_landmarks:
             hand_landmarks = results.hand_landmarks[0]
@@ -161,88 +170,123 @@ class Hand3DProcessor(VideoProcessorBase):
 
             thumb = self._to_pixel(hand_landmarks[THUMB_TIP], w, h)
             index = self._to_pixel(hand_landmarks[INDEX_TIP], w, h)
+            mid = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
             
             dist = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
             currently_pinching = dist < PINCH_THRESHOLD
 
-            # --- LOGIKA GESTUR UTAMA ---
-            if currently_pinching:
-                # Set waktu kunci zoom (karena sedang pinch, zoom tidak boleh aktif dulu)
-                self.zoom_unlock_time = time.time() + ZOOM_DELAY
+            # ==========================================
+            # LOGIKA LATCH (KUNCI LEPAS)
+            # ==========================================
+            
+            # 1. Cek Kandidat Hold (Mau ngapain nih?)
+            if self.mode == "IDLE":
+                if currently_pinching:
+                    if self.hold_candidate != "PINCH":
+                        self.hold_candidate = "PINCH"
+                        self.hold_start_time = current_time
+                else:
+                    # Jari terbuka
+                    if self.hold_candidate != "OPEN":
+                        self.hold_candidate = "OPEN"
+                        self.hold_start_time = current_time
                 
-                if not self.is_pinching:
-                    self.is_pinching = True
-                    self.pinch_start_time = time.time()
-                    self.is_panning = False
+                # Jika sudah tahan 1 detik, aktifkan mode
+                if current_time - self.hold_start_time > HOLD_THRESHOLD:
+                    if self.hold_candidate == "PINCH":
+                        self.mode = "ZOOM_IN"
+                    elif self.hold_candidate == "OPEN":
+                        self.mode = "ZOOM_OUT"
+            
+            # 2. Aksi Berdasarkan Mode
+            if self.mode == "ZOOM_IN":
+                # Zoom in: Jari menjauh (dist membesar)
+                if currently_pinching:
+                    self.prev_dist = dist # update baseline
+                else:
+                    if self.prev_dist is not None:
+                        delta = dist - self.prev_dist
+                        if delta > 0:
+                            self.scale = np.clip(self.scale + delta * ZOOM_SENSITIVITY, MIN_SCALE, MAX_SCALE)
+                        self.prev_dist = dist
                 
-                duration = time.time() - self.pinch_start_time
-                if duration > HOLD_THRESHOLD:
-                    self.is_panning = True
-                
+                # Stop jika jari kembali mendekat / pinch
+                if currently_pinching:
+                    self.mode = "IDLE"
+                    self.hold_candidate = None
+
+            elif self.mode == "ZOOM_OUT":
+                # Zoom out: Jari mendekat (dist mengecil)
+                if not currently_pinching:
+                    if self.prev_dist is not None:
+                        delta = self.prev_dist - dist
+                        if delta > 0:
+                            self.scale = np.clip(self.scale - delta * ZOOM_SENSITIVITY, MIN_SCALE, MAX_SCALE)
+                        self.prev_dist = dist
+                else:
+                    # Stop jika sudah pinch
+                    self.mode = "IDLE"
+                    self.hold_candidate = None
+
+            # 3. Rotasi & Pan (Hanya jika tidak sedang Zoom)
+            if self.mode == "IDLE" and currently_pinching and current_time - self.pinch_start_time < HOLD_THRESHOLD:
                 if self.prev_index_pos is not None:
                     dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20)
                     dy = np.clip(index[1] - self.prev_index_pos[1], -20, 20)
-                    
-                    if self.is_panning:
-                        self.offset_x += dx
-                        self.offset_y += dy
-                    else:
-                        self.ry += dx * 0.015
-                        self.rx += dy * 0.015
-                
+                    self.ry += dx * 0.015
+                    self.rx += dy * 0.015
                 self.prev_index_pos = index
-                
-            else:
-                # Tidak Pinch
-                if self.is_pinching:
-                    # Baru saja lepas pinch, reset timer zoom agar tidak langsung zoom
-                    self.zoom_unlock_time = time.time() + ZOOM_DELAY
-                
-                self.is_pinching = False
-                self.is_panning = False
+            elif currently_pinching:
+                 if self.mode == "IDLE":
+                     # Mode PAN (Tahan >1s)
+                     self.mode = "PAN"
+            elif not currently_pinching:
                 self.prev_index_pos = None
-                
-                # --- FITUR ZOOM YANG AMAN ---
-                # Cek apakah waktu saat ini sudah melewati batas kunci (zoom_unlock_time)
-                if time.time() > self.zoom_unlock_time:
-                    if self.prev_dist is not None:
-                        # Hitung seberapa cepat jari bergerak (delta jarak)
-                        dist_delta = abs(dist - self.prev_dist)
-                        
-                        # Jika gerakan jari lambat (di bawah threshold 5px per frame), baru zoom jalan
-                        if dist_delta < 5.0:
-                            target_scale = np.interp(dist, [MIN_DIST, MAX_DIST], [MIN_SCALE, MAX_SCALE])
-                            
-                            # Transisi mulus (max speed dibatasi)
-                            scale_step = target_scale - self.scale
-                            self.scale += np.clip(scale_step, -MAX_ZOOM_SPEED, MAX_ZOOM_SPEED)
-                            
-                    self.prev_dist = dist
+
+            if self.mode == "PAN" and currently_pinching:
+                if self.prev_index_pos is not None:
+                    dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20)
+                    dy = np.clip(index[1] - self.prev_index_pos[1], -20, 20)
+                    self.offset_x += dx
+                    self.offset_y += dy
+                self.prev_index_pos = index
+            elif not currently_pinching and self.mode == "PAN":
+                self.mode = "IDLE"
+
+            # Update state pinch dasar
+            if currently_pinching and not self.is_pinching:
+                self.pinch_start_time = current_time
+            self.is_pinching = currently_pinching
+            
+            # Sinkronisasi prev_dist untuk mode IDLE
+            if self.mode == "IDLE":
+                self.prev_dist = dist
+                if self.hold_candidate == "OPEN":
+                    progress = (current_time - self.hold_start_time) / HOLD_THRESHOLD
+                    self._draw_progress_ring(img, mid, progress, (255, 165, 0))
+                elif self.hold_candidate == "PINCH":
+                    progress = (current_time - self.hold_start_time) / HOLD_THRESHOLD
+                    self._draw_progress_ring(img, mid, progress, (0, 255, 0))
+
 
         # --- RENDER 3D ---
         cx, cy = w // 2, h // 2
         self._draw_3d_cube(img, cx, cy)
 
         # --- UI INDIKATOR ---
-        if self.is_panning:
+        if self.mode == "PAN":
             status, color = "GESER (PAN)", (0, 0, 255)
+        elif self.mode == "ZOOM_IN":
+            status, color = "ZOOM IN (Jauhkan Jari)", (0, 255, 255)
+        elif self.mode == "ZOOM_OUT":
+            status, color = "ZOOM OUT (Dekatkan Jari)", (255, 0, 255)
         elif self.is_pinching:
-            status, color = "ROTASI", (0, 255, 255)
-        elif time.time() > self.zoom_unlock_time:
-            status, color = "ZOOM (Aktif)", (0, 255, 0)
+            status, color = "ROTASI", (0, 255, 0)
         else:
-            status, color = "SIAP", (200, 200, 200)
+            status, color = "SIAP (Tahan 1 Detik)", (200, 200, 200)
             
         cv2.putText(img, f"MODE: {status}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
-        cv2.putText(img, f"Skala: {self.scale:.2f}x | Jarak: {int(dist)}px", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
-
-        if currently_pinching:
-            mid = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
-            cv2.circle(img, mid, 15, color, 2, cv2.LINE_AA)
-            
-            if not self.is_panning:
-                prog = (time.time() - self.pinch_start_time) / HOLD_THRESHOLD
-                cv2.ellipse(img, mid, (20, 20), -90, 0, int(360 * min(prog, 1.0)), (0, 0, 255), 3, cv2.LINE_AA)
+        cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
