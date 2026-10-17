@@ -22,9 +22,6 @@ VOICE_ID = "id-ID-ArdiNeural"
 VOICE_RATE = "+0%"    
 VOICE_PITCH = "-4Hz"  
 
-# ============================================================
-# SYSTEM PROMPT (OTAK JARVIS)
-# ============================================================
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Tuan Lois. 
 Panggil pengguna dengan sebutan "Tuan Lois".
@@ -43,9 +40,6 @@ KEPRIBADIAN:
 - Jika ditanya Lois tinggal di mana, jawab: "Tuan Lois tinggal di Banten."
 """
 
-# ============================================================
-# FUNGSI PEMBERSIH LATEX
-# ============================================================
 def sanitize_latex(text):
     if not text: return text
     text = re.sub(r'\[\s*(.*?)\s*\]', r'\1', text, flags=re.DOTALL)
@@ -56,9 +50,6 @@ def sanitize_latex(text):
     text = re.sub(r' +', ' ', text)
     return text.strip()
 
-# ============================================================
-# ENGINE KOMUNIKASI (STT, LLM, TTS)
-# ============================================================
 class JarvisCore:
     def __init__(self, api_key):
         self.api_key = api_key
@@ -70,7 +61,6 @@ class JarvisCore:
             params = {"client": "chromium", "lang": "id-ID", "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"}
             headers = {"Content-Type": "audio/l16; rate=16000"}
             response = requests.post(url, params=params, headers=headers, data=audio_bytes, timeout=15)
-            
             for line in response.text.split("\n"):
                 if not line.strip(): continue
                 try:
@@ -91,7 +81,6 @@ class JarvisCore:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             messages.extend(chat_history)
             messages.append({"role": "user", "content": user_message})
-
             response = self.client.chat.completions.create(
                 model=AI_MODEL, messages=messages, temperature=0.5, max_tokens=800, stream=True 
             )
@@ -131,7 +120,7 @@ class JarvisCore:
             return None
 
 # ============================================================
-# UI & VISUAL EFFECTS
+# UI & VISUAL EFFECTS (FUTURISTIC)
 # ============================================================
 def inject_custom_css():
     st.markdown("""
@@ -139,33 +128,54 @@ def inject_custom_css():
         .stApp { background: radial-gradient(circle at 50% 10%, #001a22 0%, #000000 100%); color: #e0f7fa; font-family: 'Courier New', monospace; }
         .orb { width: 100px; height: 100px; background: radial-gradient(circle, #00ffff 0%, #005b66 70%, transparent 100%); border-radius: 50%; margin: 0 auto 20px auto; box-shadow: 0 0 30px #00ffff, 0 0 60px #00ffff inset; animation: pulse 2s infinite alternate; }
         @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 20px #00ffff; } 100% { transform: scale(1.05); box-shadow: 0 0 50px #00ffff, 0 0 100px #00ffff inset; } }
+        
+        /* Pop-up History */
         .stExpander { background: rgba(0, 255, 255, 0.05); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; }
         .stExpander > details > summary { color: #00ffff; font-weight: bold; font-size: 1.1em; }
+        
+        /* Chat Bubble */
         [data-testid="stChatMessage"] { background: rgba(0, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; box-shadow: 0 4px 15px rgba(0, 255, 255, 0.1); animation: fadeIn 0.5s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
         h1 { text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff; letter-spacing: 2px; }
         [data-testid="stAudioInput"] { filter: drop-shadow(0 0 15px #00ffff); margin-bottom: 20px; }
     </style>
     """, unsafe_allow_html=True)
 
-def force_autoplay_audio():
-    """Script JS untuk mengklik tombol play pada elemen audio Streamlit secara otomatis."""
-    js = """
+# FUNGSI UNTUK AUDIO: HTML Murni + Base64 (Autoplay Paling Stabil)
+def play_audio_html(audio_bytes):
+    if not audio_bytes: return
+    b64 = base64.b64encode(audio_bytes).decode()
+    audio_html = f"""
+        <audio autoplay="true" id="jarvis-audio">
+            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+        </audio>
+        <script>
+            var audio = document.getElementById("jarvis-audio");
+            audio.play().catch(function(e) {{
+                console.log("Autoplay diblokir. Menunggu interaksi user...");
+                // Trik: Jika diblokir, pasang listener agar bunyi begitu user klik di mana saja
+                document.body.addEventListener('click', function() {{
+                    audio.play();
+                }}, {{ once: true }});
+            }});
+        </script>
+    """
+    # Render audio player dan script pemaksanya
+    components.html(audio_html, height=40)
+    
+    # Trik kedua: Paksa tombol play bawaan Streamlit (jika ada) untuk diklik otomatis
+    st.markdown("""
     <script>
-        // Tunggu sebentar agar komponen audio Streamlit selesai dirender
         setTimeout(function() {
             var audios = window.parent.document.querySelectorAll('audio');
             if (audios.length > 0) {
-                // Ambil elemen audio yang paling terakhir muncul
                 var lastAudio = audios[audios.length - 1];
-                lastAudio.play().catch(function(e) {
-                    console.log("Autoplay diblokir browser. Harap klik 1 kali di layar.");
-                });
+                lastAudio.play().catch(function(e){});
             }
-        }, 500);
+        }, 800);
     </script>
-    """
-    components.html(js, height=0)
+    """, unsafe_allow_html=True)
 
 # ============================================================
 # MAIN APP
@@ -198,19 +208,16 @@ def main():
             st.session_state.last_audio_bytes = None
             st.rerun()
 
-    # --- HEADER DENGAN ORB ANIMASI ---
+    # --- HEADER ---
     st.markdown('<div class="orb"></div>', unsafe_allow_html=True)
     st.markdown("<h1>J A R V I S</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
-    
     st.divider()
 
     if not api_key:
         st.info("👈 Silakan isi Groq API Key di panel kiri.")
 
-    # ============================================================
-    # LAYOUT: RIWAYAT CHAT POP-UP
-    # ============================================================
+    # --- RIWAYAT CHAT (POP-UP) ---
     if st.session_state.messages:
         with st.expander("💬 Lihat Riwayat Obrolan (Klik untuk membuka)", expanded=False):
             for msg in st.session_state.messages:
@@ -218,17 +225,16 @@ def main():
                     st.markdown(msg["content"])
         st.divider()
 
+    # --- TAMPILKAN AUDIO JIKA ADA (Auto-Play) ---
+    if st.session_state.last_audio_bytes:
+        play_audio_html(st.session_state.last_audio_bytes)
+        st.divider()
+
     # --- MIKROFON ---
     st.markdown("<h3 style='text-align: center;'>🎤 Perintah Suara</h3>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
-
-    # --- TAMPILKAN AUDIO TERAKHIR & PAKSA AUTOPLAY ---
-    # Jika ada audio dari proses sebelumnya, tampilkan di sini
-    if st.session_state.last_audio_bytes:
-        st.audio(st.session_state.last_audio_bytes, format="audio/mp3")
-        force_autoplay_audio()
 
     # --- LOGIKA UTAMA ---
     if audio_value is not None and api_key:
@@ -240,7 +246,6 @@ def main():
             
             jarvis = JarvisCore(api_key)
             
-            # 1. STT
             with st.spinner("👂 Menganalisis gelombang suara..."):
                 user_text, stt_status = jarvis.transcribe(audio_bytes)
                 
@@ -250,7 +255,6 @@ def main():
 
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            # 2. AI PROCESS (STREAMING)
             with st.chat_message("assistant", avatar="🤖"):
                 message_placeholder = st.empty()
                 full_response = ""
@@ -265,13 +269,12 @@ def main():
             
             st.session_state.messages.append({"role": "assistant", "content": clean_response})
             
-            # 3. TTS
             with st.spinner("🔊 Menyiapkan respon suara..."):
                 audio_reply = jarvis.text_to_speech(clean_response)
                 if audio_reply:
                     st.session_state.last_audio_bytes = audio_reply
             
-            # MEMUAT ULANG HALAMAN (Agar history masuk ke pop-up, dan audio terpanggil)
+            # Rerun agar audio diputar di atas (dalam bentuk autoplay HTML)
             st.rerun()
 
 if __name__ == "__main__":
