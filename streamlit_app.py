@@ -16,7 +16,7 @@ st.set_page_config(page_title="Interactive 3D Hand Tracking", layout="wide")
 st.title("🧊 3D Free View - Hand Tracking")
 st.write("""
 **Panduan Gestur:**
-- ✋ **Swipe 5 Jari:** Gerakkan tangan cepat ke kiri/kanan untuk memutar objek sekilas.
+- ✋ **Swipe 5 Jari:** Gerakkan tangan cepat ke kiri/kanan untuk memutar objek dengan gaya *Inertia* (berputar terus dan melambat).
 - ☝️ **Telunjuk Berdiri:** Tahan 1 Detik -> Putar objek secara perlahan (Rotasi).
 - 👆 **Jempol + Telunjuk Pinch:** Tahan 1 Detik -> Geser objek (Pan).
 - 🤏 **Pinch 3 Jari (Jempol+Telunjuk+Tengah):** Tahan 1 Detik -> **ZOOM AKTIF**.
@@ -78,6 +78,10 @@ class Hand3DProcessor(VideoProcessorBase):
         self.scale = 1.0
         self.offset_x, self.offset_y = 0, 0
         
+        # State Inertia (Momentum Putaran)
+        self.vel_ry = 0.0   # Kecepatan putaran Y
+        self.vel_rx = 0.0   # Kecepatan putaran X
+        
         self.prev_index_pos = None
         self.zoom_base_index = None
         self.zoom_base_middle = None
@@ -89,7 +93,6 @@ class Hand3DProcessor(VideoProcessorBase):
 
         # State Swipe 5 Jari
         self.prev_palm_pos = None
-        self.swipe_velocity = 0
 
         # Vertex Kubus 3D
         self.vertices = np.array([
@@ -165,6 +168,18 @@ class Hand3DProcessor(VideoProcessorBase):
         color_text = (200, 200, 200)
         current_time = time.time()
 
+        # --- APPLY INERTIA (Putaran Terus Berjalan) ---
+        self.ry += self.vel_ry
+        self.rx += self.vel_rx
+        
+        # Redam kecepatan perlahan (Friction / Gesekan)
+        self.vel_ry *= 0.95  # Semakin kecil angkanya, semakin cepat berhenti
+        self.vel_rx *= 0.95
+
+        # Jika kecepatan sangat kecil, set ke 0 agar benar-benar berhenti
+        if abs(self.vel_ry) < 0.001: self.vel_ry = 0.0
+        if abs(self.vel_rx) < 0.001: self.vel_rx = 0.0
+
         if results.hand_landmarks:
             hand_landmarks = results.hand_landmarks[0]
             self._draw_landmarks(img, hand_landmarks, w, h)
@@ -174,7 +189,6 @@ class Hand3DProcessor(VideoProcessorBase):
             middle = self._to_pixel(hand_landmarks[MIDDLE_TIP], w, h)
             pinky = self._to_pixel(hand_landmarks[PINKY_TIP], w, h)
             
-            # Palm center (titik tengah telapak tangan)
             wrist = self._to_pixel(hand_landmarks[0], w, h)
             palm_center = ((wrist[0] + middle[0]) // 2, (wrist[1] + middle[1]) // 2)
 
@@ -183,9 +197,8 @@ class Hand3DProcessor(VideoProcessorBase):
             dist_mid_index = float(np.hypot(middle[0] - index[0], middle[1] - index[1]))
 
             # ==========================================
-            # DETEKSI 5 JARI TERBUKA (SWIPE)
+            # DETEKSI 5 JARI TERBUKA (SWIPE INERTIA)
             # ==========================================
-            # Cek apakah kelima jari berdiri (koordinat Y lebih kecil dari telapak)
             index_up = index[1] < wrist[1]
             middle_up = middle[1] < wrist[1]
             pinky_up = pinky[1] < wrist[1]
@@ -196,15 +209,17 @@ class Hand3DProcessor(VideoProcessorBase):
             if is_5_fingers:
                 if self.prev_palm_pos is not None:
                     dx = palm_center[0] - self.prev_palm_pos[0]
+                    dy = palm_center[1] - self.prev_palm_pos[1]
                     
-                    # Deteksi Swipe Cepat (threshold kecepatan)
-                    if abs(dx) > 15:  # Jika bergerak lebih dari 15px per frame
-                        self.ry += dx * 0.05  # Putar kubus secara instan
-                        mode_text = "SWIPE ROTASI!"
+                    # Jika gerakan cepat, tambahkan kecepatan (Momentum)
+                    if abs(dx) > 10 or abs(dy) > 10:
+                        self.vel_ry += dx * 0.015  # Kecepatan putar horizontal
+                        self.vel_rx += dy * 0.015  # Kecepatan putar vertikal
+                        
+                        mode_text = "SWIPE INERTIA!"
                         color_text = (0, 255, 255)
                         
                 self.prev_palm_pos = palm_center
-                # Matikan mode hold lain jika sedang swipe
                 self.candidate_mode = None
                 self.active_mode = None
             else:
@@ -215,7 +230,6 @@ class Hand3DProcessor(VideoProcessorBase):
             # ==========================================
             detected_gesture = None
             
-            # Jika bukan swipe 5 jari, cek mode hold
             if not is_5_fingers:
                 if dist_index < PINCH_THRESHOLD and dist_middle < PINCH_THRESHOLD and dist_mid_index < PINCH_THRESHOLD + 20:
                     detected_gesture = "ZOOM"
@@ -236,6 +250,10 @@ class Hand3DProcessor(VideoProcessorBase):
                 
                 if progress >= 1.0:
                     self.active_mode = detected_gesture
+                    # Hentikan inertia jika masuk mode manual
+                    self.vel_ry = 0.0
+                    self.vel_rx = 0.0
+                    
                     if self.active_mode == "ZOOM":
                         self.zoom_base_index = dist_index
                         self.zoom_base_middle = dist_middle
