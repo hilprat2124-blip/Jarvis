@@ -1,6 +1,6 @@
 streamlit
-openai
-edge-tts
-pydub
-requests
+streamlit-webrtc
+opencv-python
+mediapipe
+av
 numpy
