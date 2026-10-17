@@ -14,10 +14,11 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 st.set_page_config(page_title="Interactive 3D Hand Tracking", layout="wide")
 st.title("🧊 3D Free View - Hand Tracking")
 st.write("""
-**Panduan Gestur (Pilih Mode):**
-- ☝️ **Tunjuk (1 Jari):** Putar objek (Free View).
-- ✌️ **Peace (2 Jari):** Zoom In (Jauhkan jari) / Zoom Out (Dekatkan jari). Gerakkan perlahan untuk hasil mulus.
-- 🤏 **Pinch (Cubit):** Geser objek (Pan).
+**Panduan Gestur (Bebas Bentrok):**
+- ☝️ **Telunjuk Berdiri:** Putar objek (Free View).
+- 🤏 **Pinch (Jempol+Telunjuk) lalu Geser:** Geser objek (Pan).
+- 👆 **Jempol + Telunjuk:** Mulai dari Pinch, lalu jauhkan **Telunjuk** untuk **ZOOM IN**.
+- 🖕 **Jempol + Jari Tengah:** Mulai dari Pinch, lalu jauhkan **Jari Tengah** untuk **ZOOM OUT**.
 """)
 
 # ============ Konfigurasi WebRTC ============
@@ -29,7 +30,7 @@ RTC_CONFIGURATION = RTCConfiguration(
 PINCH_THRESHOLD = 40      
 MIN_SCALE, MAX_SCALE = 0.5, 3.0
 ZOOM_SENSITIVITY = 0.01
-MAX_ZOOM_STEP = 0.03 # Batas maksimal perubahan skala per frame
+MAX_ZOOM_STEP = 0.03
 
 THUMB_TIP = 4
 INDEX_TIP = 8
@@ -73,7 +74,8 @@ class Hand3DProcessor(VideoProcessorBase):
         self.offset_x, self.offset_y = 0, 0
         
         self.prev_index_pos = None
-        self.prev_peace_dist = None
+        self.prev_zoom_dist = None
+        self.zoom_mode = None # "IN" atau "OUT"
 
         # Vertex Kubus 3D
         self.vertices = np.array([
@@ -153,21 +155,49 @@ class Hand3DProcessor(VideoProcessorBase):
             index = self._to_pixel(hand_landmarks[INDEX_TIP], w, h)
             middle = self._to_pixel(hand_landmarks[MIDDLE_TIP], w, h)
 
-            # Deteksi jari berdiri
-            index_up = index[1] < thumb[1]
-            middle_up = middle[1] < thumb[1]
-
-            dist_pinch = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
-            dist_peace = float(np.hypot(index[0] - middle[0], index[1] - middle[1]))
+            # Deteksi jarak
+            dist_pinch_index = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
+            dist_pinch_middle = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
 
             # ==========================================
-            # MODE SELECTION
+            # MODE SELECTION & LOGIKA
             # ==========================================
 
-            # 1. MODE ROTASI (Hanya Telunjuk Berdiri)
-            if index_up and not middle_up and dist_pinch > PINCH_THRESHOLD:
+            # 1. MODE ZOOM IN (Jempol + Telunjuk mulai dari pinch, lalu menjauh)
+            if dist_pinch_index < PINCH_THRESHOLD and dist_pinch_middle > PINCH_THRESHOLD + 20:
+                self.zoom_mode = "IN"
+                
+            # 2. MODE ZOOM OUT (Jempol + Jari Tengah mulai dari pinch, lalu menjauh)
+            elif dist_pinch_middle < PINCH_THRESHOLD and dist_pinch_index > PINCH_THRESHOLD + 20:
+                self.zoom_mode = "OUT"
+
+            # Eksekusi Zoom
+            if self.zoom_mode == "IN":
+                mode_text = "MODE: ZOOM IN"
+                color_text = (0, 255, 255)
+                if self.prev_zoom_dist is not None:
+                    delta = dist_pinch_index - self.prev_zoom_dist
+                    if delta > 0: # Menjauh
+                        scale_change = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
+                        self.scale = np.clip(self.scale + scale_change, MIN_SCALE, MAX_SCALE)
+                self.prev_zoom_dist = dist_pinch_index
+
+            elif self.zoom_mode == "OUT":
+                mode_text = "MODE: ZOOM OUT"
+                color_text = (255, 0, 255)
+                if self.prev_zoom_dist is not None:
+                    delta = dist_pinch_middle - self.prev_zoom_dist
+                    if delta > 0: # Menjauh
+                        scale_change = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
+                        self.scale = np.clip(self.scale - scale_change, MIN_SCALE, MAX_SCALE)
+                self.prev_zoom_dist = dist_pinch_middle
+
+            # 3. MODE ROTASI (Telunjuk berdiri sendiri, jari lain mengepal)
+            elif index[1] < thumb[1] and middle[1] > thumb[1] and dist_pinch_index > PINCH_THRESHOLD:
                 mode_text = "MODE: ROTASI"
                 color_text = (0, 255, 0)
+                self.zoom_mode = None
+                self.prev_zoom_dist = None
                 
                 if self.prev_index_pos is not None:
                     dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20)
@@ -175,29 +205,13 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.ry += dx * 0.015
                     self.rx += dy * 0.015
                 self.prev_index_pos = index
-                self.prev_peace_dist = None
 
-            # 2. MODE ZOOM (Telunjuk & Tengah Berdiri)
-            elif index_up and middle_up:
-                mode_text = "MODE: ZOOM"
-                color_text = (0, 255, 255)
-                
-                if self.prev_peace_dist is not None:
-                    delta = dist_peace - self.prev_peace_dist
-                    
-                    # Perubahan skala halus (dibatasi per frame)
-                    scale_change = delta * ZOOM_SENSITIVITY
-                    scale_change = np.clip(scale_change, -MAX_ZOOM_STEP, MAX_ZOOM_STEP)
-                    
-                    self.scale = np.clip(self.scale + scale_change, MIN_SCALE, MAX_SCALE)
-                    
-                self.prev_peace_dist = dist_peace
-                self.prev_index_pos = None
-
-            # 3. MODE PAN / GESER (Pinch / Cubit)
-            elif dist_pinch < PINCH_THRESHOLD:
+            # 4. MODE PAN / GESER (Pinch stabil tanpa menjauh)
+            elif dist_pinch_index < PINCH_THRESHOLD:
                 mode_text = "MODE: GESER"
                 color_text = (0, 0, 255)
+                self.zoom_mode = None
+                self.prev_zoom_dist = None
                 
                 mid = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
                 if self.prev_index_pos is not None:
@@ -206,17 +220,17 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.offset_x += dx
                     self.offset_y += dy
                 self.prev_index_pos = mid
-                self.prev_peace_dist = None
-            
-            else:
-                self.prev_index_pos = None
-                self.prev_peace_dist = None
 
-            # Indikator titik di ujung jari
+            else:
+                # Jika tidak ada gestur yang cocok, reset state
+                self.zoom_mode = None
+                self.prev_zoom_dist = None
+                self.prev_index_pos = None
+
+            # Indikator titik
             cv2.circle(img, thumb, 5, color_text, -1)
             cv2.circle(img, index, 5, color_text, -1)
-            if index_up and middle_up:
-                cv2.circle(img, middle, 5, color_text, -1)
+            cv2.circle(img, middle, 5, color_text, -1)
 
         # --- RENDER 3D ---
         cx, cy = w // 2, h // 2
