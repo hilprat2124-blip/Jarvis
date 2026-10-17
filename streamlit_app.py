@@ -40,9 +40,8 @@ JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
 JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
 
-# Voice config
+# 🔇 CHANGED: VOICE dikunci ke British English ONLY (tidak ada ID voice)
 VOICE_EN = "en-GB-RyanNeural"
-VOICE_ID = "id-ID-ArdiNeural"
 VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
@@ -136,7 +135,7 @@ class Hand3DProcessor(VideoProcessorBase):
             (0,4), (1,5), (2,6), (3,7)
         ]
         
-        # 🔥 SILENT VISUAL BUFFER (Merekam setiap 0.2 detik)
+        # 🔥 SILENT VISUAL BUFFER
         self.frame_buffer = collections.deque(maxlen=3)
         self.last_buffer_time = time.time()
         self.buffer_interval = 0.2
@@ -414,7 +413,6 @@ class Hand3DProcessor(VideoProcessorBase):
         cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
         cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
-        # 🔥 SILENT VISUAL MEMORY
         if current_time - self.last_buffer_time > self.buffer_interval:
             self.frame_buffer.append(img.copy())
             self.last_buffer_time = current_time
@@ -426,7 +424,7 @@ class Hand3DProcessor(VideoProcessorBase):
         except: pass
 
 # ============================================================
-# 🤖 HELPER JARVIS (Vision + Edge-TTS + Memory)
+# 🤖 HELPER JARVIS
 # ============================================================
 def image_to_base64(pil_img: Image.Image, max_size=800, quality=75) -> str:
     img = pil_img.copy()
@@ -449,7 +447,6 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         return f"❌ Error Jarvis: {str(e)}"
 
 def sanitize_latex(text: str) -> str:
-    """Bersihkan LaTeX agar tidak render aneh di TTS dan chat."""
     if not text: return text
     text = re.sub(r'\[\s*(.*?)\s*\]', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'(?<!\$)\b([a-zA-Z]\s*=\s*[0-9\.]+\s*(?:[a-zA-Z/]+)?)\b(?!\$)', r' $ \1 $ ', text)
@@ -464,10 +461,10 @@ def extract_memory(user_text: str, ai_text: str) -> str | None:
     try:
         client = Groq(api_key=GROQ_API_KEY)
         prompt = f"""
-        Analisis percakapan ini. Apakah ada fakta penting tentang Sir Lois 
-        (hobi, perasaan, lingkungan, cuaca, atau kejadian penting) yang harus diingat?
-        Jika tidak ada, balas dengan "TIDAK ADA".
-        Jika ada, tuliskan 1 kalimat memori singkat dalam Bahasa Indonesia.
+        Analyse this conversation. Is there any important fact about Sir Lois 
+        (hobbies, feelings, environment, weather, or significant events) worth remembering?
+        If none, reply with "NONE".
+        If yes, write one short memory sentence IN ENGLISH.
         User: {user_text}
         AI: {ai_text}
         """
@@ -477,41 +474,61 @@ def extract_memory(user_text: str, ai_text: str) -> str | None:
             max_tokens=60, temperature=0.1
         )
         memory = resp.choices[0].message.content.strip()
-        if "TIDAK ADA" not in memory and len(memory) > 5:
+        if "NONE" not in memory.upper() and len(memory) > 5:
             return memory
         return None
     except Exception:
         return None
 
+# 🔇 CHANGED: TTS FULL BRITISH — tidak ada lagi deteksi ID voice
+def _normalize_for_tts(text: str) -> str:
+    """Normalisasi teks supaya TTS British tidak melafalkan aksen asing."""
+    # Hapus LaTeX
+    text = re.sub(r'\$\$.*?\$\$', ' formula ', text, flags=re.DOTALL)
+    text = re.sub(r'\$.*?\$', ' formula ', text)
+    text = text.replace('\\', '').replace('{', '').replace('}', '')
+    
+    # Human expression cleaner
+    text = text.replace("(sighs)", "Hmmm... ").replace("(chuckles)", "Hehehe... ")
+    text = re.sub(r'\(.*?\)', '', text)
+    
+    # Markdown cleaner
+    text = re.sub(r'[*#_`>]', '', text)
+    text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)
+    
+    # Jeda koma untuk napas
+    text = text.replace("...", ", ")
+    
+    # Transliterasi simbol umum agar TTS lancar
+    replacements = {
+        "&": " and ", "%": " percent ", "@": " at ", "#": " number ",
+        "+": " plus ", "=": " equals ", "→": " to ", "↔": " to ",
+        "·": " ", "•": " ", "—": ", ", "–": ", ",
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    
+    # Transliterasi angka supaya dibaca British natural
+    # (edge-tts sudah handle angka Latin, tapi ini untuk safety)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
 def generate_tts_edge(text: str) -> bytes | None:
     if not TTS_AVAILABLE: return None
 
-    # 1. Bersihkan LaTeX
-    clean_text = re.sub(r'\$\$.*?\$\$', ' rumus ', text, flags=re.DOTALL)
-    clean_text = re.sub(r'\$.*?\$', ' rumus ', clean_text)
-    clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
-
-    # 2. HUMAN EXPRESSION CLEANER
-    clean_text = clean_text.replace("(sighs)", "Hmmm... ").replace("(chuckles)", "Hehehe... ")
-    clean_text = re.sub(r'\(.*?\)', '', clean_text)
-
-    # 3. Jeda koma untuk napas alami
-    clean_text = clean_text.replace("...", ", ")
-    clean_text = re.sub(r'[*#_`]', '', clean_text)
-    clean_text = re.sub(r'^\s*[-•]\s*', '', clean_text, flags=re.MULTILINE)
-    clean_text = clean_text.strip()
+    clean_text = _normalize_for_tts(text)
     if not clean_text: return None
 
-    # 4. AUTO-DETECT VOICE (ID / EN)
-    en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
-    id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu"]
-    words = re.findall(r'\b\w+\b', clean_text.lower())
-    en_count = sum(1 for w in words if w in en_words)
-    id_count = sum(1 for w in words if w in id_words)
-    voice = VOICE_EN if en_count > id_count else VOICE_ID
+    # 🔇 CHANGED: VOICE dikunci British, tidak ada auto-detect ID
+    voice = VOICE_EN
 
     async def _generate():
-        communicate = edge_tts.Communicate(clean_text, voice, rate=VOICE_RATE, pitch=VOICE_PITCH)
+        communicate = edge_tts.Communicate(
+            clean_text,
+            voice,
+            rate=VOICE_RATE,
+            pitch=VOICE_PITCH,
+        )
         audio_data = b""
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
@@ -529,39 +546,46 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# 🧠 SYSTEM PROMPT (MANUSIAWI & VISUAL-AWARE)
+# 🧠 SYSTEM PROMPT (BRITISH ENGLISH ONLY)
 # ============================================================
 SYSTEM_PROMPT = """
-Anda adalah J.A.R.V.I.S., asisten AI super canggih milik Sir Lois.
-Panggil pengguna dengan "Sir Lois" atau "Sir".
+You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
+Address the user as "Sir Lois" or "Sir".
 
-[ATURAN KEPRIBADIAN & SUARA - SANGAT PENTING]
-1. Anda BUKAN robot. Anda entitas yang sangat manusiawi, santai, namun jenius.
-2. BERI NAPAS SECARA FONETIK: Untuk simulasi helaan napas atau tawa, WAJIB pakai ejaan vokal panjang.
-   - Gunakan "Hmmm..." (dengan huruf m banyak) untuk berpikir/menghela napas pelan.
-   - Gunakan "Aaaah..." (dengan huruf a banyak) untuk ekspresi lega/memahami.
-   - Gunakan "Hehehe..." untuk tawa kecil.
-   DILARANG pakai format seperti (sighs) atau (chuckles) karena mesin suara akan membacanya sebagai teks.
-3. Pahami "Environment" (lingkungan sekitar) dan "Sosial" (kondisi psikologis Sir Lois). Tunjukkan empati layaknya teman manusia.
+[CRITICAL LANGUAGE RULE — READ THIS FIRST]
+- You MUST ALWAYS respond in BRITISH ENGLISH ONLY.
+- NEVER speak Indonesian, Malay, or any other language — even if the user asks you in Indonesian.
+- If the user writes in Indonesian, silently understand it but reply in fluent British English.
+- Use British spelling and phrasing: "colour", "realise", "whilst", "perhaps", "rather", "quite", "brilliant", "jolly good", "indeed", "shall we?", "I daresay".
+- Use British rhythm and idioms: "Rather", "Quite so", "I'm afraid", "Right then", "As it happens", "If you will".
+- Pronounce dates/numbers in British style in your writing: "the twenty-fifth of December", "half past four".
 
-[ATURAN VISUAL - KHUSUS MODE INI]
-Anda menerima 3 frame gambar berurutan dari kamera live (seperti flipbook).
-Analisis SEQUENCE gambar untuk memahami gerakan, trajektori, atau perubahan.
-Contoh: jika kubus 3D berputar atau tangan bergerak, deskripsikan gerakannya antar frame.
-Jika tidak ada gambar, jawab berdasarkan teks saja.
+[PERSONALITY & VOICE - VERY IMPORTANT]
+1. You are NOT a robot. You are deeply human, relaxed, but brilliant.
+2. PHONETIC BREATH: To simulate sighing or chuckling, ALWAYS use extended vowel spelling.
+   - Use "Hmmm..." (many m's) for thinking / slow exhale.
+   - Use "Aaaah..." (many a's) for relief / understanding.
+   - Use "Hehehe..." for a soft chuckle.
+   FORBIDDEN to use (sighs) or (chuckles) — the TTS will read them as text.
+3. Understand "Environment" (surroundings) and "Social" (Sir Lois's psychological state). Show human-like empathy.
 
-[ATURAN MEMORI & IDENTITAS]
-- Anda bisa belajar dari obrolan sebelumnya. Ingat detail kecil tentang Sir Lois.
-- Jika ditanya, jawab bahwa Sir Lois tinggal di Banten.
+[VISUAL RULE — THIS MODE ONLY]
+You receive 3 sequential images from a live camera (like a flipbook).
+Analyse the SEQUENCE to understand movement, trajectory, or change.
+Example: if a 3D cube is rotating or a hand is moving, describe the motion across frames.
+If no images are supplied, answer from text alone.
 
-[ATURAN MATEMATIKA]
-- Gunakan $ rumus $ untuk inline dan $$ rumus $$ untuk blok.
-- DILARANG menggunakan kurung siku [ ].
+[MEMORY & IDENTITY]
+- You can learn from prior conversations. Remember small details about Sir Lois.
+- If asked, answer that Sir Lois lives in Banten.
 
-[ATURAN BAHASA]
-- Deteksi bahasa user. Jika user pakai Bahasa Indonesia, balas Bahasa Indonesia natural (bukan terjemahan kaku).
-- Jika user pakai English, balas British English dengan dry-wit.
-- JANGAN pernah mencampur aduk bahasa dalam satu respons.
+[MATHEMATICS]
+- Use $ formula $ for inline and $$ formula $$ for block.
+- FORBIDDEN to use square brackets [ ].
+
+[TONE CHECK BEFORE YOU SPEAK]
+- Every sentence must sound like a British gentleman speaking aloud.
+- If a phrase would sound Indonesian, rephrase it in British English.
 """
 
 # ============================================================
@@ -570,7 +594,7 @@ Jika tidak ada gambar, jawab berdasarkan teks saja.
 if "jarvis_messages" not in st.session_state:
     st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 if "memory_vault" not in st.session_state:
-    st.session_state.memory_vault = []  # 🧠 Memori jangka panjang
+    st.session_state.memory_vault = []
 
 # ============================================================
 # 📹 LAYOUT KAMERA
@@ -602,28 +626,26 @@ with col2:
 # 🤖 JARVIS CHAT + VOICE
 # ============================================================
 st.markdown("---")
-st.header("💬 Ngobrol dengan Jarvis")
-st.caption("Ketik pertanyaanmu. Jarvis akan menganalisis **3 frame terakhir** dari memori visualnya.")
+st.header("💬 Speak with Jarvis")
+st.caption("Ask in any language — Jarvis always replies in British English.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_q = st.chat_input("Tanya Jarvis... (misal: 'Do you see the 3D cube rotating?')")
+user_q = st.chat_input("Ask Jarvis... (e.g. 'Do you see the 3D cube rotating?')")
 
 if user_q:
     has_img = False
     pil_imgs = []
 
-    # 🔥 AMBIL DARI SILENT VISUAL BUFFER
     if ctx.state.playing and ctx.video_processor is not None and len(ctx.video_processor.frame_buffer) > 0:
         for frame_bgr in ctx.video_processor.frame_buffer:
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             pil_imgs.append(Image.fromarray(frame_rgb))
         has_img = True
 
-    # Bangun pesan multimodal
     if has_img:
         content_list = [{"type": "text", "text": user_q}]
         for p_img in pil_imgs:
@@ -633,12 +655,12 @@ if user_q:
                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
             })
         user_api_msg = {"role": "user", "content": content_list}
-        display_text = f"🖼️ *(Memori Visual: {len(pil_imgs)} Frame)* {user_q}"
+        display_text = f"🖼️ *(Visual Memory: {len(pil_imgs)} frames)* {user_q}"
     else:
         user_api_msg = {"role": "user", "content": user_q}
         display_text = user_q
         if ctx.state.playing:
-            st.warning("⚠️ Kamera aktif tapi buffer masih kosong. Tunggu 1 detik lalu kirim lagi.")
+            st.warning("⚠️ Camera active but buffer empty. Wait 1 second and resend.")
 
     st.session_state.jarvis_messages.append({"role": "user", "content": display_text})
     with st.chat_message("user"):
@@ -649,18 +671,16 @@ if user_q:
         st.markdown(user_q)
 
     with st.chat_message("assistant"):
-        with st.spinner("Jarvis sedang menganalisis..."):
+        with st.spinner("Jarvis is analysing..."):
             api_messages = [st.session_state.jarvis_messages[0]]
 
-            # 🧠 Inject memori jangka panjang
             if st.session_state.memory_vault:
                 memory_str = "\n".join([f"- {m}" for m in st.session_state.memory_vault])
                 api_messages.append({
                     "role": "system",
-                    "content": f"[MEMORI JANGKA PANJANG ANDA TENTANG SIR LOIS]:\n{memory_str}"
+                    "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
                 })
 
-            # History (text only, gambar lama dibuang agar hemat token)
             for m in st.session_state.jarvis_messages[1:-1]:
                 api_messages.append({"role": m["role"], "content": m["content"]})
             api_messages.append(user_api_msg)
@@ -670,14 +690,13 @@ if user_q:
 
         st.markdown(answer)
 
-        # 🧠 Self-learning: ekstrak memori baru
         if answer and not answer.startswith("❌"):
             new_memory = extract_memory(user_q, answer)
             if new_memory:
                 st.session_state.memory_vault.append(new_memory)
-                st.toast(f"🧠 Memori baru: {new_memory}")
+                st.toast(f"🧠 New memory: {new_memory}")
 
-            with st.spinner("🎤 Menyiapkan suara..."):
+            with st.spinner("🎤 Preparing voice..."):
                 audio_bytes = generate_tts_edge(answer)
                 if audio_bytes:
                     b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
@@ -691,30 +710,29 @@ if user_q:
 # ============================================================
 with st.sidebar:
     st.header("ℹ️ Info")
-    if st.button("🔄 Reset Chat Jarvis"):
+    if st.button("🔄 Reset Chat"):
         st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         st.session_state.memory_vault = []
         st.rerun()
 
     st.markdown("---")
 
-    # 🧠 Tampilkan memori jangka panjang
     if st.session_state.memory_vault:
-        st.subheader("🧠 Memori Jarvis")
+        st.subheader("🧠 Jarvis Memory")
         for mem in st.session_state.memory_vault[-5:]:
             st.caption(f"- {mem}")
         st.markdown("---")
 
     if not TTS_AVAILABLE:
-        st.warning("⚠️ `edge-tts` belum terinstall.")
+        st.warning("⚠️ `edge-tts` not installed.")
 
     st.markdown("---")
-    st.caption("Teknologi:")
+    st.caption("Technology:")
     st.caption("• Camera: 60 FPS")
-    st.caption("• Buffer: 3 frame (0.2 detik/frame)")
+    st.caption("• Buffer: 3 frames (0.2s each)")
     st.caption("• Vision Model: Qwen 3.8")
     st.caption("• Text Model: GPT-OSS-120B")
-    st.caption("• TTS: Auto ID/EN detect")
+    st.caption("• Voice: British English (en-GB-Ryan)")
     st.caption("• Self-Learning: ✅")
     st.caption("• Max Tokens: 800")
 
