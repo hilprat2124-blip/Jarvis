@@ -11,6 +11,7 @@ import time
 import io
 import base64
 import asyncio
+import re
 from PIL import Image
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
@@ -447,17 +448,21 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         return f"❌ Error Jarvis: {str(e)}"
 
 def generate_tts_edge(text: str) -> bytes or None:
-    """Generate audio dari teks menggunakan Edge-TTS (Optimized)."""
+    """Generate audio dari teks menggunakan Edge-TTS (Baca Full & Bersih)."""
     if not TTS_AVAILABLE: 
         return None
     
-    # 🔥 OPTIMASI 1: Potong teks agar TTS tidak kelamaan (ambil 200 karakter pertama)
-    # Ini sangat mempercepat loading karena server hanya memproses teks pendek.
-    text_to_speak = text[:200] + ("..." if len(text) > 200 else "")
+    # 1. BERSIHKAN TEKS DARI FORMAT MARKDOWN
+    clean_text = re.sub(r'[*#_`]', '', text)         # Hapus simbol markdown (*, #, _, `)
+    clean_text = re.sub(r'^\s*[-•]\s*', '', clean_text, flags=re.MULTILINE) # Hapus bullet (-, •)
+    clean_text = clean_text.strip()
+
+    if not clean_text:
+        return None
 
     async def _generate():
-        communicate = edge_tts.Communicate(text_to_speak, JARVIS_TTS_VOICE, rate="+10%") 
-        # rate +10% bikin suara agak cepat, terasa lebih responsif
+        # 2. BACA SEMUA TEKS (TIDAK DIPOTONG)
+        communicate = edge_tts.Communicate(clean_text, JARVIS_TTS_VOICE, rate="+10%") 
         audio_data = b""
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
@@ -465,7 +470,6 @@ def generate_tts_edge(text: str) -> bytes or None:
         return audio_data
 
     try:
-        # 🔥 OPTIMASI 2: Gunakan asyncio.run yang lebih ringan ketimbang manual loop
         audio_bytes = asyncio.run(_generate())
         return audio_bytes
     except Exception as e:
@@ -562,10 +566,10 @@ if user_q:
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
             
-        # 🔥 TAMPILKAN TEKS DULU agar user bisa langsung baca
+        # TAMPILKAN TEKS DULU
         st.markdown(answer)
         
-        # 🔥 PROSES SUARA SETELAH TEKS MUNCUL (dengan efek loading kecil)
+        # PROSES SUARA SETELAH TEKS MUNCUL
         if answer and not answer.startswith("❌"):
             with st.spinner("🎤 Menyiapkan suara..."):
                 audio_bytes = generate_tts_edge(answer)
