@@ -12,6 +12,7 @@ import io
 import base64
 import asyncio
 import re
+import collections
 from PIL import Image
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
@@ -35,29 +36,18 @@ try:
 except Exception:
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-# Model Groq untuk mata & otak Jarvis
 JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
-
-# Konfigurasi Suara Edge-TTS (British, Soft, Clean)
 JARVIS_TTS_VOICE = "en-GB-RyanNeural"  
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(
-    page_title="Hand Tracking + Jarvis (Voice)",
-    page_icon="🧊",
-    layout="wide"
-)
-
-st.title("🧊 3D Hand Tracking + 🤖 Jarvis (Live Eyes + Voice)")
-st.markdown("""
-**Fitur Spesial:** Jarvis punya **"Mata Live"** dan **"Suara British Natural"**. 
-Ketik chat pakai Bahasa Indonesia (boleh singkat/typo) atau Bahasa Inggris. Jarvis akan melihat kamera dan **menjawab dengan suara otomatis dalam Bahasa Inggris British**.
-""")
+st.set_page_config(page_title="Jarvis - Visual Memory", page_icon="🧊", layout="wide")
+st.title("🧊 Jarvis - Live Visual Memory (60 FPS Capture)")
+st.markdown("Jarvis sekarang merekam **gerakan** (buffer 5 frame). Tanya: *'Do you see the 3D cube rotating?'*")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}, {"urls": ["stun:stun1.l.google.com:19302"]}]}
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
 PINCH_ENTER = 40
@@ -84,20 +74,15 @@ HAND_CONNECTIONS = [
     (15, 16), (13, 17), (17, 18), (18, 19), (19, 20), (0, 17)
 ]
 
-# ============ Download Model ============
 MODEL_PATH = "hand_landmarker.task"
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-    "hand_landmarker/float16/1/hand_landmarker.task"
-)
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 
 if not os.path.exists(MODEL_PATH):
     with st.spinner("📥 Mengunduh model AI..."):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    st.success("✅ Model siap!")
 
 # ============================================================
-# 🔒 KELAS KAMERA — TIDAK DIUBAH SAMA SEKALI
+# 🔒 KELAS KAMERA — DENGAN TAMBAHAN VISUAL BUFFER
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
     def __init__(self):
@@ -109,6 +94,7 @@ class Hand3DProcessor(VideoProcessorBase):
         )
         self.detector = vision.HandLandmarker.create_from_options(options)
         self.frame_timestamp = 0
+        # ... state 3D sama seperti sebelumnya ...
         self.rx, self.ry = 0.5, 0.5
         self.scale = 1.0
         self.offset_x, self.offset_y = 0.0, 0.0
@@ -142,7 +128,12 @@ class Hand3DProcessor(VideoProcessorBase):
             (0,1), (1,2), (2,3), (3,0), (4,5), (5,6), (6,7), (7,4),
             (0,4), (1,5), (2,6), (3,7)
         ]
-        self.latest_frame_bgr = None
+        
+        # 🔥 VISUAL BUFFER (Memori Visual Jarvis)
+        # Menyimpan 5 gambar terakhir. Jika 60fps, setiap 0.3 detik ambil 1 gambar.
+        self.frame_buffer = collections.deque(maxlen=5)
+        self.last_buffer_time = time.time()
+        self.buffer_interval = 0.3 # Detik. Ubah jadi 0.1 jika ingin lebih rapat.
 
     def _to_pixel(self, landmark, w, h):
         return int(landmark.x * w), int(landmark.y * h)
@@ -417,7 +408,12 @@ class Hand3DProcessor(VideoProcessorBase):
         cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
         cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
-        self.latest_frame_bgr = img.copy()
+        # 🔥 SIMPAN KE VISUAL BUFFER
+        # Setiap 0.3 detik, simpan gambar ke dalam memori Jarvis
+        if current_time - self.last_buffer_time > self.buffer_interval:
+            self.frame_buffer.append(img.copy())
+            self.last_buffer_time = current_time
+
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
     def __del__(self):
@@ -427,7 +423,7 @@ class Hand3DProcessor(VideoProcessorBase):
 # ============================================================
 # 🤖 HELPER JARVIS (Vision + Edge-TTS)
 # ============================================================
-def image_to_base64(pil_img: Image.Image, max_size=1024, quality=85) -> str:
+def image_to_base64(pil_img: Image.Image, max_size=800, quality=75) -> str:
     img = pil_img.copy()
     img.thumbnail((max_size, max_size))
     buf = io.BytesIO()
@@ -448,88 +444,54 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         return f"❌ Error Jarvis: {str(e)}"
 
 def translate_to_english(text: str) -> str:
-    """Fungsi rahasia untuk memahami singkatan & menerjemahkan ke Bahasa Inggris."""
-    if not GROQ_AVAILABLE or not GROQ_API_KEY: 
-        return text
-    
-    # Jika teks sangat pendek atau kosong, lewati
-    if len(text.strip()) < 3: 
-        return text
-
+    if not GROQ_AVAILABLE or not GROQ_API_KEY: return text
+    if len(text.strip()) < 3: return text
     try:
         client = Groq(api_key=GROQ_API_KEY)
         resp = client.chat.completions.create(
             model=JARVIS_TEXT_MODEL,
             messages=[
-                {
-                    "role": "system", 
-                    "content": (
-                        "You are an expert translator specialized in Indonesian slang, abbreviations, and typos. "
-                        "The user will give you a messy Indonesian text (using words like 'blm', 'spRt', 'bikin', 'gmn'). "
-                        "Your job is to figure out exactly what they mean (fix the typos, expand the abbreviations mentally), "
-                        "and translate their INTENT into clear, natural, and professional English. "
-                        "Do not give any explanations. Output ONLY the final English translation."
-                    )
-                },
+                {"role": "system", "content": "Expert translator. Expand Indonesian slang/typos to clear English. Output ONLY translation."},
                 {"role": "user", "content": text}
-            ],
-            temperature=0.2,
-            max_tokens=150,
+            ], temperature=0.2, max_tokens=150,
         )
-        translated = resp.choices[0].message.content.strip()
-        
-        # Jika AI gagal menerjemahkan dan mengembalikan teks kosong, fallback ke teks asli
-        return translated if translated else text
-        
+        return resp.choices[0].message.content.strip() or text
     except Exception:
         return text
 
 def generate_tts_edge(text: str) -> bytes or None:
-    """Generate audio dari teks menggunakan Edge-TTS (British, Soft, Clean)."""
-    if not TTS_AVAILABLE: 
-        return None
-    
-    # 1. BERSIHKAN TEKS DARI FORMAT MARKDOWN
+    if not TTS_AVAILABLE: return None
     clean_text = re.sub(r'[*#_`]', '', text)         
     clean_text = re.sub(r'^\s*[-•]\s*', '', clean_text, flags=re.MULTILINE) 
     clean_text = clean_text.strip()
-
-    if not clean_text:
-        return None
+    if not clean_text: return None
 
     async def _generate():
-        # 2. BACA SEMUA TEKS (TIDAK DIPOTONG)
-        # rate="-5%" (sedikit lebih lambat) & pitch="-2Hz" (sedikit lebih rendah) = Soft & Tenang
         communicate = edge_tts.Communicate(clean_text, JARVIS_TTS_VOICE, rate="-5%", pitch="-2Hz") 
         audio_data = b""
         async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio_data += chunk["data"]
+            if chunk["type"] == "audio": audio_data += chunk["data"]
         return audio_data
 
     try:
-        audio_bytes = asyncio.run(_generate())
-        return audio_bytes
+        return asyncio.run(_generate())
     except Exception as e:
-        st.error(f"Gagal generate suara Edge-TTS: {e}")
+        st.error(f"Gagal generate suara: {e}")
         return None
 
 # ============================================================
-# 🧠 SESSION STATE (Reset Otomatis Setiap Refresh)
+# 🧠 SESSION STATE
 # ============================================================
 SYSTEM_PROMPT = (
-    "You are J.A.R.V.I.S., Tony Stark's AI assistant from Iron Man. "
-    "CRITICAL RULE: You MUST ALWAYS respond in British English. "
-    "Even if the user speaks to you in Indonesian, Chinese, or any other language, "
-    "you are strictly programmed to reply ONLY in sophisticated British English. "
-    "Never use Indonesian. If the user asks what you see in the camera, "
-    "describe the objects in British English with a calm, polite, and dry-witted tone."
+    "You are J.A.R.V.I.S., Tony Stark's AI assistant. "
+    "CRITICAL RULE: You MUST ALWAYS respond in British English, with a calm, polite, and dry-witted tone. "
+    "You will receive a sequence of images captured from a live camera (like a flipbook). "
+    "Analyze the SEQUENCE of images to understand the movement, trajectory, or changes happening. "
+    "For example, if a 3D cube is rotating or a hand is moving, describe the motion you observe across the frames."
 )
 
 if "jarvis_messages" not in st.session_state:
-    st.session_state.jarvis_messages = [
-        {"role": "system", "content": SYSTEM_PROMPT}
-    ]
+    st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
 # ============================================================
 # 📹 LAYOUT KAMERA
@@ -547,9 +509,11 @@ with col1:
     )
 
 with col2:
-    st.subheader("ℹ️ Status")
+    st.subheader("ℹ️ Status Visual")
     if ctx.state.playing:
-        st.success("🟢 Kamera aktif (Jarvis bisa melihat)")
+        st.success("🟢 Kamera aktif (Merekam Memori Visual)")
+        if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
+            st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame terakhir siap dianalisis.")
     else:
         st.info("⚪ Klik **START** untuk mulai")
     st.markdown("---")
@@ -559,80 +523,80 @@ with col2:
 # 🤖 JARVIS CHAT + VOICE
 # ============================================================
 st.markdown("---")
-st.header("💬 Ngobrol dengan Jarvis (dengan Suara)")
-st.caption("Ketik pertanyaanmu pakai Bahasa Indonesia (santai/singkat) atau Inggris. Jarvis akan melihat kamera dan **menjawab dengan suara otomatis dalam Bahasa Inggris British**.")
+st.header("💬 Ngobrol dengan Jarvis (Memori Visual)")
+st.caption("Ketik pertanyaanmu. Jarvis akan menganalisis **5 frame terakhir** untuk melihat pergerakan.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_q = st.chat_input("Tanya Jarvis...")
+user_q = st.chat_input("Tanya Jarvis... (misal: 'Do you see the 3D cube rotating?')")
 
 if user_q:
-    # 🔥 KUNCI RAHASIA: Paksa input user jadi Bahasa Inggris sebelum dikirim ke Jarvis
     with st.spinner("Menerjemahkan ke Bahasa Inggris..."):
         user_q_en = translate_to_english(user_q)
     
     has_img = False
-    pil_img = None
+    pil_imgs = []
 
-    if ctx.state.playing and ctx.video_processor is not None and ctx.video_processor.latest_frame_bgr is not None:
-        frame_bgr = ctx.video_processor.latest_frame_bgr.copy()
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(frame_rgb)
+    # 🔥 AMBIL DARI VISUAL BUFFER
+    if ctx.state.playing and ctx.video_processor is not None and len(ctx.video_processor.frame_buffer) > 0:
+        # Ambil semua gambar di buffer (maksimal 5)
+        for frame_bgr in ctx.video_processor.frame_buffer:
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            pil_imgs.append(Image.fromarray(frame_rgb))
         has_img = True
 
+    # Siapkan pesan multimodal
     if has_img:
-        b64 = image_to_base64(pil_img)
-        user_api_msg = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": user_q_en}, # <-- Kirim versi English
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-            ],
-        }
-        display_text = f"🖼️ *(Live Kamera)* {user_q}"
+        content_list = [{"type": "text", "text": user_q_en}]
+        
+        # Masukkan semua gambar ke dalam content
+        for p_img in pil_imgs:
+            b64 = image_to_base64(p_img, max_size=512, quality=60) # Resize kecil agar cepat & hemat token
+            content_list.append({
+                "type": "image_url", 
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+            })
+            
+        user_api_msg = {"role": "user", "content": content_list}
+        display_text = f"🖼️ *(Memori Visual: {len(pil_imgs)} Frame)* {user_q}"
     else:
-        user_api_msg = {"role": "user", "content": user_q_en} # <-- Kirim versi English
+        user_api_msg = {"role": "user", "content": user_q_en}
         display_text = user_q
         if ctx.state.playing:
-            st.warning("⚠️ Kamera aktif tapi belum ada frame. Tunggu 1 detik lalu kirim lagi.")
+            st.warning("⚠️ Kamera aktif tapi buffer masih kosong. Tunggu 1 detik lalu kirim lagi.")
 
     st.session_state.jarvis_messages.append({"role": "user", "content": display_text})
     with st.chat_message("user"):
         if has_img:
-            st.image(pil_img, width=250, caption="Frame yang dikirim ke Jarvis")
+            # Tampilkan gambar secara horizontal (mini gallery)
+            cols = st.columns(len(pil_imgs))
+            for i, p_img in enumerate(pil_imgs):
+                cols[i].image(p_img, use_container_width=True, caption=f"F{i+1}")
         st.markdown(user_q)
         if user_q_en.lower() != user_q.lower():
-            st.caption(f"*(Diterjemahkan ke: {user_q_en})*") # Biar kamu tau apa yang dia dengar
+            st.caption(f"*(Diterjemahkan ke: {user_q_en})*")
 
     with st.chat_message("assistant"):
-        with st.spinner("Jarvis sedang menganalisis gambar..."):
+        with st.spinner("Jarvis sedang menganalisis gerakan..."):
             api_messages = [st.session_state.jarvis_messages[0]]
-            # Masukkan history chat (di mana chat user sudah dalam bahasa English)
+            # Masukkan history (hanya teks, gambar lama dibuang agar hemat token)
             for m in st.session_state.jarvis_messages[1:-1]:
                 api_messages.append({"role": m["role"], "content": m["content"]})
             api_messages.append(user_api_msg)
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
             
-        # TAMPILKAN TEKS DULU
         st.markdown(answer)
         
-        # PROSES SUARA SETELAH TEKS MUNCUL
         if answer and not answer.startswith("❌"):
             with st.spinner("🎤 Menyiapkan suara..."):
                 audio_bytes = generate_tts_edge(answer)
-                
                 if audio_bytes:
                     b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
-                    
-                    audio_html = f"""
-                        <audio autoplay="true" style="display:none;">
-                            <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
-                        </audio>
-                    """
+                    audio_html = f'<audio autoplay="true" style="display:none;"><source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3"></audio>'
                     st.markdown(audio_html, unsafe_allow_html=True)
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
@@ -643,23 +607,17 @@ if user_q:
 with st.sidebar:
     st.header("ℹ️ Info")
     if st.button("🔄 Reset Chat Jarvis"):
-        st.session_state.jarvis_messages = [
-            {"role": "system", "content": SYSTEM_PROMPT}
-        ]
+        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         st.rerun()
 
     st.markdown("---")
-    if not GROQ_AVAILABLE: st.error("❌ `groq` belum terinstall.")
-    elif not GROQ_API_KEY: st.warning("⚠️ GROQ_API_KEY belum diset.")
-    else: st.success("✅ Jarvis siap!")
-
     if not TTS_AVAILABLE:
-        st.warning("⚠️ `edge-tts` belum terinstall. Suara nonaktif.")
-        st.code("pip install edge-tts")
+        st.warning("⚠️ `edge-tts` belum terinstall.")
 
     st.markdown("---")
-    st.caption(f"Vision: `{JARVIS_VISION_MODEL}`")
-    st.caption(f"TTS: `Edge-TTS` • Voice: `{JARVIS_TTS_VOICE}` (British)")
+    st.caption("Teknologi:")
+    st.caption("• Camera: 60 FPS")
+    st.caption("• Buffer: 2 FPS (0.5 detik/frame)")
+    st.caption("• Vision Model: Qwen 3.8")
 
 st.markdown("---")
-st.caption("💡 Jika suara tidak muncul, pastikan tab browser tidak di-mute dan kamu sudah berinteraksi dengan halaman.")
