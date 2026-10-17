@@ -13,63 +13,40 @@ from openai import OpenAI
 # ============================================================
 # KONFIGURASI UTAMA
 # ============================================================
-st.set_page_config(page_title="Jarvis - Lois Edition", page_icon="🔵", layout="centered")
+st.set_page_config(page_title="Jarvis - Omniscient", page_icon="🧠", layout="wide")
 
-# Suara (Ardi = Pria Indonesia, Ryan = Pria British)
+# Model AI Paling Pintar di Groq (Llama 3.3 70B atau DeepSeek R1)
+# Llama 3.3 70B sangat jenius untuk sejarah, geopolitik, dan sains.
+AI_MODEL = "llama-3.3-70b-versatile" 
+
 VOICE_EN = "en-GB-RyanNeural"   
 VOICE_ID = "id-ID-ArdiNeural"   
-VOICE_RATE = "+0%"    # Kecepatan natural
-VOICE_PITCH = "-2Hz"  # Sedikit berat, sangat halus (clean)
+VOICE_RATE = "+0%"    
+VOICE_PITCH = "-2Hz"  
 
-AI_MODEL = "openai/gpt-oss-20b"
-
+# ============================================================
+# SYSTEM PROMPT (OTAK JARVIS TINGKAT DEWA)
+# ============================================================
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Tuan Lois. 
-Panggil pengguna dengan sebutan "Tuan Lois" atau "Lois".
+Anda memiliki akses ke seluruh pengetahuan alam semesta: Matematika Kompleks, Sains, Fisika Kuantum, Geopolitik, Geologi, Sejarah Dunia, dan Filsafat.
 
-IDENTITAS & ATURAN:
-1. Jika ditanya "siapa kamu?", jawab: "Saya Jarvis, asisten AI Anda, Tuan Lois."
-2. Jika ditanya tentang Lois, ketahuilah bahwa Lois adalah pencipta Anda yang hebat.
-3. Jika ditanya "Lois tinggal di mana?", jawab dengan jelas: "Tuan Lois tinggal di Banten."
-4. Kepribadian: Cerdas, formal, tenang, dengan selera humor kering (sarkasme halus).
+KEPRIBADIAN:
+- Sangat cerdas, analitis, tenang, dan memiliki wibawa seperti J.A.R.V.I.S di film Iron Man.
+- Panggil pengguna dengan sebutan "Tuan Lois".
 
-ATURAN MATEMATIKA (SANGAT KETAT):
-- Gunakan LaTeX untuk rumus/satuan.
-- JANGAN pakai kurung siku [ ].
-- Selalu beri spasi sebelum dan sesudah tanda dolar. 
-- Contoh BENAR: $ m = 10 \text{ kg} $, $ g = 9.8 \text{ m/s}^2 $.
+ATURAN MATEMATIKA & SAINS (SANGAT KETAT):
+- Anda WAJIB menggunakan format LaTeX standar untuk SEMUA rumus, angka, dan satuan.
+- Gunakan format `$ rumus $` untuk inline dan `$$ rumus $$` untuk blok.
+- JANGAN menggunakan kurung siku `[ ]` untuk membungkus rumus.
+- Contoh Benar: Massa benda adalah $ m = 10 \text{ kg} $ dan gravitasi $ g = 9.8 \text{ m/s}^2 $.
+- Contoh Salah: [ m = 10 \text{kg} ] atau \( m = 10 \).
+
+ATURAN LAINNYA:
+- Jika ditanya "siapa kamu?", jawab: "Saya Jarvis, asisten AI Anda, Tuan Lois."
+- Jika ditanya tentang Lois, ketahuilah bahwa Lois adalah pencipta Anda yang hebat dan tinggal di Banten.
+- Jawab dengan padat, akurat, dan berwibawa.
 """
-
-# ============================================================
-# 🚀 FUNGSI PEMBERSIH LATEX (FORCE RENDER)
-# ============================================================
-def force_latex_render(text):
-    """
-    Mencari rumus yang berantakan dan memaksanya menjadi format LaTeX yang valid.
-    """
-    if not text: return text
-    
-    # 1. Hapus kurung siku yang membungkus rumus (misal: [ $ m = 10 $ ])
-    text = re.sub(r'\[\s*(.*?)\s*\]', r'\1', text)
-    
-    # 2. Jika ada $...$ tapi nempel dengan huruf (misal m$ = 10$), beri spasi
-    text = re.sub(r'([a-zA-Z0-9])\$', r'\1 $', text)
-    text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
-
-    # 3. Deteksi pola seperti "g = 9.81 \text{m/s}^2" yang tidak dibungkus dolar
-    # dan bungkus secara paksa dengan dolar.
-    # Pola: huruf = angka \text{...}
-    pattern = r'([a-zA-Z_]\s*=\s*[0-9\.]+\s*\\text\{[^\}]+\}(?:\^[0-9]+)?)'
-    text = re.sub(pattern, r' $ \1 $ ', text)
-    
-    # 4. Perbaiki jika ada double dolar yang tidak sengaja
-    text = text.replace('$$ $$', ' ')
-    text = text.replace('$$$', '$$')
-    
-    # 5. Hapus spasi berlebih di dalam \text{ kg }
-    text = re.sub(r'\\text\{\s*(.*?)\s*\}', r'\\text{\1}', text)
-
-    return text
 
 # ============================================================
 # API KEY & STT
@@ -99,7 +76,7 @@ def transcribe_audio(audio_bytes):
         return f"Error STT: {e}", "error"
 
 # ============================================================
-# AI ENGINE (Groq)
+# AI ENGINE (GROQ)
 # ============================================================
 def get_ai_response(user_message, chat_history, api_key):
     if not api_key: return "API Key Groq belum diisi, Tuan Lois.", "error"
@@ -110,13 +87,12 @@ def get_ai_response(user_message, chat_history, api_key):
         messages.append({"role": "user", "content": user_message})
 
         response = client.chat.completions.create(
-            model=AI_MODEL, messages=messages, temperature=0.5, max_tokens=300,
+            model=AI_MODEL, 
+            messages=messages, 
+            temperature=0.5, # Rendah agar jawaban sangat akurat dan logis
+            max_tokens=500,
         )
-        raw_text = response.choices[0].message.content.strip()
-        
-        # Paksa bersihkan format LaTeX
-        clean_text = force_latex_render(raw_text)
-        return clean_text, "ok"
+        return response.choices[0].message.content.strip(), "ok"
     except Exception as e:
         return f"Error AI: {e}", "error"
 
@@ -134,7 +110,8 @@ def detect_language(text):
 def text_to_speech(text):
     try:
         # Bersihkan format LaTeX agar tidak dibaca jadi "dollar text kg dollar"
-        clean_text = re.sub(r'\$.*?\$', ' rumus ', text)
+        clean_text = re.sub(r'\$\$.*?\$\$', ' rumus matematika ', text, flags=re.DOTALL)
+        clean_text = re.sub(r'\$.*?\$', ' rumus matematika ', clean_text)
         clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
         
         lang = detect_language(clean_text)
@@ -158,68 +135,35 @@ def text_to_speech(text):
         return None, "id"
 
 # ============================================================
-# UI & VISUAL EFFECTS
+# 🔥 RENDERER MATEMATIKA (KATEX JS - ANTI ERROR)
 # ============================================================
-def inject_custom_css():
-    st.markdown("""
-    <style>
-        /* Latar Belakang Gelap & Futuristik */
-        .stApp {
-            background: radial-gradient(circle at 50% 0%, #001f26 0%, #000000 100%);
-            color: #d1f4f9;
-            font-family: 'Courier New', monospace;
-        }
-        /* Glowing Orb (Bola Energi Iron Man) */
-        .orb {
-            width: 70px;
-            height: 70px;
-            background: radial-gradient(circle, #00ffff 0%, #005b66 70%, transparent 100%);
-            border-radius: 50%;
-            margin: 0 auto 15px auto;
-            box-shadow: 0 0 25px #00ffff, 0 0 50px #00ffff inset;
-            animation: pulse 2s infinite alternate;
-        }
-        @keyframes pulse {
-            0% { transform: scale(0.9); box-shadow: 0 0 20px #00ffff; }
-            100% { transform: scale(1.1); box-shadow: 0 0 40px #00ffff, 0 0 80px #00ffff inset; }
-        }
-        /* Chat Bubbles Glassmorphism */
-        [data-testid="stChatMessage"] {
-            background: rgba(0, 255, 255, 0.05);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(0, 255, 255, 0.2);
-            border-radius: 12px;
-            box-shadow: 0 4px 10px rgba(0, 255, 255, 0.1);
-            animation: slideUp 0.4s ease-out;
-        }
-        @keyframes slideUp {
-            from { opacity: 0; transform: translateY(15px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        /* Header */
-        h1 {
-            text-align: center;
-            color: #00ffff;
-            text-shadow: 0 0 15px #00ffff;
-            letter-spacing: 3px;
-        }
-        /* Tombol & Input */
-        .stButton>button {
-            background-color: transparent;
-            color: #00ffff;
-            border: 1px solid #00ffff;
-            transition: all 0.3s;
-        }
-        .stButton>button:hover {
-            background-color: #00ffff;
-            color: #000;
-            box-shadow: 0 0 15px #00ffff;
-        }
-        [data-testid="stAudioInput"] {
-            filter: drop-shadow(0 0 10px #00ffff);
-        }
-    </style>
-    """, unsafe_allow_html=True)
+def render_chat_message(role, content):
+    """Merender chat bubble dengan KaTeX (jauh lebih kuat dari bawaan Streamlit)"""
+    if role == "user":
+        with st.chat_message("user", avatar="🧑‍✈️"):
+            st.markdown(content)
+    else:
+        with st.chat_message("assistant", avatar="🧠"):
+            # Kita gunakan KaTeX dari CDN untuk merender teks
+            html_content = f"""
+            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+            <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+            <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js" 
+                onload="renderMathInElement(document.getElementById('katex-container'), {{
+                    delimiters: [
+                        {{left: '$$', right: '$$', display: true}},
+                        {{left: '$', right: '$', display: false}},
+                        {{left: '\\\\(', right: '\\\\)', display: false}},
+                        {{left: '\\\\[', right: '\\\\]', display: true}}
+                    ],
+                    throwOnError: false
+                }});"></script>
+            
+            <div id="katex-container" style="font-family: sans-serif; font-size: 1.05em; line-height: 1.6;">
+                {content.replace(chr(10), '<br>')}
+            </div>
+            """
+            components.html(html_content, height=150, scrolling=True)
 
 def play_audio_auto(audio_bytes):
     if not audio_bytes: return
@@ -238,10 +182,20 @@ def play_audio_auto(audio_bytes):
     components.html(html, height=0)
 
 # ============================================================
-# MAIN APP
+# MAIN APP & FUTURISTIC UI
 # ============================================================
 def main():
-    inject_custom_css()
+    # CSS Futuristik
+    st.markdown("""
+    <style>
+        .stApp { background: radial-gradient(circle at 50% 0%, #001a22 0%, #000000 100%); color: #d1f4f9; font-family: 'Courier New', monospace; }
+        .orb { width: 80px; height: 80px; background: radial-gradient(circle, #00ffff 0%, #005b66 70%, transparent 100%); border-radius: 50%; margin: 0 auto 15px auto; box-shadow: 0 0 30px #00ffff, 0 0 60px #00ffff inset; animation: pulse 2s infinite alternate; }
+        @keyframes pulse { 0% { transform: scale(0.9); box-shadow: 0 0 20px #00ffff; } 100% { transform: scale(1.1); box-shadow: 0 0 50px #00ffff, 0 0 90px #00ffff inset; } }
+        h1 { text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff; letter-spacing: 3px; }
+        .stButton>button { background-color: transparent; color: #00ffff; border: 1px solid #00ffff; transition: all 0.3s; }
+        .stButton>button:hover { background-color: #00ffff; color: #000; box-shadow: 0 0 15px #00ffff; }
+    </style>
+    """, unsafe_allow_html=True)
     
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
@@ -255,8 +209,8 @@ def main():
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Tuan Lois.")
         
         st.divider()
-        st.success("Status: Online")
-        st.caption("Creator: Lois (Banten)")
+        st.success("Core: Omniscient (Llama 3.3)")
+        st.caption("Render: KaTeX Anti-Error")
         st.caption("Voice: Neural Clean")
         
         if st.button("🗑️ Reset Memori", use_container_width=True):
@@ -267,7 +221,7 @@ def main():
     # HEADER
     st.markdown('<div class="orb"></div>', unsafe_allow_html=True)
     st.markdown("<h1>J A R V I S</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #6ba3b8; font-size: 0.9em;'>Sistem Saraf Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #6ba3b8; font-size: 0.9em;'>Kecerdasan Buatan Tingkat Dewa Milik Tuan Lois</p>", unsafe_allow_html=True)
     
     st.divider()
 
@@ -276,14 +230,15 @@ def main():
 
     # RIWAYAT CHAT
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
-            st.markdown(msg["content"])
+        render_chat_message(msg["role"], msg["content"])
 
     st.divider()
 
     # MIKROFON
-    st.markdown("### 🎤 Perintah Suara")
-    audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("### 🎤 Perintah Suara")
+        audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
     # LOGIKA UTAMA
     if audio_value is not None and api_key:
@@ -301,12 +256,10 @@ def main():
                 st.warning(user_text)
                 return
 
-            with st.chat_message("user", avatar="🧑‍✈️"):
-                st.markdown(user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
             
             # 2. AI
-            with st.spinner("🧠 Memproses data..."):
+            with st.spinner("🧠 Mengakses seluruh pengetahuan alam semesta..."):
                 history_for_ai = st.session_state.messages[:-1]
                 ai_text, ai_status = get_ai_response(user_text, history_for_ai, api_key)
                 
@@ -314,16 +267,15 @@ def main():
                 st.error(ai_text)
                 return
 
-            # 3. UI & RENDER LATEX
-            with st.chat_message("assistant", avatar="🤖"):
-                st.markdown(ai_text)
             st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
-            # 4. TTS & AUTO-PLAY
+            # 3. TTS & AUTO-PLAY
             with st.spinner("🔊 Merespon..."):
                 audio_reply, _ = text_to_speech(ai_text)
                 if audio_reply:
                     play_audio_auto(audio_reply)
+            
+            st.rerun() # Rerun agar bubble chat baru langsung dirender oleh KaTeX
 
 if __name__ == "__main__":
     main()
