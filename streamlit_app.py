@@ -3,21 +3,19 @@ import cv2
 import numpy as np
 import streamlit as st
 import mediapipe as mp
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+import urllib.request
+import os
 
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="Hand Tracking Drawing - Streamlit", layout="wide")
-
 st.title("✌️ Hand Tracking - Visualisasi Garis Antar Jari")
 st.write(
     "Aktifkan kamera di bawah. Aplikasi akan mendeteksi ketika ujung jari "
     "(misal Jempol & Telunjuk) saling berdekatan / berinteraksi, lalu menarik "
     "garis dinamis saat jari bergerak menjauh."
 )
-
-# ============ Inisialisasi MediaPipe ============
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
 
 # ============ Konfigurasi WebRTC ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -39,18 +37,54 @@ FINGER_TIPS = {
     "Kelingking":  (20, (0, 255, 0)),     # Hijau
 }
 
+# Koneksi tulang tangan manual karena Tasks API tidak menyediakan drawer bawaan
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),        # Ibu jari
+    (0, 5), (5, 6), (6, 7), (7, 8),        # Telunjuk
+    (5, 9), (9, 10), (10, 11), (11, 12),   # Jari tengah
+    (9, 13), (13, 14), (14, 15), (15, 16), # Jari manis
+    (13, 17), (17, 18), (18, 19), (19, 20),# Kelingking
+    (0, 17)                                # Telapak tangan
+]
+
+# ============ Fungsi Download Model Otomatis ============
+MODEL_PATH = "hand_landmarker.task"
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+
+if not os.path.exists(MODEL_PATH):
+    with st.spinner("Mengunduh model AI (hanya sekali saat pertama kali)..."):
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+
 
 class HandInteractionProcessor(VideoProcessorBase):
     def __init__(self):
-        self.hands = mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=2,
-            min_detection_confidence=0.7,
-            min_tracking_confidence=0.7,
+        # Inisialisasi MediaPipe Tasks API (API baru)
+        base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.VIDEO,
+            num_hands=2,
+            min_hand_detection_confidence=0.7,
+            min_hand_presence_confidence=0.7,
+            min_tracking_confidence=0.7
         )
+        self.detector = vision.HandLandmarker.create_from_options(options)
+        self.frame_timestamp = 0
 
     def _to_pixel(self, landmark, w, h):
         return int(landmark.x * w), int(landmark.y * h)
+
+    def _draw_landmarks(self, img, landmarks, w, h):
+        # Menggambar skeleton (tulang) secara manual
+        for connection in HAND_CONNECTIONS:
+            start = self._to_pixel(landmarks[connection[0]], w, h)
+            end = self._to_pixel(landmarks[connection[1]], w, h)
+            cv2.line(img, start, end, (240, 240, 240), 1)
+        
+        # Menggambar titik sendi
+        for lm in landmarks:
+            px = self._to_pixel(lm, w, h)
+            cv2.circle(img, px, 2, (200, 200, 200), -1)
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
@@ -58,29 +92,25 @@ class HandInteractionProcessor(VideoProcessorBase):
         h, w, _ = img.shape
 
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img_rgb.flags.writeable = False
-        results = self.hands.process(img_rgb)
-        img_rgb.flags.writeable = True
+        
+        # Konversi gambar ke format MediaPipe Image
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+        
+        # Proses deteksi (menggunakan timestamp untuk mode VIDEO)
+        self.frame_timestamp += 1
+        results = self.detector.detect_for_video(mp_image, self.frame_timestamp)
 
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                # Skeleton tangan
-                mp_drawing.draw_landmarks(
-                    img,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_drawing.DrawingSpec(color=(200, 200, 200), thickness=1, circle_radius=2),
-                    mp_drawing.DrawingSpec(color=(240, 240, 240), thickness=1),
-                )
+        if results.hand_landmarks:
+            for hand_landmarks in results.hand_landmarks:
+                # Gambar skeleton tangan
+                self._draw_landmarks(img, hand_landmarks, w, h)
 
                 # Koordinat pixel ujung jari
-                thumb = self._to_pixel(hand_landmarks.landmark[THUMB_TIP], w, h)
-
-                # Gambar jempol sekali saja (efisiensi)
-                cv2.circle(img, thumb, 8, (0, 0, 255), -1)
+                thumb = self._to_pixel(hand_landmarks[THUMB_TIP], w, h)
+                cv2.circle(img, thumb, 8, (0, 0, 255), -1) # Jempol merah
 
                 for name, (idx, color) in FINGER_TIPS.items():
-                    tip = self._to_pixel(hand_landmarks.landmark[idx], w, h)
+                    tip = self._to_pixel(hand_landmarks[idx], w, h)
 
                     # Lingkaran ujung jari
                     cv2.circle(img, tip, 8, color, -1)
@@ -90,7 +120,7 @@ class HandInteractionProcessor(VideoProcessorBase):
 
                     # Garis dinamis jika dalam batas
                     if dist < MAX_LINE_DIST:
-                        # Ketebalan proporsional (clamp agar tidak negatif)
+                        # Ketebalan proporsional
                         thickness = int(
                             np.interp(dist, [0, MAX_LINE_DIST], [MAX_THICKNESS, MIN_THICKNESS])
                         )
@@ -115,7 +145,7 @@ class HandInteractionProcessor(VideoProcessorBase):
 
     def __del__(self):
         try:
-            self.hands.close()
+            self.detector.close()
         except Exception:
             pass
 
@@ -126,5 +156,5 @@ webrtc_streamer(
     video_processor_factory=HandInteractionProcessor,
     rtc_configuration=RTC_CONFIGURATION,
     media_stream_constraints={"video": True, "audio": False},
-    async_processing=True,   # lebih responsif
+    async_processing=True,
 )
