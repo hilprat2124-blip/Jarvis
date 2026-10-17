@@ -13,15 +13,13 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="Interactive 3D Hand Tracking", layout="wide")
-st.title("🧊 3D Free View - Hand Tracking (Stable)")
+st.title("🧊 3D Free View - Hand Tracking (Anti-Lag)")
 st.write("""
 **Panduan Gestur:**
-- ✋ **Swipe 5 Jari:** Putar objek dengan gaya *Inertia* (berputar dan melambat).
-- ☝️ **Telunjuk Berdiri:** Tahan 1 Detik -> Putar objek (Rotasi).
-- 👆 **Jempol + Telunjuk Pinch:** Tahan 1 Detik -> Geser objek (Pan).
-- 🤏 **Pinch 3 Jari (Jempol+Telunjuk+Tengah):** Tahan 1 Detik -> **ZOOM**.
-  - Jauhkan **Telunjuk** untuk **ZOOM IN**.
-  - Jauhkan **Jari Tengah** untuk **ZOOM OUT**.
+- ✋ **Swipe 5 Jari:** Putar objek dengan gaya *Inertia*.
+- ☝️ **Telunjuk Berdiri:** Tahan 1 Detik -> Rotasi.
+- 👆 **Jempol + Telunjuk Pinch:** Tahan 1 Detik -> Geser (Pan).
+- 🤏 **Pinch 3 Jari:** Tahan 1 Detik -> Zoom (Jauhkan Telunjuk/Tengah).
 """)
 
 # ============ Konfigurasi WebRTC ============
@@ -30,13 +28,13 @@ RTC_CONFIGURATION = RTCConfiguration(
 )
 
 # ============ Konstanta ============
-PINCH_ENTER = 40     # Jarak untuk MEMULAI pinch (lebih ketat)
-PINCH_EXIT = 60      # Jarak untuk MELEPAS pinch (lebih longgar/Hysteresis)
+PINCH_ENTER = 40     
+PINCH_EXIT = 60      
 HOLD_THRESHOLD = 1.0 
 MIN_SCALE, MAX_SCALE = 0.5, 3.0
 ZOOM_SENSITIVITY = 0.01
 MAX_ZOOM_STEP = 0.03
-SMOOTHING_FACTOR = 0.3  # 0 = tidak ada smoothing, 1 = sangat halus
+SMOOTHING_FACTOR = 0.3
 
 THUMB_TIP = 4
 INDEX_TIP = 8
@@ -68,9 +66,10 @@ class Hand3DProcessor(VideoProcessorBase):
             base_options=base_options,
             running_mode=vision.RunningMode.VIDEO,
             num_hands=1,
-            min_hand_detection_confidence=0.5,  # Diturunkan sedikit agar lebih mudah deteksi
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.7         # Ditingkatkan agar tracking antar frame lebih stabil
+            # --- MENURUNKAN CONFIDENCE UNTUK GERAKAN CEPAT ---
+            min_hand_detection_confidence=0.3, 
+            min_hand_presence_confidence=0.3,
+            min_tracking_confidence=0.5         
         )
         self.detector = vision.HandLandmarker.create_from_options(options)
         self.frame_timestamp = 0
@@ -88,7 +87,7 @@ class Hand3DProcessor(VideoProcessorBase):
         self.zoom_base_index = None
         self.zoom_base_middle = None
         
-        # State Verifikasi (Hold) & Anti-Flicker
+        # State Verifikasi & Anti-Flicker
         self.active_mode = None
         self.candidate_mode = None 
         self.hold_start_time = 0.0
@@ -169,7 +168,12 @@ class Hand3DProcessor(VideoProcessorBase):
         img = cv2.flip(img, 1)  
         h, w, _ = img.shape
 
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # --- TRIK MOTION BLUR REDUCTION (SHARPENING) ---
+        # Menajamkan gambar agar AI lebih mudah melacak tangan yang blur
+        gaussian = cv2.GaussianBlur(img, (0, 0), 3.0)
+        img_sharp = cv2.addWeighted(img, 1.5, gaussian, -0.5, 0)
+
+        img_rgb = cv2.cvtColor(img_sharp, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
         
         self.frame_timestamp += 1
@@ -187,14 +191,13 @@ class Hand3DProcessor(VideoProcessorBase):
         if abs(self.vel_ry) < 0.001: self.vel_ry = 0.0
         if abs(self.vel_rx) < 0.001: self.vel_rx = 0.0
 
-        # --- TIMEOUT TOLERANSI (Mencegah hilang saat tangan sedikit tertutup) ---
+        # --- TIMEOUT TOLERANSI (Mencegah hilang) ---
         hand_detected = False
         if results.hand_landmarks:
             hand_detected = True
             self.last_seen_time = current_time
         else:
-            # Jika tangan hilang, tunggu 0.3 detik sebelum mereset total
-            if current_time - self.last_seen_time > 0.3:
+            if current_time - self.last_seen_time > 0.4: # Ditingkatkan jadi 0.4 detik
                 self.active_mode = None
                 self.candidate_mode = None
                 self.prev_palm_pos = None
@@ -215,7 +218,6 @@ class Hand3DProcessor(VideoProcessorBase):
             wrist = self._to_pixel(hand_landmarks[0], w, h)
             palm_center = ((wrist[0] + middle[0]) // 2, (wrist[1] + middle[1]) // 2)
 
-            # --- SMOOTHING JARAK ---
             raw_dist_index = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
             raw_dist_middle = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
             raw_dist_mid_index = float(np.hypot(middle[0] - index[0], middle[1] - index[1]))
@@ -254,13 +256,11 @@ class Hand3DProcessor(VideoProcessorBase):
                 self.prev_palm_pos = None
 
             # ==========================================
-            # DETEKSI GESTUR (DENGAN HYSTERESIS)
+            # DETEKSI GESTUR (HYSTERESIS)
             # ==========================================
             detected_gesture = None
             
             if not is_5_fingers:
-                # Gunakan PINCH_EXIT (60) jika sedang aktif, dan PINCH_ENTER (40) jika belum aktif
-                # Ini mencegah status berubah-ubah saat tangan bergetar.
                 thresh_index = PINCH_EXIT if self.active_mode == "PAN" else PINCH_ENTER
                 thresh_zoom = PINCH_EXIT if self.active_mode == "ZOOM" else PINCH_ENTER
 
@@ -285,7 +285,6 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.active_mode = detected_gesture
                     self.vel_ry = 0.0
                     self.vel_rx = 0.0
-                    
                     if self.active_mode == "ZOOM":
                         self.zoom_base_index = dist_index
                         self.zoom_base_middle = dist_middle
@@ -310,7 +309,6 @@ class Hand3DProcessor(VideoProcessorBase):
                 if self.prev_index_pos is not None:
                     dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20)
                     dy = np.clip(index[1] - self.prev_index_pos[1], -20, 20)
-                    # Smoothing rotasi
                     self.ry += dx * 0.010
                     self.rx += dy * 0.010
                 self.prev_index_pos = index
@@ -334,7 +332,6 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.active_mode = None
 
             elif self.active_mode == "ZOOM":
-                # Toleransi jarak untuk mempertahankan mode zoom
                 if dist_index < PINCH_EXIT and dist_middle < PINCH_EXIT:
                     self.zoom_base_index = dist_index
                     self.zoom_base_middle = dist_middle
