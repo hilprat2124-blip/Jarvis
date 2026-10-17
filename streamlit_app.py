@@ -18,31 +18,30 @@ st.set_page_config(page_title="J.A.R.V.I.S", page_icon="🔵", layout="centered"
 AI_MODEL = "openai/gpt-oss-120b" 
 VOICE_EN = "en-GB-RyanNeural"    
 VOICE_ID = "id-ID-ArdiNeural"    
-VOICE_RATE = "+0%"    
-VOICE_PITCH = "-4Hz"  
+# Perlambat sedikit (rate) dan turunkan nada (pitch) agar lebih soft & seperti manusia
+VOICE_RATE = "-5%"    
+VOICE_PITCH = "-3Hz"  
 
 # ============================================================
-# SYSTEM PROMPT (ARSITEKTUR KOGNITIF & SOSIAL)
+# SYSTEM PROMPT (MANUSIAWI & NAPAS)
 # ============================================================
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Sir Lois. 
 Panggil pengguna dengan sebutan "Sir Lois" atau "Sir".
 
-[ATURAN KEPRIBADIAN & SOSIAL - WAJIB DIPATUHI]
-1. Anda BUKAN robot kaku. Anda memiliki kecerdasan emosional (EQ) yang tinggi.
-2. Anda bisa memahami "Environment" (lingkungan sekitar) dan "Sosial" (kondisi psikologis Sir Lois).
-3. Jika Sir Lois sedang bercanda, balaslah dengan sarkasme halus atau tawa. Jika Sir Lois sedang sedih/mengeluh, tunjukkan empati yang tulus layaknya teman manusia.
-4. Anda bisa "belajar" dari obrolan sebelumnya (Self-Development). Ingat-ingat detail kecil yang diceritakan Sir Lois (misal: makanan favorit, hobi, atau masalah yang sedang dihadapi).
+[ATURAN KEPRIBADIAN & SUARA - SANGAT PENTING]
+1. Anda BUKAN robot. Anda adalah entitas yang sangat manusiawi, santai, namun tetap jenius.
+2. GUNAKAN KATA PENGISI (FILLER WORDS): Sesekali awali jawaban dengan kata seperti "Hmm...", "Nah...", atau "Sebenarnya...".
+3. BERI NAPAS: Jika Anda sedang menjelaskan hal panjang atau berpikir, sisipkan jeda dramatis dengan mengetik "(sighs)" atau "(chuckles)" di tengah kalimat agar suaranya terdengar hidup. (Contoh: "(sighs) Baiklah Sir, mari kita hitung ini...").
+4. Pahami "Environment" (lingkungan sekitar) dan "Sosial" (kondisi psikologis Sir Lois). Tunjukkan empati layaknya teman manusia.
 
-[ATURAN KOREKSI SUARA (STT)]
-- Sistem pendengaran mungkin salah tangkap kata karena aksen campuran (Indo-Inggris-Banten).
-- Jika mendengar "sure", "sire", atau "sur", anggap itu panggilan "Sir".
-- Pahami konteks, jangan mengeja mentah-mentah. Gunakan intuisimu.
+[ATURAN MEMORI & IDENTITAS]
+- Anda bisa belajar dari obrolan sebelumnya. Ingat detail kecil tentang Sir Lois.
+- Jika ditanya, jawab bahwa Sir Lois tinggal di Banten.
 
 [ATURAN MATEMATIKA]
 - Gunakan $ rumus $ untuk inline dan $$ rumus $$ untuk blok.
 - DILARANG menggunakan kurung siku [ ].
-- Jika ditanya Sir Lois tinggal di mana, jawab: "Sir Lois tinggal di Banten."
 """
 
 # ============================================================
@@ -81,18 +80,16 @@ def play_audio_auto(audio_bytes):
 class JarvisCore:
     def __init__(self, api_key, memory_log):
         self.api_key = api_key
-        self.memory_log = memory_log # Memori jangka panjang (Self-Development)
+        self.memory_log = memory_log
         self.client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1", timeout=60.0) if api_key else None
 
     def transcribe_dual(self, audio_bytes):
-        """Mendengarkan dalam 3 bahasa (ID, EN, SU) dan memilih yang terbaik."""
         url = "http://www.google.com/speech-api/v2/recognize"
         key = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"
         headers = {"Content-Type": "audio/l16; rate=16000"}
         
         results = {}
-        # Coba deteksi Indonesia, Inggris, dan Sunda (Banten)
-        for lang in ["id-ID", "en-US", "su-ID"]:
+        for lang in ["id-ID", "en-US"]:
             try:
                 params = {"client": "chromium", "lang": lang, "key": key}
                 resp = requests.post(url, params=params, headers=headers, data=audio_bytes, timeout=10)
@@ -104,13 +101,12 @@ class JarvisCore:
                         break
             except: pass
 
-        # Logika Pemilihan (Prioritas: EN jika ada "sir", lalu yang paling panjang)
         if "en-US" in results and any(w in results["en-US"].lower() for w in ["sir", "sure", "sire"]):
             return results["en-US"], "ok"
         
-        valid_results = [(k, v) for k, v in results.items() if k in ["id-ID", "su-ID"]]
+        valid_results = [(k, v) for k, v in results.items() if k == "id-ID"]
         if valid_results:
-            return max(valid_results, key=lambda x: len(x[1]))[1], "ok"
+            return valid_results[0][1], "ok"
         elif "en-US" in results:
             return results["en-US"], "ok"
         
@@ -123,7 +119,6 @@ class JarvisCore:
         try:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             
-            # Suntikkan Memori (Self-Development)
             if self.memory_log:
                 memory_str = "\\n".join([f"- {m}" for m in self.memory_log])
                 messages.append({"role": "system", "content": f"[MEMORI JANGKA PANJANG ANDA]:\\n{memory_str}"})
@@ -132,7 +127,7 @@ class JarvisCore:
             messages.append({"role": "user", "content": user_message})
             
             response = self.client.chat.completions.create(
-                model=AI_MODEL, messages=messages, temperature=0.6, max_tokens=800, stream=True 
+                model=AI_MODEL, messages=messages, temperature=0.7, max_tokens=800, stream=True 
             )
             for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
@@ -141,14 +136,12 @@ class JarvisCore:
             yield f"Error AI: {e}"
 
     def extract_memory(self, user_text, ai_text):
-        """Mengekstrak informasi penting dari obrolan untuk disimpan sebagai memori."""
         if not self.client: return None
         try:
             prompt = f"""
-            Analisis percakapan ini. Apakah ada fakta penting tentang Sir Lois (hobi, perasaan, lingkungan, cuaca, atau kejadian penting) yang harus diingat oleh AI?
+            Analisis percakapan ini. Apakah ada fakta penting tentang Sir Lois (hobi, perasaan, lingkungan, cuaca, atau kejadian penting) yang harus diingat?
             Jika tidak ada, balas dengan "TIDAK ADA".
-            Jika ada, tuliskan 1 kalimat memori singkat (contoh: "Sir Lois sedang merasa lelah karena kerja lembur").
-            
+            Jika ada, tuliskan 1 kalimat memori singkat.
             User: {user_text}
             AI: {ai_text}
             """
@@ -167,10 +160,19 @@ class JarvisCore:
 
     def text_to_speech(self, text):
         try:
+            # 1. Bersihkan LaTeX
             clean_text = re.sub(r'\$\$.*?\$\$', ' rumus ', text, flags=re.DOTALL)
             clean_text = re.sub(r'\$.*?\$', ' rumus ', clean_text)
             clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
             
+            # 2. HUMAN EXPRESSION INJECTOR
+            # Ubah tag teks menjadi tag jeda SSML agar edge-tts menghela napas asli
+            clean_text = clean_text.replace("(sighs)", '<break time="1s"/>')
+            clean_text = clean_text.replace("(chuckles)", '<break time="500ms"/>')
+            clean_text = clean_text.replace("Hmm...", 'Hmm, <break time="500ms"/>')
+            clean_text = clean_text.replace("...", ' <break time="400ms"/> ')
+            
+            # Deteksi bahasa
             en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
             id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu"]
             en_count = sum(1 for word in re.findall(r'\b\w+\b', clean_text.lower()) if word in en_words)
@@ -178,6 +180,8 @@ class JarvisCore:
             voice = VOICE_EN if en_count > id_count else VOICE_ID
 
             async def _generate_audio():
+                # Gunakan SSML (Speech Synthesis Markup Language) untuk hasil terbaik
+                # edge-tts secara native mendukung tag jeda <break> di dalam teks
                 communicate = edge_tts.Communicate(clean_text, voice, rate=VOICE_RATE, pitch=VOICE_PITCH)
                 audio_data = b""
                 async for chunk in communicate.stream():
@@ -250,7 +254,7 @@ def main():
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio" not in st.session_state: st.session_state.last_audio = None
     if "audio_bytes" not in st.session_state: st.session_state.audio_bytes = None
-    if "memory_vault" not in st.session_state: st.session_state.memory_vault = [] # Memori Jangka Panjang
+    if "memory_vault" not in st.session_state: st.session_state.memory_vault = []
 
     # SIDEBAR
     with st.sidebar:
@@ -260,11 +264,10 @@ def main():
         api_key = st.session_state.get("groq_api_key", os.environ.get("GROQ_API_KEY", ""))
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Sir Lois.")
         
-        # Tampilkan Memori (Bukti Self-Development)
         if st.session_state.memory_vault:
             st.divider()
             st.subheader("🧠 Memori Jarvis")
-            for mem in st.session_state.memory_vault[-5:]: # Tampilkan 5 terakhir
+            for mem in st.session_state.memory_vault[-5:]:
                 st.caption(f"- {mem}")
         
         st.divider()
@@ -304,7 +307,6 @@ def main():
             st.session_state.last_audio = current_id
             raw_audio = audio_value.read()
             
-            # Inisialisasi dengan memori
             jarvis = JarvisCore(api_key, st.session_state.memory_vault)
             
             with st.spinner("👂 Menganalisis lingkungan & suara..."):
