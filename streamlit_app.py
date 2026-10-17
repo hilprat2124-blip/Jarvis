@@ -1,136 +1,306 @@
-import time
+import av
 import cv2
 import numpy as np
 import streamlit as st
 import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+import urllib.request
+import os
+import time
+
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
-# Set konfigurasi halaman Streamlit
-st.set_page_config(page_title="Hand Tracking Drawing - Streamlit", layout="wide")
+# ============ Konfigurasi Halaman ============
+st.set_page_config(page_title="Interactive 3D Hand Tracking", layout="wide")
+st.title("🧊 3D Free View - Hand Tracking")
+st.write("""
+**Panduan Gestur:**
+- **Tahan Gestur Selama 1 Detik** (sampai lingkaran penuh) untuk mengunci fitur agar tidak bentrok.
+- ☝️ **Telunjuk Berdiri:** Putar objek (Free View).
+- 👆 **Jempol + Telunjuk:** Tahan 1 detik -> Jauhkan **Telunjuk** untuk **ZOOM IN**.
+- 🖕 **Jempol + Jari Tengah:** Tahan 1 detik -> Jauhkan **Jari Tengah** untuk **ZOOM OUT**.
+- 🤏 **Pinch (Jempol+Telunjuk):** Tahan 1 detik -> Geser tangan untuk **PAN (Geser)**.
+""")
 
-st.title("✌️ Hand Tracking - Visualisasi Garis dengan Jeda Verifikasi (1 Detik)")
-st.write(
-    "Jempol dan telunjuk/jari lain harus berinteraksi dan bertahan stabil selama 1 detik "
-    "sebelum garis dinamis zoom aktif, agar tidak bentrok dengan gestur lainnya."
-)
-
-# Inisialisasi MediaPipe Hands
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
-
-# Konfigurasi RTC untuk koneksi WebRTC yang stabil
+# ============ Konfigurasi WebRTC ============
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
+# ============ Konstanta ============
+PINCH_THRESHOLD = 40      
+HOLD_THRESHOLD = 1.0      # Waktu tahan (detik) untuk verifikasi
+MIN_SCALE, MAX_SCALE = 0.5, 3.0
+ZOOM_SENSITIVITY = 0.01
+MAX_ZOOM_STEP = 0.03
 
-class HandInteractionProcessor(VideoProcessorBase):
+THUMB_TIP = 4
+INDEX_TIP = 8
+MIDDLE_TIP = 12
+
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),        
+    (0, 5), (5, 6), (6, 7), (7, 8),        
+    (5, 9), (9, 10), (10, 11), (11, 12),   
+    (9, 13), (13, 14), (14, 15), (15, 16), 
+    (13, 17), (17, 18), (18, 19), (19, 20),
+    (0, 17)                                
+]
+
+# ============ Download Model ============
+MODEL_PATH = "hand_landmarker.task"
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+
+if not os.path.exists(MODEL_PATH):
+    with st.spinner("Mengunduh model AI..."):
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+
+
+class Hand3DProcessor(VideoProcessorBase):
     def __init__(self):
-        self.hands = mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=2,
-            min_detection_confidence=0.7,
-            min_tracking_confidence=0.7,
+        base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.VIDEO,
+            num_hands=1,
+            min_hand_detection_confidence=0.6,
+            min_hand_presence_confidence=0.6,
+            min_tracking_confidence=0.6
         )
-        # Variabel untuk melacak waktu verifikasi gestur
-        self.pinch_start_time = None
-        self.is_gesture_verified = False
+        self.detector = vision.HandLandmarker.create_from_options(options)
+        self.frame_timestamp = 0
+        
+        # State 3D
+        self.rx, self.ry = 0.5, 0.5
+        self.scale = 1.0
+        self.offset_x, self.offset_y = 0, 0
+        
+        self.prev_index_pos = None
+        self.prev_zoom_dist = None
+        
+        # State Verifikasi (Hold)
+        self.active_mode = None    # "ZOOM_IN", "ZOOM_OUT", "PAN", "ROTASI"
+        self.candidate_mode = None # Kandidat yang sedang diverifikasi
+        self.hold_start_time = 0.0
+        self.verified = False      # Apakah sudah lolos verifikasi 1 detik?
 
-    def recv(self, frame):
+        # Vertex Kubus 3D
+        self.vertices = np.array([
+            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], 
+            [-1, -1,  1], [1, -1,  1], [1, 1,  1], [-1, 1,  1]  
+        ], dtype=np.float32)
+
+        self.edges = [
+            (0,1), (1,2), (2,3), (3,0), 
+            (4,5), (5,6), (6,7), (7,4), 
+            (0,4), (1,5), (2,6), (3,7)  
+        ]
+
+    def _to_pixel(self, landmark, w, h):
+        return int(landmark.x * w), int(landmark.y * h)
+
+    def _draw_landmarks(self, img, landmarks, w, h):
+        for connection in HAND_CONNECTIONS:
+            start = self._to_pixel(landmarks[connection[0]], w, h)
+            end = self._to_pixel(landmarks[connection[1]], w, h)
+            cv2.line(img, start, end, (80, 80, 80), 1, cv2.LINE_AA)
+        for lm in landmarks:
+            px = self._to_pixel(lm, w, h)
+            cv2.circle(img, px, 2, (120, 120, 120), -1, cv2.LINE_AA)
+
+    def _draw_3d_cube(self, img, cx, cy):
+        cos_x, sin_x = np.cos(self.rx), np.sin(self.rx)
+        cos_y, sin_y = np.cos(self.ry), np.sin(self.ry)
+        
+        rot_x = np.array([[1, 0, 0], [0, cos_x, -sin_x], [0, sin_x, cos_x]])
+        rot_y = np.array([[cos_y, 0, sin_y], [0, 1, 0], [-sin_y, 0, cos_y]])
+        rot_matrix = np.dot(rot_y, rot_x)
+        transformed = np.dot(self.vertices, rot_matrix.T)
+        
+        pts_2d = []
+        fov = 4.0
+        for v in transformed:
+            v_scaled = v * self.scale
+            z = v_scaled[2] + fov
+            if z <= 0.1: z = 0.1
+            
+            px = int((v_scaled[0] / z) * 150) + cx + self.offset_x
+            py = int((v_scaled[1] / z) * 150) + cy + self.offset_y
+            pts_2d.append((px, py, v_scaled[2]))
+
+        for edge in self.edges:
+            p1, p2 = pts_2d[edge[0]], pts_2d[edge[1]]
+            depth_avg = (p1[2] + p2[2]) / 2
+            intensity = np.clip(1.0 - (depth_avg / 2.0), 0.2, 1.0)
+            color = (int(255 * intensity), int(255 * intensity), 0)
+            
+            cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), color, 6, cv2.LINE_AA)
+            cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), (255, 255, 255), 1, cv2.LINE_AA)
+
+        for p in pts_2d:
+            cv2.circle(img, (p[0], p[1]), 3, (0, 0, 255), -1, cv2.LINE_AA)
+
+    def _draw_progress_ring(self, img, center, progress, color):
+        cv2.ellipse(img, center, (25, 25), -90, 0, int(360 * min(progress, 1.0)), color, 3, cv2.LINE_AA)
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)  # Efek cermin
-        
-        h, w, c = img.shape
+        img = cv2.flip(img, 1)  
+        h, w, _ = img.shape
+
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
         
-        results = self.hands.process(img_rgb)
+        self.frame_timestamp += 1
+        results = self.detector.detect_for_video(mp_image, self.frame_timestamp)
 
-        # Status default jika tidak ada interaksi terdeteksi
-        pinch_detected_in_frame = False
+        mode_text = "MODE: SIAP"
+        color_text = (200, 200, 200)
+        current_time = time.time()
 
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                # Gambarkan skeleton tangan tipis
-                mp_drawing.draw_landmarks(
-                    img, 
-                    hand_landmarks, 
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_drawing.DrawingSpec(color=(200, 200, 200), thickness=1, circle_radius=2),
-                    mp_drawing.DrawingSpec(color=(240, 240, 240), thickness=1)
-                )
+        if results.hand_landmarks:
+            hand_landmarks = results.hand_landmarks[0]
+            self._draw_landmarks(img, hand_landmarks, w, h)
 
-                thumb = (int(hand_landmarks.landmark[4].x * w), int(hand_landmarks.landmark[4].y * h))
-                index = (int(hand_landmarks.landmark[8].x * w), int(hand_landmarks.landmark[8].y * h))
-                middle = (int(hand_landmarks.landmark[12].x * w), int(hand_landmarks.landmark[12].y * h))
-                ring = (int(hand_landmarks.landmark[16].x * w), int(hand_landmarks.landmark[16].y * h))
-                pinky = (int(hand_landmarks.landmark[20].x * w), int(hand_landmarks.landmark[20].y * h))
+            thumb = self._to_pixel(hand_landmarks[THUMB_TIP], w, h)
+            index = self._to_pixel(hand_landmarks[INDEX_TIP], w, h)
+            middle = self._to_pixel(hand_landmarks[MIDDLE_TIP], w, h)
 
-                finger_tips = [
-                    ("Telunjuk", index, (0, 255, 255)),  
-                    ("Jari Tengah", middle, (255, 0, 255)),  
-                    ("Jari Manis", ring, (255, 255, 0)),  
-                    ("Kelingking", pinky, (0, 255, 0)),  
-                ]
+            dist_pinch_index = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
+            dist_pinch_middle = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
 
-                # Ambang batas jarak untuk mulai menghitung timer (misal < 50 piksel)
-                TOUCH_THRESHOLD = 50 
-                current_time = time.time()
+            # ==========================================
+            # DETEKSI KANDIDAT GESTUR
+            # ==========================================
+            detected_gesture = None
+            
+            # Cek Gestur Rotasi (Telunjuk berdiri, jari tengah menekuk)
+            if index[1] < thumb[1] and middle[1] > thumb[1] and dist_pinch_index > PINCH_THRESHOLD:
+                detected_gesture = "ROTASI"
+            
+            # Cek Gestur Zoom/Pan (Berdasarkan pinch)
+            elif dist_pinch_index < PINCH_THRESHOLD:
+                if dist_pinch_middle < PINCH_THRESHOLD:
+                    detected_gesture = "ZOOM_IN" # Telunjuk & Tengah pinch jempol (Bisa jadi zoom in atau pan)
+                else:
+                    detected_gesture = "PAN" # Hanya telunjuk pinch
+                    
+            elif dist_pinch_middle < PINCH_THRESHOLD:
+                detected_gesture = "ZOOM_OUT" # Hanya jari tengah pinch
 
-                for name, tip_coords, color in finger_tips:
-                    dist = np.hypot(thumb[0] - tip_coords[0], thumb[1] - tip_coords[1])
+            # ==========================================
+            # LOGIKA VERIFIKASI 1 DETIK
+            # ==========================================
+            
+            if self.active_mode is None:
+                # Jika belum ada mode aktif, cek kandidat
+                if detected_gesture:
+                    if self.candidate_mode != detected_gesture:
+                        self.candidate_mode = detected_gesture
+                        self.hold_start_time = current_time
+                        self.verified = False
+                    
+                    progress = (current_time - self.hold_start_time) / HOLD_THRESHOLD
+                    
+                    if progress >= 1.0:
+                        # Verifikasi berhasil!
+                        self.active_mode = detected_gesture
+                        self.verified = True
+                        self.prev_zoom_dist = None # Reset jarak zoom
+                        self.prev_index_pos = None # Reset posisi pan/rotasi
+                    else:
+                        # Tampilkan loading ring
+                        mid_pinch = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
+                        self._draw_progress_ring(img, mid_pinch, progress, (0, 255, 255))
+                        mode_text = f"VERIFIKASI: {detected_gesture}"
+                        color_text = (0, 255, 255)
+                else:
+                    self.candidate_mode = None
+                    self.hold_start_time = 0.0
 
-                    cv2.circle(img, thumb, 8, (0, 0, 255), -1)
-                    cv2.circle(img, tip_coords, 8, color, -1)
+            # ==========================================
+            # EKSEKUSI MODE YANG SUDAH TERVERIFIKASI
+            # ==========================================
+            if self.active_mode == "ROTASI":
+                mode_text = "MODE: ROTASI (Aktif)"
+                color_text = (0, 255, 0)
+                
+                if self.prev_index_pos is not None:
+                    dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20)
+                    dy = np.clip(index[1] - self.prev_index_pos[1], -20, 20)
+                    self.ry += dx * 0.015
+                    self.rx += dy * 0.015
+                self.prev_index_pos = index
+                
+                # Keluar dari mode jika gestur berubah drastis
+                if detected_gesture != "ROTASI":
+                    self.active_mode = None
 
-                    # Cek apakah jari sedang berdekatan (posisi inisiasi pinch)
-                    if dist < TOUCH_THRESHOLD:
-                        pinch_detected_in_frame = True
-                        
-                        # Jika baru pertama kali mendekat, catat waktunya
-                        if self.pinch_start_time is None:
-                            self.pinch_start_time = current_time
-                        
-                        elapsed_time = current_time - self.pinch_start_time
-                        
-                        # Hitung mundur / progress 1 detik
-                        if elapsed_time < 1.0:
-                            # Tampilkan indikator loading verifikasi (warna Oranye)
-                            mid_x = (thumb[0] + tip_coords[0]) // 2
-                            mid_y = (thumb[1] + tip_coords[1]) // 2
-                            cv2.putText(
-                                img, f"Verifikasi... {int((1.0 - elapsed_time) * 10)}") + "s", 
-                                (mid_x - 40, mid_y - 20),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2
-                            )
+            elif self.active_mode in ["ZOOM_IN", "ZOOM_OUT"]:
+                mode_text = f"MODE: {self.active_mode} (Aktif)"
+                color_text = (255, 165, 0)
+                
+                # Cek jarak mana yang harus dipantau
+                dist_to_track = dist_pinch_index if self.active_mode == "ZOOM_IN" else dist_pinch_middle
+                
+                if self.prev_zoom_dist is not None:
+                    delta = dist_to_track - self.prev_zoom_dist
+                    if delta > 0: # Menjauh
+                        scale_change = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
+                        if self.active_mode == "ZOOM_IN":
+                            self.scale = np.clip(self.scale + scale_change, MIN_SCALE, MAX_SCALE)
                         else:
-                            # Jika sudah lewat 1 detik, verifikasi berhasil!
-                            self.is_gesture_verified = True
+                            self.scale = np.clip(self.scale - scale_change, MIN_SCALE, MAX_SCALE)
+                self.prev_zoom_dist = dist_to_track
 
-                    # Jika gestur sudah terverifikasi (lolos jeda 1 detik), render garis dinamis
-                    if self.is_gesture_verified:
-                        thickness = max(2, int(8 - (dist / 40)))
-                        cv2.line(img, thumb, tip_coords, color, thickness)
-                        
-                        mid_x = (thumb[0] + tip_coords[0]) // 2
-                        mid_y = (thumb[1] + tip_coords[1]) // 2
-                        
-                        cv2.putText(
-                            img, f"Zoom Mode: {int(dist)}px", (mid_x - 30, mid_y - 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2
-                        )
+                # Keluar dari mode jika jari kembali mendekat / pinch
+                if (self.active_mode == "ZOOM_IN" and dist_pinch_index < PINCH_THRESHOLD + 10) or \
+                   (self.active_mode == "ZOOM_OUT" and dist_pinch_middle < PINCH_THRESHOLD + 10):
+                    self.active_mode = None
 
-        # Jika jari dilepas atau tidak memenuhi syarat pinch, reset status verifikasi
-        if not pinch_detected_in_frame:
-            self.pinch_start_time = None
-            self.is_gesture_verified = False
+            elif self.active_mode == "PAN":
+                mode_text = "MODE: GESER (Aktif)"
+                color_text = (0, 0, 255)
+                
+                mid = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
+                if self.prev_index_pos is not None:
+                    dx = np.clip(mid[0] - self.prev_index_pos[0], -20, 20)
+                    dy = np.clip(mid[1] - self.prev_index_pos[1], -20, 20)
+                    self.offset_x += dx
+                    self.offset_y += dy
+                self.prev_index_pos = mid
 
-        return frame.from_ndarray(img, format="bgr24")
+                # Keluar jika pinch dilepas
+                if dist_pinch_index > PINCH_THRESHOLD + 10:
+                    self.active_mode = None
 
+            # Indikator titik
+            cv2.circle(img, thumb, 5, color_text, -1)
+            cv2.circle(img, index, 5, color_text, -1)
+            cv2.circle(img, middle, 5, color_text, -1)
 
-# Tampilkan Streaming Webcam di Streamlit
+        # --- RENDER 3D ---
+        cx, cy = w // 2, h // 2
+        self._draw_3d_cube(img, cx, cy)
+
+        # --- UI INDIKATOR ---
+        cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
+        cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+    def __del__(self):
+        try:
+            self.detector.close()
+        except:
+            pass
+
+# ============ Streamlit WebRTC ============
 webrtc_streamer(
-    key="hand-gesture-zoom-verifier",
-    video_processor_factory=HandInteractionProcessor,
+    key="hand-3d-tracker",
+    video_processor_factory=Hand3DProcessor,
     rtc_configuration=RTC_CONFIGURATION,
-    media_stream_constraints={"video": True, "audio": False},
+    media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
+    async_processing=True,
 )
