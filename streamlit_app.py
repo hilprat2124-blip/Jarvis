@@ -11,19 +11,26 @@ import os
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="Stable 3D Hand Tracking", layout="wide")
-st.title("🧊 3D Free View - Stable Controls")
+st.set_page_config(page_title="Interactive 3D Hand Tracking", layout="wide")
+st.title("🧊 3D Free View - Hand Tracking")
 st.write("""
-**Cara Menggunakan:**
-1. Gunakan ujung **Telunjuk** Anda untuk menyentuh tombol di layar.
-2. **[ROTASI]**: Sentuh tombol, lalu gerakkan tangan Anda.
-3. **[ZOOM IN / OUT]**: Sentuh tombol, lalu gerakkan tangan Anda **maju (dekat kamera)** atau **mundur (jauh dari kamera)**.
+**Panduan Gestur (Bebas Bentrok):**
+- ☝️ **Telunjuk Berdiri:** Putar objek (Free View).
+- 🤏 **Pinch (Jempol+Telunjuk) lalu Geser:** Geser objek (Pan).
+- 👆 **Jempol + Telunjuk:** Mulai dari Pinch, lalu jauhkan **Telunjuk** untuk **ZOOM IN**.
+- 🖕 **Jempol + Jari Tengah:** Mulai dari Pinch, lalu jauhkan **Jari Tengah** untuk **ZOOM OUT**.
 """)
 
 # ============ Konfigurasi WebRTC ============
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
+
+# ============ Konstanta ============
+PINCH_THRESHOLD = 40      
+MIN_SCALE, MAX_SCALE = 0.5, 3.0
+ZOOM_SENSITIVITY = 0.01
+MAX_ZOOM_STEP = 0.03
 
 THUMB_TIP = 4
 INDEX_TIP = 8
@@ -46,6 +53,7 @@ if not os.path.exists(MODEL_PATH):
     with st.spinner("Mengunduh model AI..."):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
+
 class Hand3DProcessor(VideoProcessorBase):
     def __init__(self):
         base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
@@ -65,10 +73,9 @@ class Hand3DProcessor(VideoProcessorBase):
         self.scale = 1.0
         self.offset_x, self.offset_y = 0, 0
         
-        # State Tracking
-        self.active_mode = None  # "ROTASI", "ZOOM_IN", "ZOOM_OUT", None
         self.prev_index_pos = None
-        self.prev_scale_z = None # Untuk deteksi maju/mundur (Zoom)
+        self.prev_zoom_dist = None
+        self.zoom_mode = None # "IN" atau "OUT"
 
         # Vertex Kubus 3D
         self.vertices = np.array([
@@ -89,10 +96,10 @@ class Hand3DProcessor(VideoProcessorBase):
         for connection in HAND_CONNECTIONS:
             start = self._to_pixel(landmarks[connection[0]], w, h)
             end = self._to_pixel(landmarks[connection[1]], w, h)
-            cv2.line(img, start, end, (60, 60, 60), 1, cv2.LINE_AA)
+            cv2.line(img, start, end, (80, 80, 80), 1, cv2.LINE_AA)
         for lm in landmarks:
             px = self._to_pixel(lm, w, h)
-            cv2.circle(img, px, 2, (100, 100, 100), -1, cv2.LINE_AA)
+            cv2.circle(img, px, 2, (120, 120, 120), -1, cv2.LINE_AA)
 
     def _draw_3d_cube(self, img, cx, cy):
         cos_x, sin_x = np.cos(self.rx), np.sin(self.rx)
@@ -126,29 +133,10 @@ class Hand3DProcessor(VideoProcessorBase):
         for p in pts_2d:
             cv2.circle(img, (p[0], p[1]), 3, (0, 0, 255), -1, cv2.LINE_AA)
 
-    def _draw_ui_button(self, img, text, x, y, w, h, is_active):
-        # Gambar kotak tombol
-        color = (0, 255, 0) if is_active else (150, 150, 150)
-        thickness = 3 if is_active else 1
-        cv2.rectangle(img, (x, y), (x+w, y+h), color, thickness, cv2.LINE_AA)
-        
-        # Gambar teks
-        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-        text_x = x + (w - text_size[0]) // 2
-        text_y = y + (h + text_size[1]) // 2
-        cv2.putText(img, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
-
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)  
         h, w, _ = img.shape
-
-        # --- DEFINISI TOMBOL UI ---
-        btn_w, btn_h = 140, 50
-        btn_y = h - 70
-        btn_rotate = (20, btn_y, btn_w, btn_h)
-        btn_zoom_in = (w//2 - btn_w//2, btn_y, btn_w, btn_h)
-        btn_zoom_out = (w - btn_w - 20, btn_y, btn_w, btn_h)
 
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
@@ -156,8 +144,6 @@ class Hand3DProcessor(VideoProcessorBase):
         self.frame_timestamp += 1
         results = self.detector.detect_for_video(mp_image, self.frame_timestamp)
 
-        # Reset mode setiap frame
-        self.active_mode = None
         mode_text = "MODE: SIAP"
         color_text = (200, 200, 200)
 
@@ -165,21 +151,53 @@ class Hand3DProcessor(VideoProcessorBase):
             hand_landmarks = results.hand_landmarks[0]
             self._draw_landmarks(img, hand_landmarks, w, h)
 
+            thumb = self._to_pixel(hand_landmarks[THUMB_TIP], w, h)
             index = self._to_pixel(hand_landmarks[INDEX_TIP], w, h)
-            index_z = hand_landmarks[INDEX_TIP].z # Nilai Z untuk Zoom (maju/mundur)
+            middle = self._to_pixel(hand_landmarks[MIDDLE_TIP], w, h)
 
-            # Cek tabrakan ujung telunjuk dengan tombol
-            if btn_rotate[0] < index[0] < btn_rotate[0]+btn_rotate[2] and btn_rotate[1] < index[1] < btn_rotate[1]+btn_rotate[3]:
-                self.active_mode = "ROTASI"
-            elif btn_zoom_in[0] < index[0] < btn_zoom_in[0]+btn_zoom_in[2] and btn_zoom_in[1] < index[1] < btn_zoom_in[1]+btn_zoom_in[3]:
-                self.active_mode = "ZOOM_IN"
-            elif btn_zoom_out[0] < index[0] < btn_zoom_out[0]+btn_zoom_out[2] and btn_zoom_out[1] < index[1] < btn_zoom_out[1]+btn_zoom_out[3]:
-                self.active_mode = "ZOOM_OUT"
+            # Deteksi jarak
+            dist_pinch_index = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
+            dist_pinch_middle = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
 
-            # Eksekusi berdasarkan tombol yang disentuh
-            if self.active_mode == "ROTASI":
+            # ==========================================
+            # MODE SELECTION & LOGIKA
+            # ==========================================
+
+            # 1. MODE ZOOM IN (Jempol + Telunjuk mulai dari pinch, lalu menjauh)
+            if dist_pinch_index < PINCH_THRESHOLD and dist_pinch_middle > PINCH_THRESHOLD + 20:
+                self.zoom_mode = "IN"
+                
+            # 2. MODE ZOOM OUT (Jempol + Jari Tengah mulai dari pinch, lalu menjauh)
+            elif dist_pinch_middle < PINCH_THRESHOLD and dist_pinch_index > PINCH_THRESHOLD + 20:
+                self.zoom_mode = "OUT"
+
+            # Eksekusi Zoom
+            if self.zoom_mode == "IN":
+                mode_text = "MODE: ZOOM IN"
+                color_text = (0, 255, 255)
+                if self.prev_zoom_dist is not None:
+                    delta = dist_pinch_index - self.prev_zoom_dist
+                    if delta > 0: # Menjauh
+                        scale_change = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
+                        self.scale = np.clip(self.scale + scale_change, MIN_SCALE, MAX_SCALE)
+                self.prev_zoom_dist = dist_pinch_index
+
+            elif self.zoom_mode == "OUT":
+                mode_text = "MODE: ZOOM OUT"
+                color_text = (255, 0, 255)
+                if self.prev_zoom_dist is not None:
+                    delta = dist_pinch_middle - self.prev_zoom_dist
+                    if delta > 0: # Menjauh
+                        scale_change = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
+                        self.scale = np.clip(self.scale - scale_change, MIN_SCALE, MAX_SCALE)
+                self.prev_zoom_dist = dist_pinch_middle
+
+            # 3. MODE ROTASI (Telunjuk berdiri sendiri, jari lain mengepal)
+            elif index[1] < thumb[1] and middle[1] > thumb[1] and dist_pinch_index > PINCH_THRESHOLD:
                 mode_text = "MODE: ROTASI"
                 color_text = (0, 255, 0)
+                self.zoom_mode = None
+                self.prev_zoom_dist = None
                 
                 if self.prev_index_pos is not None:
                     dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20)
@@ -187,41 +205,38 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.ry += dx * 0.015
                     self.rx += dy * 0.015
                 self.prev_index_pos = index
-                self.prev_scale_z = None
 
-            elif self.active_mode in ["ZOOM_IN", "ZOOM_OUT"]:
-                color_text = (255, 165, 0)
-                mode_text = f"MODE: {self.active_mode} (GESER TANGAN MAJU/MUNDUR)"
+            # 4. MODE PAN / GESER (Pinch stabil tanpa menjauh)
+            elif dist_pinch_index < PINCH_THRESHOLD:
+                mode_text = "MODE: GESER"
+                color_text = (0, 0, 255)
+                self.zoom_mode = None
+                self.prev_zoom_dist = None
                 
-                if self.prev_scale_z is not None:
-                    delta_z = index_z - self.prev_scale_z
-                    # Jika tangan maju (z mengecil), perbesar
-                    scale_change = -delta_z * 1.5
-                    if self.active_mode == "ZOOM_IN":
-                        self.scale = np.clip(self.scale + scale_change, 0.5, 3.0)
-                    else:
-                        self.scale = np.clip(self.scale - scale_change, 0.5, 3.0)
-                
-                self.prev_scale_z = index_z
-                self.prev_index_pos = None
+                mid = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
+                if self.prev_index_pos is not None:
+                    dx = np.clip(mid[0] - self.prev_index_pos[0], -20, 20)
+                    dy = np.clip(mid[1] - self.prev_index_pos[1], -20, 20)
+                    self.offset_x += dx
+                    self.offset_y += dy
+                self.prev_index_pos = mid
+
             else:
+                # Jika tidak ada gestur yang cocok, reset state
+                self.zoom_mode = None
+                self.prev_zoom_dist = None
                 self.prev_index_pos = None
-                self.prev_scale_z = None
 
-            # Indikator ujung telunjuk
-            cv2.circle(img, index, 8, color_text, -1)
-            cv2.circle(img, index, 12, color_text, 2)
+            # Indikator titik
+            cv2.circle(img, thumb, 5, color_text, -1)
+            cv2.circle(img, index, 5, color_text, -1)
+            cv2.circle(img, middle, 5, color_text, -1)
 
-        # --- GAMBAR TOMBOL UI ---
-        self._draw_ui_button(img, "[1] ROTASI", *btn_rotate, self.active_mode == "ROTASI")
-        self._draw_ui_button(img, "[2] ZOOM IN", *btn_zoom_in, self.active_mode == "ZOOM_IN")
-        self._draw_ui_button(img, "[3] ZOOM OUT", *btn_zoom_out, self.active_mode == "ZOOM_OUT")
-
-        # --- RENDER 3D KUBUS ---
-        cx, cy = w // 2, h // 2 - 50 # Posisi agak ke atas agar tidak tertutup tombol
+        # --- RENDER 3D ---
+        cx, cy = w // 2, h // 2
         self._draw_3d_cube(img, cx, cy)
 
-        # --- UI INDIKATOR TEKS ---
+        # --- UI INDIKATOR ---
         cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
         cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
