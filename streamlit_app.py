@@ -435,8 +435,9 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     try:
         client = Groq(api_key=GROQ_API_KEY)
+        # 🔥 PERBAIKAN: max_tokens diturunkan dari 1024 ke 800 agar tidak kena limit OTPM 1000
         resp = client.chat.completions.create(
-            model=model, messages=api_messages, temperature=0.7, max_tokens=1024,
+            model=model, messages=api_messages, temperature=0.7, max_tokens=800,
         )
         return resp.choices[0].message.content
     except Exception as e:
@@ -618,5 +619,6 @@ with st.sidebar:
     st.caption("• Camera: 60 FPS")
     st.caption("• Buffer: 3 frame (0.2 detik/frame)")
     st.caption("• Vision Model: Qwen 3.8")
+    st.caption("• Max Tokens: 800 (aman dari limit)")
 
 st.markdown("---")
