@@ -23,7 +23,7 @@ st.markdown("""
 **Panduan Gestur:**
 - ✋ **Swipe 5 Jari** → Putar objek dengan *inertia*
 - ☝️ **Telunjuk Berdiri** (tahan 1 detik) → Mode **Rotasi**
-- 👆 **Jempol + Telunjuk Pinch** (tahan 1 detik) → Mode **Geser (Pan)**
+- 👆 **Jempol + Telunjuk Pinch** (tahan 1 detik) → Mode **Geser (Pan)** — *1:1 dengan tangan*
 - 🤏 **Pinch 3 Jari** (tahan 1 detik) → Mode **Zoom**
 
 > 💡 **Tips:** Jaga tangan tetap dalam frame kamera. Pencahayaan cukup membantu akurasi.
@@ -52,12 +52,16 @@ INDEX_TIP = 8
 MIDDLE_TIP = 12
 PINKY_TIP = 20
 
-# Tuning smoothness (ubah di sini jika perlu)
-POS_ALPHA = 0.45       # posisi tangan (kecil = lebih smooth, tapi lebih lag)
-ROT_ALPHA = 0.20       # rotasi display menyusul target
-SCALE_ALPHA = 0.25     # zoom display
-PAN_ALPHA = 0.25       # pan/geser display
-INERTIA_DECAY = 0.93   # makin dekat 1.0 = inertia makin panjang
+# ---- Tuning smoothness ----
+POS_ALPHA = 0.45        # posisi tangan umum (drawing)
+ROT_ALPHA = 0.20        # rotasi display menyusul target
+SCALE_ALPHA = 0.20      # zoom display menyusul target
+INERTIA_DECAY = 0.93
+
+# ---- Tuning khusus PAN (harus responsif 1:1) ----
+PAN_POS_ALPHA = 0.7     # smooth sumber (pinch point) - tinggi = responsif
+PAN_DEADZONE = 0.5      # px - sangat kecil, hanya untuk noise
+PAN_APPLY_SMOOTH = 0.55 # smoothing output pan (1.0 = no smoothing / instant)
 
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4),
@@ -95,27 +99,29 @@ class Hand3DProcessor(VideoProcessorBase):
         self.detector = vision.HandLandmarker.create_from_options(options)
         self.frame_timestamp = 0
 
-        # State 3D display
+        # ---- State 3D display ----
         self.rx, self.ry = 0.5, 0.5
         self.scale = 1.0
         self.offset_x, self.offset_y = 0.0, 0.0
 
-        # State 3D target (untuk smoothing)
+        # ---- State 3D target ----
         self.target_rx, self.target_ry = 0.5, 0.5
         self.target_scale = 1.0
         self.target_offset_x, self.target_offset_y = 0.0, 0.0
 
-        # Inertia
+        # ---- Inertia ----
         self.vel_ry = 0.0
         self.vel_rx = 0.0
 
-        # Smoothed positions
+        # ---- Smoothed positions ----
         self.smooth_index = None
         self.smooth_palm = None
         self.smooth_mid_pinch = None
+        self.smooth_mid_pinch_pan = None   # khusus PAN, alpha lebih tinggi
 
-        # Gesture state
+        # ---- Gesture state ----
         self.prev_index_pos = None
+        self.prev_pan_pos = None           # khusus PAN
         self.zoom_base_index = None
         self.zoom_base_middle = None
 
@@ -128,11 +134,11 @@ class Hand3DProcessor(VideoProcessorBase):
         self.smoothed_dist_middle = None
         self.smoothed_dist_mid_index = None
 
-        # Swipe
+        # ---- Swipe ----
         self.prev_palm_pos = None
         self.swipe_vel_smooth = np.array([0.0, 0.0])
 
-        # Kubus
+        # ---- Kubus ----
         self.vertices = np.array([
             [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
             [-1, -1,  1], [1, -1,  1], [1, 1,  1], [-1, 1,  1]
@@ -204,8 +210,8 @@ class Hand3DProcessor(VideoProcessorBase):
         if old_pt is None:
             return new_pt
         return (
-            int(alpha * new_pt[0] + (1 - alpha) * old_pt[0]),
-            int(alpha * new_pt[1] + (1 - alpha) * old_pt[1]),
+            alpha * new_pt[0] + (1 - alpha) * old_pt[0],
+            alpha * new_pt[1] + (1 - alpha) * old_pt[1],
         )
 
     @staticmethod
@@ -234,7 +240,9 @@ class Hand3DProcessor(VideoProcessorBase):
         color_text = (200, 200, 200)
         current_time = time.time()
 
-        # ---- Inertia ke target ----
+        # ============================================
+        # INERTIA → TARGET
+        # ============================================
         self.target_ry += self.vel_ry
         self.target_rx += self.vel_rx
         self.vel_ry *= INERTIA_DECAY
@@ -244,14 +252,17 @@ class Hand3DProcessor(VideoProcessorBase):
         if abs(self.vel_rx) < 0.0015:
             self.vel_rx = 0.0
 
-        # ---- Smooth display ----
+        # ============================================
+        # SMOOTH DISPLAY (ROTASI & SCALE)
+        # PAN TIDAK di sini — ditangani khusus di bawah
+        # ============================================
         self.ry = self._smooth(self.target_ry, self.ry, ROT_ALPHA)
         self.rx = self._smooth(self.target_rx, self.rx, ROT_ALPHA)
         self.scale = self._smooth(self.target_scale, self.scale, SCALE_ALPHA)
-        self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_ALPHA)
-        self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_ALPHA)
 
-        # ---- Timeout reset ----
+        # ============================================
+        # TIMEOUT RESET
+        # ============================================
         hand_detected = False
         if results.hand_landmarks:
             hand_detected = True
@@ -262,9 +273,11 @@ class Hand3DProcessor(VideoProcessorBase):
                 self.candidate_mode = None
                 self.prev_palm_pos = None
                 self.prev_index_pos = None
+                self.prev_pan_pos = None
                 self.smooth_palm = None
                 self.smooth_index = None
                 self.smooth_mid_pinch = None
+                self.smooth_mid_pinch_pan = None
                 self.smoothed_dist_index = None
                 self.smoothed_dist_middle = None
                 self.smoothed_dist_mid_index = None
@@ -282,11 +295,11 @@ class Hand3DProcessor(VideoProcessorBase):
             wrist = self._to_pixel(lm[0], w, h)
             palm_center = ((wrist[0] + middle[0]) // 2, (wrist[1] + middle[1]) // 2)
 
-            # Smooth posisi
+            # Smooth posisi untuk drawing indicator
             self.smooth_index = self._smooth_pt(index, self.smooth_index, POS_ALPHA)
             self.smooth_palm = self._smooth_pt(palm_center, self.smooth_palm, POS_ALPHA)
-            index_s = self.smooth_index
-            palm_s = self.smooth_palm
+            index_s = (int(self.smooth_index[0]), int(self.smooth_index[1]))
+            palm_s = (int(self.smooth_palm[0]), int(self.smooth_palm[1]))
 
             # Jarak antar ujung jari
             raw_di = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
@@ -362,7 +375,9 @@ class Hand3DProcessor(VideoProcessorBase):
                         self.zoom_base_index = d_index
                         self.zoom_base_middle = d_middle
                     self.prev_index_pos = None
+                    self.prev_pan_pos = None
                     self.smooth_mid_pinch = None
+                    self.smooth_mid_pinch_pan = None
                 else:
                     mid_pinch = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
                     ring_color = (
@@ -377,7 +392,9 @@ class Hand3DProcessor(VideoProcessorBase):
                 self.candidate_mode = None
                 self.hold_start_time = 0.0
 
-            # ---- Eksekusi ----
+            # ============================================
+            # EKSEKUSI MODE
+            # ============================================
             if self.active_mode == "ROTASI":
                 mode_text = "MODE: ROTASI"
                 color_text = (0, 255, 0)
@@ -396,22 +413,46 @@ class Hand3DProcessor(VideoProcessorBase):
             elif self.active_mode == "PAN":
                 mode_text = "MODE: GESER"
                 color_text = (0, 0, 255)
-                mid = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
-                self.smooth_mid_pinch = self._smooth_pt(mid, self.smooth_mid_pinch, POS_ALPHA)
-                mid_s = self.smooth_mid_pinch
-                if self.prev_index_pos is not None:
-                    dx = self._deadzone(mid_s[0] - self.prev_index_pos[0], 1.5)
-                    dy = self._deadzone(mid_s[1] - self.prev_index_pos[1], 1.5)
-                    dx = np.clip(dx, -20, 20)
-                    dy = np.clip(dy, -20, 20)
+
+                # --- Sumber: pinch point dengan alpha TINGGI (responsif) ---
+                mid = ((thumb[0] + index[0]) / 2.0, (thumb[1] + index[1]) / 2.0)
+                self.smooth_mid_pinch_pan = self._smooth_pt(
+                    mid, self.smooth_mid_pinch_pan, PAN_POS_ALPHA
+                )
+                pan_pt = self.smooth_mid_pinch_pan  # float
+
+                if self.prev_pan_pos is not None:
+                    # Delta 1:1 dari sumber
+                    dx = pan_pt[0] - self.prev_pan_pos[0]
+                    dy = pan_pt[1] - self.prev_pan_pos[1]
+
+                    # Deadzone minimal hanya untuk noise
+                    if abs(dx) < PAN_DEADZONE: dx = 0.0
+                    if abs(dy) < PAN_DEADZONE: dy = 0.0
+
+                    # Akumulasi ke target (tanpa clip!)
                     self.target_offset_x += dx
                     self.target_offset_y += dy
-                self.prev_index_pos = mid_s
+
+                self.prev_pan_pos = pan_pt
+
+                # Output smoothing (bisa tinggi = hampir instant)
+                self.offset_x = self._smooth(
+                    self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH
+                )
+                self.offset_y = self._smooth(
+                    self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH
+                )
+
                 if detected != "PAN":
                     self.active_mode = None
-                    self.prev_index_pos = None
+                    self.prev_pan_pos = None
 
             elif self.active_mode == "ZOOM":
+                # Sinkronkan offset_x/y ke target (karena tidak dismooth di atas)
+                self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH)
+                self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH)
+
                 if d_index < PINCH_EXIT and d_middle < PINCH_EXIT:
                     self.zoom_base_index = d_index
                     self.zoom_base_middle = d_middle
@@ -442,12 +483,27 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.zoom_base_index = None
                     self.zoom_base_middle = None
 
+            else:
+                # Mode idle: pastikan offset tetap sinkron (tidak ada drift)
+                self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH)
+                self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH)
+
             # Indikator titik
             cv2.circle(img, thumb, 5, color_text, -1)
             cv2.circle(img, index_s, 5, color_text, -1)
             cv2.circle(img, middle, 5, color_text, -1)
             if is_5_fingers:
                 cv2.circle(img, palm_s, 10, (0, 255, 255), -1)
+
+            # Debug: garis dari pinch point ke offset (opsional, komentar kalau tak perlu)
+            # if self.active_mode == "PAN" and self.smooth_mid_pinch_pan:
+            #     p = (int(self.smooth_mid_pinch_pan[0]), int(self.smooth_mid_pinch_pan[1]))
+            #     cv2.line(img, p, (p[0]+30, p[1]), (0, 0, 255), 2)
+
+        else:
+            # Tidak ada tangan: tetap sinkronkan offset
+            self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH)
+            self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH)
 
         # ---- Render 3D ----
         cx, cy = w // 2, h // 2
@@ -501,11 +557,15 @@ with col2:
     | 👆 Pinch jempol-telunjuk | Geser (pan) |
     | 🤏 Pinch 3 jari | Zoom |
 
-    **Tuning smoothness:**
-    Edit konstanta `POS_ALPHA`, `ROT_ALPHA`, `INERTIA_DECAY` di bagian atas file.
-    - `POS_ALPHA` kecil → lebih smooth (lag)
-    - `ROT_ALPHA` kecil → transisi halus
-    - `INERTIA_DECAY` → 1.0 = inertia panjang
+    **Tuning cepat:**
+
+    | Konstanta | Efek |
+    |---|---|
+    | `PAN_POS_ALPHA` ↑ | Pinch point makin responsif |
+    | `PAN_APPLY_SMOOTH` → 1.0 | Pan instant (no smooth) |
+    | `PAN_DEADZONE` ↓ | Gerakan kecil lebih kebaca |
+    | `ROT_ALPHA` ↓ | Rotasi makin halus |
+    | `INERTIA_DECAY` ↑ | Inertia makin panjang |
     """)
 
 st.markdown("---")
