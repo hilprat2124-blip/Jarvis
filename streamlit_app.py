@@ -52,7 +52,7 @@ st.set_page_config(
 st.title("🧊 3D Hand Tracking + 🤖 Jarvis (Live Eyes + Voice)")
 st.markdown("""
 **Fitur Spesial:** Jarvis punya **"Mata Live"** dan **"Suara British Natural"**. 
-Ketik chat (misal: *"What do you see?"*), Jarvis akan melihat kamera dan **menjawab dengan suara otomatis**.
+Ketik chat pakai Bahasa Indonesia atau Inggris, Jarvis akan melihat kamera dan **selalu menjawab dengan suara otomatis dalam Bahasa Inggris British**.
 """)
 
 # ============ WebRTC & Konstanta ============
@@ -447,6 +447,29 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     except Exception as e:
         return f"❌ Error Jarvis: {str(e)}"
 
+def translate_to_english(text: str) -> str:
+    """Fungsi rahasia untuk memastikan input dari user selalu Bahasa Inggris."""
+    if not GROQ_AVAILABLE or not GROQ_API_KEY: 
+        return text
+    
+    # Jika teks sangat pendek, asumsikan sudah English atau sapaan
+    if len(text) < 4: return text
+
+    try:
+        client = Groq(api_key=GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model=JARVIS_TEXT_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a translator. Translate the user's input into natural English. Output ONLY the translated text, nothing else."},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.1,
+            max_tokens=100,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception:
+        return text
+
 def generate_tts_edge(text: str) -> bytes or None:
     """Generate audio dari teks menggunakan Edge-TTS (British, Soft, Clean)."""
     if not TTS_AVAILABLE: 
@@ -478,21 +501,20 @@ def generate_tts_edge(text: str) -> bytes or None:
         return None
 
 # ============================================================
-# 🧠 SESSION STATE
+# 🧠 SESSION STATE (Reset Otomatis Setiap Refresh)
 # ============================================================
+SYSTEM_PROMPT = (
+    "You are J.A.R.V.I.S., Tony Stark's AI assistant from Iron Man. "
+    "CRITICAL RULE: You MUST ALWAYS respond in British English. "
+    "Even if the user speaks to you in Indonesian, Chinese, or any other language, "
+    "you are strictly programmed to reply ONLY in sophisticated British English. "
+    "Never use Indonesian. If the user asks what you see in the camera, "
+    "describe the objects in British English with a calm, polite, and dry-witted tone."
+)
+
 if "jarvis_messages" not in st.session_state:
     st.session_state.jarvis_messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are J.A.R.V.I.S., Tony Stark's AI assistant from Iron Man. "
-                "CRITICAL RULE: You MUST ALWAYS respond in British English. "
-                "Even if the user speaks to you in Indonesian, Chinese, or any other language, "
-                "you are strictly programmed to reply ONLY in sophisticated British English. "
-                "Never use Indonesian. If the user asks what you see in the camera, "
-                "describe the objects in British English with a calm, polite, and dry-witted tone."
-            )
-        }
+        {"role": "system", "content": SYSTEM_PROMPT}
     ]
 
 # ============================================================
@@ -524,7 +546,7 @@ with col2:
 # ============================================================
 st.markdown("---")
 st.header("💬 Ngobrol dengan Jarvis (dengan Suara)")
-st.caption("Ketik pertanyaanmu (misal: *'What do you see?'*). Jarvis akan melihat kamera dan **menjawab dengan suara otomatis**.")
+st.caption("Ketik pertanyaanmu pakai Bahasa Indonesia atau Inggris. Jarvis akan melihat kamera dan **menjawab dengan suara otomatis dalam Bahasa Inggris British**.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
@@ -534,6 +556,10 @@ for msg in st.session_state.jarvis_messages:
 user_q = st.chat_input("Tanya Jarvis...")
 
 if user_q:
+    # 🔥 KUNCI RAHASIA: Paksa input user jadi Bahasa Inggris sebelum dikirim ke Jarvis
+    with st.spinner("Menerjemahkan ke Bahasa Inggris..."):
+        user_q_en = translate_to_english(user_q)
+    
     has_img = False
     pil_img = None
 
@@ -548,13 +574,13 @@ if user_q:
         user_api_msg = {
             "role": "user",
             "content": [
-                {"type": "text", "text": user_q},
+                {"type": "text", "text": user_q_en}, # <-- Kirim versi English
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
             ],
         }
         display_text = f"🖼️ *(Live Kamera)* {user_q}"
     else:
-        user_api_msg = {"role": "user", "content": user_q}
+        user_api_msg = {"role": "user", "content": user_q_en} # <-- Kirim versi English
         display_text = user_q
         if ctx.state.playing:
             st.warning("⚠️ Kamera aktif tapi belum ada frame. Tunggu 1 detik lalu kirim lagi.")
@@ -564,10 +590,13 @@ if user_q:
         if has_img:
             st.image(pil_img, width=250, caption="Frame yang dikirim ke Jarvis")
         st.markdown(user_q)
+        if user_q_en.lower() != user_q.lower():
+            st.caption(f"*(Diterjemahkan ke: {user_q_en})*") # Biar kamu tau apa yang dia dengar
 
     with st.chat_message("assistant"):
         with st.spinner("Jarvis sedang menganalisis gambar..."):
             api_messages = [st.session_state.jarvis_messages[0]]
+            # Masukkan history chat (di mana chat user sudah dalam bahasa English)
             for m in st.session_state.jarvis_messages[1:-1]:
                 api_messages.append({"role": m["role"], "content": m["content"]})
             api_messages.append(user_api_msg)
@@ -601,17 +630,7 @@ with st.sidebar:
     st.header("ℹ️ Info")
     if st.button("🔄 Reset Chat Jarvis"):
         st.session_state.jarvis_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are J.A.R.V.I.S., Tony Stark's AI assistant from Iron Man. "
-                    "CRITICAL RULE: You MUST ALWAYS respond in British English. "
-                    "Even if the user speaks to you in Indonesian, Chinese, or any other language, "
-                    "you are strictly programmed to reply ONLY in sophisticated British English. "
-                    "Never use Indonesian. If the user asks what you see in the camera, "
-                    "describe the objects in British English with a calm, polite, and dry-witted tone."
-                )
-            }
+            {"role": "system", "content": SYSTEM_PROMPT}
         ]
         st.rerun()
 
