@@ -1,6 +1,5 @@
 import streamlit as st
 import streamlit.components.v1 as components
-from streamlit_mic_recorder import mic_recorder
 import io
 import os
 import json
@@ -132,7 +131,7 @@ class JarvisCore:
             return None
 
 # ============================================================
-# UI: REAL-TIME ORB DENGAN AUDIO ANALYZER (JAVASCRIPT)
+# UI: BOLA SIMULASI & DESAIN TOMBOL REKAM
 # ============================================================
 def inject_custom_css():
     st.markdown("""
@@ -146,76 +145,50 @@ def inject_custom_css():
             background: radial-gradient(circle, #00ffff 0%, #0055ff 80%, #000 100%);
             border-radius: 50%;
             box-shadow: 0 0 40px #00ffff, 0 0 80px #0055ff;
-            transition: transform 0.05s ease-out; /* Transisi cepat agar responsif */
+            animation: pulse 2s infinite alternate; /* Animasi bernapas */
         }
         .jarvis-ring {
             position: absolute; width: 160px; height: 160px;
             border: 1px dashed #00ffff; border-radius: 50%;
             animation: spin 10s linear infinite; opacity: 0.4;
         }
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 30px #00ffff; }
+            100% { transform: scale(1.05); box-shadow: 0 0 60px #00ffff, 0 0 100px #0055ff; }
+        }
         @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        /* DESAIN ULANG TOMBOL REKAM STREAMLIT (Agar futuristik) */
+        [data-testid="stAudioInput"] {
+            background: rgba(0, 255, 255, 0.05);
+            border: 2px solid #00ffff;
+            border-radius: 50px;
+            padding: 15px;
+            box-shadow: 0 0 25px #00ffff, 0 0 10px #00ffff inset;
+            margin: 0 auto;
+            display: flex;
+            justify-content: center;
+            width: fit-content;
+            transition: all 0.3s ease;
+        }
+        [data-testid="stAudioInput"]:hover {
+            box-shadow: 0 0 50px #00ffff, 0 0 20px #00ffff inset;
+            background: rgba(0, 255, 255, 0.1);
+        }
+        [data-testid="stAudioInput"] button {
+            color: #00ffff !important;
+            font-weight: bold;
+        }
         
-        /* Sembunyikan Tombol Streamlit */
-        [data-testid="stAudioInput"] { display: none; }
+        /* Expander */
         .stExpander { background: rgba(0, 255, 255, 0.05); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; }
     </style>
 
     <div class="jarvis-orb-container">
         <div class="jarvis-ring"></div>
-        <div class="jarvis-orb" id="orb"></div>
+        <div class="jarvis-orb"></div>
     </div>
     """, unsafe_allow_html=True)
-
-    # Script JS untuk mendeteksi mikrofon secara real-time
-    js_audio = """
-    <script>
-        const orb = document.getElementById("orb");
-        let audioContext, analyser, microphone, dataArray;
-
-        async function startMic() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: { echoCancellation: true, noiseSuppression: true } 
-                });
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                analyser = audioContext.createAnalyser();
-                microphone = audioContext.createMediaStreamSource(stream);
-                analyser.fftSize = 256;
-                microphone.connect(analyser);
-                dataArray = new Uint8Array(analyser.frequencyBinCount);
-                animate();
-            } catch (e) {
-                console.log("Microphone access denied or unavailable.");
-            }
-        }
-
-        function animate() {
-            if(!analyser) return;
-            analyser.getByteFrequencyData(dataArray);
-            let sum = 0;
-            for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-            let avg = sum / dataArray.length;
-
-            // Jika ada suara, perbesar bola (maksimal 1.8x)
-            if (avg > 5) {
-                let scale = 1 + (avg / 100); 
-                if (scale > 1.8) scale = 1.8; 
-                orb.style.transform = `scale(${scale})`;
-                orb.style.boxShadow = `0 0 ${50 + avg}px #00ffff, 0 0 ${100 + avg}px #0055ff`;
-            } else {
-                // Kembali normal jika hening
-                orb.style.transform = `scale(1)`;
-                orb.style.boxShadow = `0 0 40px #00ffff, 0 0 80px #0055ff`;
-            }
-            requestAnimationFrame(animate);
-        }
-        
-        // Mulai mendeteksi suara
-        startMic();
-    </script>
-    """
-    # Tinggi 0 agar tidak memakan tempat
-    components.html(js_audio, height=0)
 
 # ============================================================
 # MAIN APP
@@ -243,16 +216,10 @@ def main():
     st.markdown("<h1 style='text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff;'>J A R V I S</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
 
-    # KOMPONEN MIKROFON (Start / Stop)
-    # Saat tombol ini diklik, browser otomatis mengizinkan akses mikrofon,
-    # dan script JS di atas akan langsung bereaksi menggerakkan bola.
-    audio_info = mic_recorder(
-        start_prompt="🎤 Mulai Bicara",
-        stop_prompt="⏹️ Selesai Bicara",
-        just_once=True,
-        use_container_width=True,
-        key='recorder'
-    )
+    # TOMBOL REKAM (Didesain ulang futuristik via CSS di atas)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
     # RIWAYAT CHAT
     if st.session_state.messages:
@@ -262,11 +229,13 @@ def main():
                     st.markdown(msg["content"])
 
     # LOGIKA UTAMA
-    if audio_info and api_key:
-        audio_bytes = audio_info['bytes']
-        
-        if st.session_state.last_audio != audio_bytes:
-            st.session_state.last_audio = audio_bytes
+    if audio_value is not None and api_key:
+        current_id = getattr(audio_value, "file_id", None) or id(audio_value)
+
+        if current_id != st.session_state.last_audio:
+            st.session_state.last_audio = current_id
+            audio_bytes = audio_value.read()
+            
             jarvis = JarvisCore(api_key)
             
             with st.spinner("👂 Menganalisis gelombang suara..."):
