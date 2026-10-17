@@ -42,8 +42,8 @@ JARVIS_TTS_VOICE = "en-GB-RyanNeural"
 
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="Jarvis - Visual Memory", page_icon="🧊", layout="wide")
-st.title("🧊 Jarvis - Live Visual Memory (60 FPS Capture)")
-st.markdown("Jarvis sekarang merekam **gerakan** (buffer 5 frame). Tanya: *'Do you see the 3D cube rotating?'*")
+st.title("🧊 Jarvis - Live Visual Memory (3-Frame Buffer)")
+st.markdown("Jarvis sekarang merekam **gerakan** (buffer 3 frame). Tanya: *'Do you see the 3D cube rotating?'*")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -82,7 +82,7 @@ if not os.path.exists(MODEL_PATH):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
 # ============================================================
-# 🔒 KELAS KAMERA — DENGAN TAMBAHAN VISUAL BUFFER
+# 🔒 KELAS KAMERA — DENGAN 3-FRAME VISUAL BUFFER
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
     def __init__(self):
@@ -94,7 +94,8 @@ class Hand3DProcessor(VideoProcessorBase):
         )
         self.detector = vision.HandLandmarker.create_from_options(options)
         self.frame_timestamp = 0
-        # ... state 3D sama seperti sebelumnya ...
+        
+        # State 3D
         self.rx, self.ry = 0.5, 0.5
         self.scale = 1.0
         self.offset_x, self.offset_y = 0.0, 0.0
@@ -129,11 +130,10 @@ class Hand3DProcessor(VideoProcessorBase):
             (0,4), (1,5), (2,6), (3,7)
         ]
         
-        # 🔥 VISUAL BUFFER (Memori Visual Jarvis)
-        # Menyimpan 5 gambar terakhir. Jika 60fps, setiap 0.3 detik ambil 1 gambar.
-        self.frame_buffer = collections.deque(maxlen=5)
+        # 🔥 VISUAL BUFFER (Memori Visual Jarvis) - Max 3 Gambar
+        self.frame_buffer = collections.deque(maxlen=3)
         self.last_buffer_time = time.time()
-        self.buffer_interval = 0.3 # Detik. Ubah jadi 0.1 jika ingin lebih rapat.
+        self.buffer_interval = 0.2 
 
     def _to_pixel(self, landmark, w, h):
         return int(landmark.x * w), int(landmark.y * h)
@@ -408,8 +408,7 @@ class Hand3DProcessor(VideoProcessorBase):
         cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
         cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
-        # 🔥 SIMPAN KE VISUAL BUFFER
-        # Setiap 0.3 detik, simpan gambar ke dalam memori Jarvis
+        # 🔥 SIMPAN KE VISUAL BUFFER (0.2 detik)
         if current_time - self.last_buffer_time > self.buffer_interval:
             self.frame_buffer.append(img.copy())
             self.last_buffer_time = current_time
@@ -485,7 +484,7 @@ def generate_tts_edge(text: str) -> bytes or None:
 SYSTEM_PROMPT = (
     "You are J.A.R.V.I.S., Tony Stark's AI assistant. "
     "CRITICAL RULE: You MUST ALWAYS respond in British English, with a calm, polite, and dry-witted tone. "
-    "You will receive a sequence of images captured from a live camera (like a flipbook). "
+    "You will receive a sequence of up to 3 images captured from a live camera (like a flipbook). "
     "Analyze the SEQUENCE of images to understand the movement, trajectory, or changes happening. "
     "For example, if a 3D cube is rotating or a hand is moving, describe the motion you observe across the frames."
 )
@@ -524,7 +523,7 @@ with col2:
 # ============================================================
 st.markdown("---")
 st.header("💬 Ngobrol dengan Jarvis (Memori Visual)")
-st.caption("Ketik pertanyaanmu. Jarvis akan menganalisis **5 frame terakhir** untuk melihat pergerakan.")
+st.caption("Ketik pertanyaanmu. Jarvis akan menganalisis **3 frame terakhir** untuk melihat pergerakan.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
@@ -542,7 +541,7 @@ if user_q:
 
     # 🔥 AMBIL DARI VISUAL BUFFER
     if ctx.state.playing and ctx.video_processor is not None and len(ctx.video_processor.frame_buffer) > 0:
-        # Ambil semua gambar di buffer (maksimal 5)
+        # Ambil semua gambar di buffer (maksimal 3)
         for frame_bgr in ctx.video_processor.frame_buffer:
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             pil_imgs.append(Image.fromarray(frame_rgb))
@@ -554,7 +553,7 @@ if user_q:
         
         # Masukkan semua gambar ke dalam content
         for p_img in pil_imgs:
-            b64 = image_to_base64(p_img, max_size=512, quality=60) # Resize kecil agar cepat & hemat token
+            b64 = image_to_base64(p_img, max_size=512, quality=60) 
             content_list.append({
                 "type": "image_url", 
                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
@@ -617,7 +616,7 @@ with st.sidebar:
     st.markdown("---")
     st.caption("Teknologi:")
     st.caption("• Camera: 60 FPS")
-    st.caption("• Buffer: 2 FPS (0.5 detik/frame)")
+    st.caption("• Buffer: 3 frame (0.2 detik/frame)")
     st.caption("• Vision Model: Qwen 3.8")
 
 st.markdown("---")
