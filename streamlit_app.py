@@ -21,16 +21,16 @@ VOICE_ID = "id-ID-ArdiNeural"
 VOICE_RATE = "+0%"    
 VOICE_PITCH = "-4Hz"  
 
-# PERUBAHAN: Panggilan menjadi "Sir Lois" & Perbaikan Logika Koreksi Suara
+# PERUBAHAN: Panggilan menjadi "Sir Lois"
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Sir Lois. 
 Panggil pengguna dengan sebutan "Sir Lois".
 Anda menguasai seluruh pengetahuan: Matematika, Sains, Geopolitik, Sejarah.
 
 ATURAN KOREKSI SUARA (SANGAT PENTING):
-- Sistem STT (Speech-to-Text) yang digunakan Tuan mungkin sering salah menangkap kata. 
-- Jika Sir Lois mengucapkan kata "sir", sistem mungkin menangkapnya sebagai "sure", "sire", atau "sur". Abaikan kesalahan itu dan anggap dia memanggil Anda.
-- Koreksi secara otomatis kesalahan ejaan/fonetik dalam teks yang masuk sebelum memberikan jawaban.
+- Sistem STT mungkin sering salah menangkap kata karena aksen campuran. 
+- Jika Sir Lois mengucapkan kata "sir", sistem mungkin menangkapnya sebagai "sure", "sire", atau "sur". Pahami bahwa itu adalah panggilan untuk Anda.
+- Pahami konteks kalimat dan koreksi otomatis kata-kata yang salah ejaan/fonetik.
 
 ATURAN MATEMATIKA:
 - Gunakan $ rumus $ untuk inline dan $$ rumus $$ untuk blok.
@@ -42,7 +42,7 @@ KEPRIBADIAN:
 """
 
 # ============================================================
-# FUNGSI PEMBERSIH LATEX & AUDIO (AUTO-PLAY SILUMAN)
+# FUNGSI PEMBERSIH LATEX & AUDIO
 # ============================================================
 def sanitize_latex(text):
     if not text: return text
@@ -55,7 +55,6 @@ def sanitize_latex(text):
 def play_audio_auto(audio_bytes):
     if not audio_bytes: return
     b64 = base64.b64encode(audio_bytes).decode()
-    
     html = f"""
     <audio id="jarvis-audio" style="display: none;">
         <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
@@ -63,47 +62,79 @@ def play_audio_auto(audio_bytes):
     <script>
         var audio = document.getElementById("jarvis-audio");
         var playPromise = audio.play();
-        
         if (playPromise !== undefined) {{
-            playPromise.then(_ => {{
-                // Berhasil diputar
-            }}).catch(error => {{
-                console.log("Autoplay diblokir. Menunggu klik dari user...");
-                document.body.addEventListener('click', function() {{
-                    audio.play();
-                }}, {{ once: true }});
+            playPromise.catch(error => {{
+                document.body.addEventListener('click', function() {{ audio.play(); }}, {{ once: true }});
             }});
         }}
     </script>
     """
     components.html(html, height=0)
 
+# ============================================================
+# ENGINE KOMUNIKASI (DUAL STT)
+# ============================================================
 class JarvisCore:
     def __init__(self, api_key):
         self.api_key = api_key
         self.client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1", timeout=60.0) if api_key else None
 
-    def transcribe(self, audio_bytes):
+    def transcribe_dual(self, audio_bytes):
+        """Mendengarkan dalam 2 bahasa (ID & EN) dan memilih yang terbaik."""
+        url = "http://www.google.com/speech-api/v2/recognize"
+        key = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"
+        headers = {"Content-Type": "audio/l16; rate=16000"}
+        
+        results = {}
+        
+        # Coba deteksi Bahasa Indonesia
         try:
-            url = "http://www.google.com/speech-api/v2/recognize"
-            params = {"client": "chromium", "lang": "id-ID", "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"}
-            headers = {"Content-Type": "audio/l16; rate=16000"}
-            response = requests.post(url, params=params, headers=headers, data=audio_bytes, timeout=15)
-            for line in response.text.split("\n"):
+            params_id = {"client": "chromium", "lang": "id-ID", "key": key}
+            resp_id = requests.post(url, params=params_id, headers=headers, data=audio_bytes, timeout=10)
+            for line in resp_id.text.split("\n"):
                 if not line.strip(): continue
-                try:
-                    data = json.loads(line)
-                    if "result" in data and data["result"]:
-                        return data["result"][0]["alternative"][0]["transcript"], "ok"
-                except json.JSONDecodeError:
-                    continue
-            return "Suara tidak terdeteksi.", "no_speech"
-        except Exception as e:
-            return f"Error STT: {e}", "error"
+                data = json.loads(line)
+                if "result" in data and data["result"]:
+                    results["id"] = data["result"][0]["alternative"][0]["transcript"]
+                    break
+        except: pass
+
+        # Coba deteksi Bahasa Inggris
+        try:
+            params_en = {"client": "chromium", "lang": "en-US", "key": key}
+            resp_en = requests.post(url, params=params_en, headers=headers, data=audio_bytes, timeout=10)
+            for line in resp_en.text.split("\n"):
+                if not line.strip(): continue
+                data = json.loads(line)
+                if "result" in data and data["result"]:
+                    results["en"] = data["result"][0]["alternative"][0]["transcript"]
+                    break
+        except: pass
+
+        # Logika Pemilihan: Jika ada campuran "sir", pilih yang lebih panjang/kompleks
+        if "id" in results and "en" in results:
+            text_id = results["id"]
+            text_en = results["en"]
+            
+            # AI sering salah dengar "sir" jadi "sure" di bahasa Indo.
+            # Jika di bahasa Inggris ada kata "sir", prioritaskan bahasa Inggris.
+            if "sir" in text_en.lower() or "sure" in text_en.lower():
+                return text_en, "ok"
+            # Jika teks Indonesia lebih panjang (lebih banyak kata yang dikenali), pilih Indo
+            elif len(text_id) > len(text_en):
+                return text_id, "ok"
+            else:
+                return text_en, "ok"
+        elif "id" in results:
+            return results["id"], "ok"
+        elif "en" in results:
+            return results["en"], "ok"
+        
+        return "Suara tidak terdeteksi atau terlalu pelan.", "no_speech"
 
     def generate_stream(self, user_message, chat_history):
         if not self.client: 
-            yield "API Key belum diisi."
+            yield "API Key belum diisi, Sir Lois."
             return
         try:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -124,6 +155,7 @@ class JarvisCore:
             clean_text = re.sub(r'\$.*?\$', ' rumus ', clean_text)
             clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
             
+            # Deteksi bahasa untuk TTS
             en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
             id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu"]
             en_count = sum(1 for word in re.findall(r'\b\w+\b', clean_text.lower()) if word in en_words)
@@ -252,20 +284,22 @@ def main():
             
             jarvis = JarvisCore(api_key)
             
-            with st.spinner("👂 Menganalisis gelombang suara..."):
-                user_text, stt_status = jarvis.transcribe(raw_audio)
+            # GUNAKAN DUAL STT DI SINI
+            with st.spinner("👂 Mendengarkan (Mode Dual-Bahasa)..."):
+                user_text, stt_status = jarvis.transcribe_dual(raw_audio)
                 
             if stt_status != "ok":
                 st.warning(user_text)
                 return
 
+            # Tampilkan hasil dengar ke layar agar Sir Lois tahu apa yang didengar Jarvis
+            st.toast(f"Mendengar: {user_text}")
             st.session_state.messages.append({"role": "user", "content": user_text})
             
             with st.chat_message("assistant", avatar="🤖"):
                 message_placeholder = st.empty()
                 full_response = ""
                 with st.spinner("🧠 Jarvis berpikir..."):
-                    # AI akan otomatis mengoreksi teks yang salah dengar dari STT
                     for chunk in jarvis.generate_stream(user_text, st.session_state.messages[:-1]):
                         full_response += chunk
                         message_placeholder.markdown(full_response + "▌")
