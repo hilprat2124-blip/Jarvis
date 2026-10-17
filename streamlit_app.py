@@ -17,7 +17,7 @@ st.title("🧊 3D Free View - Hand Tracking")
 st.write("""
 **Panduan Gestur:**
 - **Rotasi:** Pinch cepat (sentuh jempol+telunjuk) lalu lepaskan, gerakkan tangan.
-- **Zoom:** Tanpa pinch, dekatkan jari (Zoom Out) atau jauhkan jari (Zoom In).
+- **Zoom:** Buka jari (tidak pinch) dan **tahan diam sejenak**, lalu dekatkan/jauhkan jari secara perlahan.
 - **Geser (Pan):** Tahan pinch >1 detik (tunggu lingkaran penuh), lalu geser tangan.
 """)
 
@@ -29,8 +29,11 @@ RTC_CONFIGURATION = RTCConfiguration(
 # ============ Konstanta ============
 PINCH_THRESHOLD = 40      # Jarak (px) deteksi pinch
 HOLD_THRESHOLD = 1.0      # Waktu (detik) untuk Pan
+ZOOM_DELAY = 0.5          # Jeda (detik) sebelum fitur zoom aktif (mencegah tidak sengaja)
+MAX_ZOOM_SPEED = 0.05     # Kecepatan transisi zoom
+
 MIN_SCALE, MAX_SCALE = 0.5, 3.0
-MIN_DIST, MAX_DIST = 60, 200 # Range jarak untuk zoom
+MIN_DIST, MAX_DIST = 60, 200 
 
 THUMB_TIP = 4
 INDEX_TIP = 8
@@ -77,6 +80,10 @@ class Hand3DProcessor(VideoProcessorBase):
         self.pinch_start_time = 0.0
         self.is_panning = False
         self.prev_index_pos = None
+        
+        # --- State Anti-Error untuk Zoom ---
+        self.zoom_unlock_time = 0.0 # Waktu saat zoom diizinkan
+        self.prev_dist = None
 
         # Vertex Kubus 3D
         self.vertices = np.array([
@@ -103,44 +110,34 @@ class Hand3DProcessor(VideoProcessorBase):
             cv2.circle(img, px, 2, (120, 120, 120), -1, cv2.LINE_AA)
 
     def _draw_3d_cube(self, img, cx, cy):
-        # 1. Matriks Rotasi
         cos_x, sin_x = np.cos(self.rx), np.sin(self.rx)
         cos_y, sin_y = np.cos(self.ry), np.sin(self.ry)
         
         rot_x = np.array([[1, 0, 0], [0, cos_x, -sin_x], [0, sin_x, cos_x]])
         rot_y = np.array([[cos_y, 0, sin_y], [0, 1, 0], [-sin_y, 0, cos_y]])
         rot_matrix = np.dot(rot_y, rot_x)
-
-        # 2. Transformasi Vertex
         transformed = np.dot(self.vertices, rot_matrix.T)
         
-        # 3. Proyeksi ke 2D
         pts_2d = []
         fov = 4.0
         for v in transformed:
             v_scaled = v * self.scale
             z = v_scaled[2] + fov
-            if z <= 0.1: z = 0.1 # Cegah pembagian nol
+            if z <= 0.1: z = 0.1
             
             px = int((v_scaled[0] / z) * 150) + cx + self.offset_x
             py = int((v_scaled[1] / z) * 150) + cy + self.offset_y
             pts_2d.append((px, py, v_scaled[2]))
 
-        # 4. Gambar Garis (Optimasi Tanpa addWeighted)
         for edge in self.edges:
             p1, p2 = pts_2d[edge[0]], pts_2d[edge[1]]
             depth_avg = (p1[2] + p2[2]) / 2
             intensity = np.clip(1.0 - (depth_avg / 2.0), 0.2, 1.0)
-            
-            # Warna Neon Cyan (B, G, R)
             color = (int(255 * intensity), int(255 * intensity), 0)
             
-            # Efek Glow: Garis tebal transparan (hanya 1x render per garis)
             cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), color, 6, cv2.LINE_AA)
-            # Garis Inti: Tipis dan tajam
             cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), (255, 255, 255), 1, cv2.LINE_AA)
 
-        # 5. Titik Vertex
         for p in pts_2d:
             cv2.circle(img, (p[0], p[1]), 3, (0, 0, 255), -1, cv2.LINE_AA)
 
@@ -168,8 +165,11 @@ class Hand3DProcessor(VideoProcessorBase):
             dist = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
             currently_pinching = dist < PINCH_THRESHOLD
 
-            # --- LOGIKA GESTUR ---
+            # --- LOGIKA GESTUR UTAMA ---
             if currently_pinching:
+                # Set waktu kunci zoom (karena sedang pinch, zoom tidak boleh aktif dulu)
+                self.zoom_unlock_time = time.time() + ZOOM_DELAY
+                
                 if not self.is_pinching:
                     self.is_pinching = True
                     self.pinch_start_time = time.time()
@@ -179,9 +179,8 @@ class Hand3DProcessor(VideoProcessorBase):
                 if duration > HOLD_THRESHOLD:
                     self.is_panning = True
                 
-                # Proses Gerakan
                 if self.prev_index_pos is not None:
-                    dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20) # Clamp agar tidak lompat
+                    dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20)
                     dy = np.clip(index[1] - self.prev_index_pos[1], -20, 20)
                     
                     if self.is_panning:
@@ -192,15 +191,33 @@ class Hand3DProcessor(VideoProcessorBase):
                         self.rx += dy * 0.015
                 
                 self.prev_index_pos = index
+                
             else:
+                # Tidak Pinch
+                if self.is_pinching:
+                    # Baru saja lepas pinch, reset timer zoom agar tidak langsung zoom
+                    self.zoom_unlock_time = time.time() + ZOOM_DELAY
+                
                 self.is_pinching = False
                 self.is_panning = False
                 self.prev_index_pos = None
                 
-                # --- FITUR ZOOM (Saat tidak pinch) ---
-                # Jarak dijepit antara 60-200px, dipetakan ke skala 0.5 - 3.0
-                target_scale = np.interp(dist, [MIN_DIST, MAX_DIST], [MIN_SCALE, MAX_SCALE])
-                self.scale += (target_scale - self.scale) * 0.15 # Smoothing (15%)
+                # --- FITUR ZOOM YANG AMAN ---
+                # Cek apakah waktu saat ini sudah melewati batas kunci (zoom_unlock_time)
+                if time.time() > self.zoom_unlock_time:
+                    if self.prev_dist is not None:
+                        # Hitung seberapa cepat jari bergerak (delta jarak)
+                        dist_delta = abs(dist - self.prev_dist)
+                        
+                        # Jika gerakan jari lambat (di bawah threshold 5px per frame), baru zoom jalan
+                        if dist_delta < 5.0:
+                            target_scale = np.interp(dist, [MIN_DIST, MAX_DIST], [MIN_SCALE, MAX_SCALE])
+                            
+                            # Transisi mulus (max speed dibatasi)
+                            scale_step = target_scale - self.scale
+                            self.scale += np.clip(scale_step, -MAX_ZOOM_SPEED, MAX_ZOOM_SPEED)
+                            
+                    self.prev_dist = dist
 
         # --- RENDER 3D ---
         cx, cy = w // 2, h // 2
@@ -211,8 +228,10 @@ class Hand3DProcessor(VideoProcessorBase):
             status, color = "GESER (PAN)", (0, 0, 255)
         elif self.is_pinching:
             status, color = "ROTASI", (0, 255, 255)
+        elif time.time() > self.zoom_unlock_time:
+            status, color = "ZOOM (Aktif)", (0, 255, 0)
         else:
-            status, color = "ZOOM", (0, 255, 0)
+            status, color = "SIAP", (200, 200, 200)
             
         cv2.putText(img, f"MODE: {status}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
         cv2.putText(img, f"Skala: {self.scale:.2f}x | Jarak: {int(dist)}px", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
@@ -238,6 +257,6 @@ webrtc_streamer(
     key="hand-3d-tracker",
     video_processor_factory=Hand3DProcessor,
     rtc_configuration=RTC_CONFIGURATION,
-    media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False}, # Resolusi diturunkan sedikit agar ringan
+    media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
     async_processing=True,
 )
