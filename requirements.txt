@@ -1,5 +1,5 @@
 streamlit
 openai
-gTTS
-requests
+edge-tts
 pydub
+requests
