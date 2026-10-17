@@ -11,15 +11,15 @@ import edge_tts
 from openai import OpenAI
 
 # ============================================================
-# KONFIGURASI UTAMA
+# KONFIGURASI UTAMA (J.A.R.V.I.S)
 # ============================================================
-st.set_page_config(page_title="J.A.R.V.I.S", page_icon="🔵", layout="centered")
+st.set_page_config(page_title="J.A.R.V.I.S", page_icon="🔵", layout="wide")
 
 AI_MODEL = "openai/gpt-oss-120b" 
-VOICE_EN = "en-GB-RyanNeural"    
-VOICE_ID = "id-ID-ArdiNeural"    
-VOICE_RATE = "+0%"    
-VOICE_PITCH = "-4Hz"  
+VOICE_EN = "en-GB-RyanNeural"    # Suara Pria British (Sangat Clean)
+VOICE_ID = "id-ID-ArdiNeural"    # Suara Pria Indonesia (Sangat Clean)
+VOICE_RATE = "-2%"               # Sedikit lebih lambat agar terkesan tenang
+VOICE_PITCH = "-5Hz"             # Sedikit berat dan berwibawa
 
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Tuan Lois. 
@@ -33,6 +33,7 @@ ATURAN MATEMATIKA:
 KEPRIBADIAN:
 - Cerdas, tenang, sedikit sarkasme khas Jarvis.
 - Jika ditanya Lois tinggal di mana, jawab: "Tuan Lois tinggal di Banten."
+- Maksimal 3-4 kalimat agar tidak terlalu panjang saat diucapkan.
 """
 
 # ============================================================
@@ -69,13 +70,13 @@ class JarvisCore:
                         return data["result"][0]["alternative"][0]["transcript"], "ok"
                 except json.JSONDecodeError:
                     continue
-            return "Suara tidak terdeteksi.", "no_speech"
+            return "Suara tidak terdeteksi, Tuan Lois.", "no_speech"
         except Exception as e:
             return f"Error STT: {e}", "error"
 
     def generate_stream(self, user_message, chat_history):
         if not self.client: 
-            yield "API Key belum diisi."
+            yield "API Key belum diisi, Tuan Lois."
             return
         try:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -93,8 +94,8 @@ class JarvisCore:
 
     def text_to_speech(self, text):
         try:
-            clean_text = re.sub(r'\$\$.*?\$\$', ' rumus ', text, flags=re.DOTALL)
-            clean_text = re.sub(r'\$.*?\$', ' rumus ', clean_text)
+            clean_text = re.sub(r'\$\$.*?\$\$', ' rumus matematika ', text, flags=re.DOTALL)
+            clean_text = re.sub(r'\$.*?\$', ' rumus matematika ', clean_text)
             clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
             
             en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
@@ -121,144 +122,121 @@ class JarvisCore:
             return None
 
 # ============================================================
-# FUNGSI UI HOLOGRAM
+# UI: HOLOGRAM COMPONENT (BEBAS KOTAK HITAM)
 # ============================================================
-def render_hologram_ui():
-    """Menyuntikkan HTML/CSS/JS langsung ke Streamlit tanpa iframe kotak hitam"""
+def render_hologram():
+    """Komponen HTML/JS murni untuk bola hologram yang responsif terhadap suara."""
     html_code = """
+    <!DOCTYPE html>
+    <html>
+    <head>
     <style>
-        /* Latar belakang gelap futuristik */
-        .stApp {
-            background: radial-gradient(circle at 50% 50%, #001122 0%, #000000 100%);
-            overflow: hidden;
+        body {
+            margin: 0; padding: 0;
+            background: transparent; /* Transparan agar menyatu dengan Streamlit */
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            height: 100vh; overflow: hidden;
+            font-family: 'Courier New', monospace;
         }
-        
-        /* Sembunyikan komponen Streamlit yang tidak perlu */
-        header, footer, #MainMenu { display: none !important; }
-        .block-container { padding-top: 2rem !important; }
-        
-        /* Container Bola */
-        .hologram-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            margin-top: 5vh;
-            margin-bottom: 2vh;
-            position: relative;
+        .orb-container {
+            position: relative; width: 200px; height: 200px;
+            display: flex; justify-content: center; align-items: center;
         }
-
         /* Cincin Luar */
         .ring-outer {
-            position: absolute;
-            width: 220px;
-            height: 220px;
-            border: 2px dashed #00ffff;
-            border-radius: 50%;
-            animation: spin 10s linear infinite;
-            opacity: 0.3;
+            position: absolute; width: 180px; height: 180px;
+            border: 2px dashed #00ffff; border-radius: 50%;
+            animation: spin 15s linear infinite; opacity: 0.4;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.2);
         }
-
         /* Cincin Dalam */
         .ring-inner {
-            position: absolute;
-            width: 180px;
-            height: 180px;
-            border: 1px solid #00ffff;
-            border-radius: 50%;
-            animation: spin-reverse 5s linear infinite;
-            opacity: 0.5;
-            box-shadow: 0 0 20px #00ffff inset;
+            position: absolute; width: 140px; height: 140px;
+            border: 1px solid #00ffff; border-radius: 50%;
+            animation: spin-reverse 8s linear infinite; opacity: 0.6;
         }
-
-        /* Bola Utama (Plasma Core) */
+        /* Bola Plasma */
         .plasma-core {
-            width: 120px;
-            height: 120px;
-            background: radial-gradient(circle, #ffffff 0%, #00ffff 30%, #0055ff 70%, #000000 100%);
+            width: 100px; height: 100px;
+            background: radial-gradient(circle, #ffffff 0%, #00ffff 30%, #0055ff 70%, transparent 100%);
             border-radius: 50%;
             box-shadow: 0 0 40px #00ffff, 0 0 80px #0055ff;
             animation: pulse 2s infinite alternate;
             z-index: 10;
-            transition: transform 0.1s ease-out, box-shadow 0.1s ease-out;
+            transition: transform 0.05s linear, box-shadow 0.05s linear;
         }
-
-        /* Animasi */
+        /* Animasi Berputar */
         @keyframes spin { 100% { transform: rotate(360deg); } }
         @keyframes spin-reverse { 100% { transform: rotate(-360deg); } }
+        /* Animasi Bernapas */
         @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 30px #00ffff, 0 0 60px #0055ff; }
-            100% { transform: scale(1.05); box-shadow: 0 0 50px #00ffff, 0 0 100px #0055ff; }
+            0% { transform: scale(0.95); box-shadow: 0 0 30px #00ffff; }
+            100% { transform: scale(1.05); box-shadow: 0 0 60px #00ffff, 0 0 100px #0055ff; }
         }
-
-        /* Teks Status */
-        .status-text {
-            margin-top: 30px;
-            color: #00ffff;
-            font-family: 'Courier New', monospace;
-            letter-spacing: 3px;
-            font-size: 14px;
-            text-transform: uppercase;
-            opacity: 0.8;
-            text-shadow: 0 0 10px #00ffff;
+        .status {
+            margin-top: 30px; color: #00ffff; letter-spacing: 3px;
+            font-size: 12px; text-transform: uppercase; text-shadow: 0 0 10px #00ffff;
+            opacity: 0.8; transition: all 0.3s;
         }
     </style>
+    </head>
+    <body>
+        <div class="orb-container">
+            <div class="ring-outer"></div>
+            <div class="ring-inner"></div>
+            <div class="plasma-core" id="orb"></div>
+        </div>
+        <div class="status" id="status">Menunggu Perintah...</div>
 
-    <div class="hologram-container">
-        <div class="ring-outer"></div>
-        <div class="ring-inner"></div>
-        <div class="plasma-core" id="jarvis-orb"></div>
-        <div class="status-text" id="status-text">Mendengarkan...</div>
-    </div>
+        <script>
+            const orb = document.getElementById('orb');
+            const status = document.getElementById('status');
+            let audioContext, analyser, microphone, dataArray;
 
-    <script>
-        // Script untuk mendeteksi mikrofon dan menggerakkan bola
-        const orb = document.getElementById('jarvis-orb');
-        const statusText = document.getElementById('status-text');
-        
-        async function initAudio() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: { echoCancellation: true, noiseSuppression: true } 
-                });
-                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                const analyser = audioContext.createAnalyser();
-                const microphone = audioContext.createMediaStreamSource(stream);
-                
-                analyser.fftSize = 256;
-                microphone.connect(analyser);
-                const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-                function animate() {
-                    analyser.getByteFrequencyData(dataArray);
-                    let sum = 0;
-                    for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-                    let avg = sum / dataArray.length;
-
-                    if (avg > 10) {
-                        // Saat ada suara
-                        statusText.innerText = "Mendengar Suara...";
-                        let scale = 1 + (avg / 80);
-                        if (scale > 1.8) scale = 1.8; // Batas maksimal
-                        orb.style.transform = `scale(${scale})`;
-                        orb.style.boxShadow = `0 0 ${50 + avg}px #00ffff, 0 0 ${100 + avg}px #0055ff`;
-                    } else {
-                        // Saat hening
-                        statusText.innerText = "Mendengarkan...";
-                        orb.style.transform = `scale(1)`;
-                        orb.style.boxShadow = `0 0 40px #00ffff, 0 0 80px #0055ff`;
-                    }
-                    requestAnimationFrame(animate);
+            async function initAudio() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: { echoCancellation: true, noiseSuppression: true } 
+                    });
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    analyser = audioContext.createAnalyser();
+                    microphone = audioContext.createMediaStreamSource(stream);
+                    analyser.fftSize = 256;
+                    microphone.connect(analyser);
+                    dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    animate();
+                } catch (e) {
+                    status.innerText = "Izin Mikrofon Diperlukan";
                 }
-                animate();
-            } catch (err) {
-                statusText.innerText = "Izin Mikrofon Ditolak";
             }
-        }
-        initAudio();
-    </script>
+
+            function animate() {
+                analyser.getByteFrequencyData(dataArray);
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+                let avg = sum / dataArray.length;
+
+                if (avg > 10) {
+                    status.innerText = "Mendengar Suara...";
+                    let scale = 1 + (avg / 100);
+                    if (scale > 1.5) scale = 1.5;
+                    orb.style.transform = `scale(${scale})`;
+                    orb.style.boxShadow = `0 0 ${50 + avg}px #00ffff, 0 0 ${100 + avg}px #0055ff`;
+                } else {
+                    status.innerText = "Mendengarkan...";
+                    orb.style.transform = `scale(1)`;
+                    orb.style.boxShadow = `0 0 40px #00ffff, 0 0 80px #0055ff`;
+                }
+                requestAnimationFrame(animate);
+            }
+            initAudio();
+        </script>
+    </body>
+    </html>
     """
-    st.markdown(html_code, unsafe_allow_html=True)
+    # Render komponen dengan tinggi 350px agar pas, tanpa kotak hitam
+    components.html(html_code, height=350)
 
 def play_audio_auto(audio_bytes):
     if not audio_bytes: return
@@ -283,7 +261,7 @@ def main():
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
 
-    # Sidebar untuk API Key
+    # SIDEBAR
     with st.sidebar:
         st.header("⚙️ Sistem Kontrol")
         api_key_input = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
@@ -297,19 +275,28 @@ def main():
             st.session_state.last_audio_id = None
             st.rerun()
 
-    # 1. RENDER BOLA HOLOGRAM (Tengah Layar)
-    render_hologram_ui()
-
-    # 2. TOMBOL REKAM (Desain Ulang Streamlit)
+    # CSS GLOBAL (Latar Belakang & Grid Futuristik)
     st.markdown("""
         <style>
-            /* Desain ulang tombol rekam bawaan Streamlit */
+            /* Latar belakang gelap dengan grid futuristik */
+            .stApp {
+                background-color: #050505;
+                background-image: 
+                    linear-gradient(rgba(0, 255, 255, 0.05) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(0, 255, 255, 0.05) 1px, transparent 1px);
+                background-size: 30px 30px;
+                color: #e0f7fa;
+            }
+            /* Sembunyikan Header/Footer Streamlit */
+            header, footer { visibility: hidden; }
+            
+            /* Desain Tombol Rekam (Mikrofon) */
             [data-testid="stAudioInput"] {
                 background: rgba(0, 255, 255, 0.05);
                 border: 1px solid #00ffff;
                 border-radius: 50px;
                 padding: 10px;
-                box-shadow: 0 0 15px #00ffff;
+                box-shadow: 0 0 20px #00ffff;
                 margin: 0 auto;
                 display: flex;
                 justify-content: center;
@@ -317,22 +304,31 @@ def main():
                 transition: all 0.3s ease;
             }
             [data-testid="stAudioInput"]:hover {
-                box-shadow: 0 0 30px #00ffff;
-                background: rgba(0, 255, 255, 0.1);
+                box-shadow: 0 0 40px #00ffff;
+                background: rgba(0, 255, 255, 0.15);
             }
-            /* Warna tombol di dalamnya */
             [data-testid="stAudioInput"] button {
                 color: #00ffff !important;
             }
+            
+            /* Desain Expander (Riwayat Chat) */
+            .stExpander {
+                background: rgba(0, 255, 255, 0.03);
+                border: 1px solid rgba(0, 255, 255, 0.2);
+                border-radius: 10px;
+            }
         </style>
     """, unsafe_allow_html=True)
-    
-    # Kolom agar tombol di tengah
+
+    # RENDER BOLA HOLOGRAM (Tengah Layar)
+    render_hologram()
+
+    # TOMBOL MIKROFON (Di Tengah Bawah Bola)
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
-    # 3. RIWAYAT CHAT (POP-UP)
+    # RIWAYAT CHAT (POP-UP DI BAWAH)
     if st.session_state.messages:
         st.markdown("<br>", unsafe_allow_html=True)
         with st.expander("💬 Riwayat Percakapan", expanded=False):
@@ -340,7 +336,7 @@ def main():
                 with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
                     st.markdown(msg["content"])
 
-    # 4. LOGIKA UTAMA
+    # LOGIKA UTAMA
     if audio_value is not None and api_key:
         current_id = getattr(audio_value, "file_id", None) or id(audio_value)
 
