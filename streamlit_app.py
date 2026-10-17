@@ -36,7 +36,7 @@ KEPRIBADIAN:
 """
 
 # ============================================================
-# FUNGSI PEMBERSIH LATEX & AUDIO (AUTO-PLAY)
+# FUNGSI PEMBERSIH LATEX & AUDIO (AUTO-PLAY SILUMAN)
 # ============================================================
 def sanitize_latex(text):
     if not text: return text
@@ -47,31 +47,35 @@ def sanitize_latex(text):
     return text.strip()
 
 def play_audio_auto(audio_bytes):
-    """Memutar audio menggunakan HTML5 Autoplay & Base64 (Paling Ampuh)"""
+    """Memutar audio secara otomatis dengan trik AudioContext & Event Listener"""
     if not audio_bytes: return
     b64 = base64.b64encode(audio_bytes).decode()
     
-    # Kita tampilkan audio player kecil agar user bisa menekan play jika diblokir
-    st.markdown("**🔊 Suara Jarvis:**")
-    audio_html = f"""
-        <audio controls autoplay id="jarvis-audio">
-            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-        </audio>
-        <script>
-            var audio = document.getElementById("jarvis-audio");
-            // Paksa putar
-            var playPromise = audio.play();
-            if (playPromise !== undefined) {{
-                playPromise.catch(function(error) {{
-                    // Jika diblokir browser, tunggu user klik di mana saja
-                    document.body.addEventListener('click', function() {{
-                        audio.play();
-                    }}, {{ once: true }});
-                }});
-            }}
-        </script>
+    # Kita buat player tersembunyi (display: none), tapi JavaScript akan memaksanya bunyi
+    html = f"""
+    <audio id="jarvis-audio" style="display: none;">
+        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+    </audio>
+    <script>
+        var audio = document.getElementById("jarvis-audio");
+        
+        // Coba putar otomatis
+        var playPromise = audio.play();
+        
+        if (playPromise !== undefined) {{
+            playPromise.then(_ => {{
+                // Berhasil diputar (karena user sudah pernah klik mic)
+            }}).catch(error => {{
+                // Jika browser masih memblokir, kita pasang "jebakan" di seluruh layar
+                console.log("Autoplay diblokir. Menunggu klik dari user...");
+                document.body.addEventListener('click', function() {{
+                    audio.play();
+                }}, {{ once: true }});
+            }});
+        }}
+    </script>
     """
-    components.html(audio_html, height=60)
+    components.html(html, height=0)
 
 class JarvisCore:
     def __init__(self, api_key):
@@ -225,7 +229,7 @@ def main():
     with col2:
         audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
-    # JIKA AUDIO SUDAH DIPROSES, TAMPILKAN SUARANYA DI SINI
+    # JIKA AUDIO SUDAH DIPROSES, PUTAR DI SINI
     if st.session_state.audio_bytes:
         play_audio_auto(st.session_state.audio_bytes)
         st.divider()
@@ -274,7 +278,6 @@ def main():
                 if audio_reply:
                     st.session_state.audio_bytes = audio_reply
             
-            # Rerun dilakukan SETELAH audio disimpan, agar player muncul dan autoplay
             st.rerun()
 
 if __name__ == "__main__":
