@@ -5,27 +5,29 @@ import os
 import json
 import base64
 import asyncio
+import re
 import requests
 import edge_tts
 from openai import OpenAI
-from pydub import AudioSegment
-from pydub.playback import play # Hanya untuk referensi
 
 # ============================================================
-# KONFIGURASI SUARA JARVIS (IRON MAN STYLE)
+# KONFIGURASI
 # ============================================================
-# en-GB-RyanNeural = Pria British (Inggris) - Sangat mirip JARVIS
-# id-ID-ArdiNeural = Pria Indonesia (Cadangan)
-VOICE_MODEL = "en-GB-RyanNeural" 
-VOICE_RATE = "-10%"   # Sedikit lebih lambat agar tenang
-VOICE_PITCH = "-15Hz" # Diturunkan nadanya agar berat & berwibawa
+st.set_page_config(page_title="J.A.R.V.I.S", page_icon="🤖", layout="centered")
+
+# Pengaturan Suara
+VOICE_EN = "en-GB-RyanNeural"   # Pria British (JARVIS Style)
+VOICE_ID = "id-ID-ArdiNeural"   # Pria Indonesia
+VOICE_RATE = "-10%"             # Lebih tenang
+VOICE_PITCH = "-15Hz"           # Lebih berat (Iron Man style)
 
 AI_MODEL = "openai/gpt-oss-20b"
-STT_LANGUAGE = "id-ID"
 
 SYSTEM_PROMPT = (
-    "Anda adalah JARVIS, asisten AI dari Iron Man. Anda sangat cerdas, tenang, formal, dan efisien. "
-    "Anda menjawab dalam Bahasa Indonesia dengan gaya yang santun dan profesional. "
+    "Anda adalah J.A.R.V.I.S, asisten AI dari Iron Man. Anda sangat cerdas, tenang, formal, dan efisien. "
+    "ATURAN BAHASA: Anda harus merespon menggunakan bahasa yang sama dengan yang digunakan user. "
+    "Jika user bertanya dalam Bahasa Inggris, jawab dalam Bahasa Inggris dengan gaya British formal. "
+    "Jika user bertanya dalam Bahasa Indonesia, jawab dalam Bahasa Indonesia dengan gaya formal. "
     "Batasi jawaban maksimal 3-4 kalimat."
 )
 
@@ -40,7 +42,10 @@ def get_api_key():
 def transcribe_audio(audio_bytes):
     try:
         url = "http://www.google.com/speech-api/v2/recognize"
-        params = {"client": "chromium", "lang": STT_LANGUAGE, "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"}
+        # Gunakan deteksi bahasa otomatis atau set ke 'en-US' untuk default lebih baik
+        # Google API butuh spesifik bahasa, jadi kita set 'id-ID' dulu, 
+        # jika gagal kita bisa fallback. (Catatan: Google API gratis tidak mendukung auto-detect murni)
+        params = {"client": "chromium", "lang": "id-ID", "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"}
         headers = {"Content-Type": "audio/l16; rate=16000"}
         response = requests.post(url, params=params, headers=headers, data=audio_bytes, timeout=15)
         
@@ -75,49 +80,76 @@ def get_ai_response(user_message, chat_history, api_key):
         return f"Error AI: {e}", "error"
 
 # ============================================================
-# TTS (JARVIS VOICE GENERATOR)
+# TTS (Deteksi Bahasa Otomatis)
 # ============================================================
+def detect_language(text):
+    """
+    Deteksi sederhana apakah teks berbahasa Inggris atau Indonesia.
+    Menggunakan pencocokan kata umum (stopwords).
+    """
+    text_lower = text.lower()
+    
+    # Kata-kata umum bahasa Inggris
+    en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on", "with", "as", "i", "am", "your"]
+    # Kata-kata umum bahasa Indonesia
+    id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu", "adalah", "tidak", "bisa", "akan"]
+
+    en_count = sum(1 for word in re.findall(r'\b\w+\b', text_lower) if word in en_words)
+    id_count = sum(1 for word in re.findall(r'\b\w+\b', text_lower) if word in id_words)
+
+    # Jika lebih banyak kata Inggris, anggap Inggris
+    if en_count > id_count:
+        return "en"
+    return "id"
+
 def text_to_speech(text):
     try:
+        # Deteksi bahasa dari teks balasan AI
+        lang = detect_language(text)
+        
+        # Pilih suara dan logat berdasarkan bahasa
+        if lang == "en":
+            voice = VOICE_EN
+            # Logat British (sudah otomatis dari voice)
+        else:
+            voice = VOICE_ID
+            # Logat Indonesia (sudah otomatis dari voice)
+
         async def _generate_audio():
             # Inisialisasi Edge TTS dengan pengaturan Pitch & Rate khusus
-            communicate = edge_tts.Communicate(text, VOICE_MODEL, rate=VOICE_RATE, pitch=VOICE_PITCH)
+            communicate = edge_tts.Communicate(text, voice, rate=VOICE_RATE, pitch=VOICE_PITCH)
             audio_data = b""
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     audio_data += chunk["data"]
             return audio_data
 
-        # Jalankan async loop dengan aman di Streamlit
+        # Jalankan async loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         audio_bytes = loop.run_until_complete(_generate_audio())
         loop.close()
-        return audio_bytes
+        return audio_bytes, lang
     except Exception as e:
         st.error(f"Error TTS: {e}")
-        return None
+        return None, "id"
 
 # ============================================================
-# 🔥 AUTO-PLAY AUDIO (TANPA KLIK)
+# 🔥 AUTO-PLAY AUDIO
 # ============================================================
 def play_audio_auto(audio_bytes):
     if not audio_bytes: return
     b64 = base64.b64encode(audio_bytes).decode()
     
-    # Script HTML + JS Murni yang memaksa browser memutar suara
     html = f"""
     <audio id="jarvis-audio" autoplay>
         <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
     </audio>
     <script>
         var audio = document.getElementById("jarvis-audio");
-        // Paksa putar
         var playPromise = audio.play();
         if (playPromise !== undefined) {{
             playPromise.catch(function(error) {{
-                console.log("Autoplay diblokir browser, menunggu interaksi...");
-                // Jika diblokir, pasang event listener agar berbunyi saat user klik sembarang
                 document.body.addEventListener('click', function() {{
                     audio.play();
                 }}, {{ once: true }});
@@ -131,8 +163,6 @@ def play_audio_auto(audio_bytes):
 # MAIN UI
 # ============================================================
 def main():
-    st.set_page_config(page_title="J.A.R.V.I.S", page_icon="🤖", layout="centered")
-    
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
 
@@ -145,8 +175,9 @@ def main():
         if not api_key: st.warning("⚠️ API Key dibutuhkan.")
         
         st.divider()
-        st.caption("Suara: British Male (JARVIS Style)")
-        st.caption("Pitch: -15Hz (Berat & Tenang)")
+        st.caption("Mode: Poliglot (Auto-Detect)")
+        st.caption("Logat EN: British (Ryan)")
+        st.caption("Logat ID: Indonesia (Ardi)")
         
         if st.button("🗑️ Hapus Memori", use_container_width=True):
             st.session_state.messages = []
@@ -155,7 +186,7 @@ def main():
 
     # HEADER
     st.title("🤖 J.A.R.V.I.S")
-    st.caption("Just A Rather Very Intelligent System. Siap melayani Anda, Tuan.")
+    st.caption("Silakan bicara dalam Bahasa Indonesia atau Bahasa Inggris.")
 
     if not api_key:
         st.info("👈 Silakan isi Groq API Key di panel kiri.")
@@ -179,7 +210,7 @@ def main():
             st.session_state.last_audio_id = current_id
             audio_bytes = audio_value.read()
             
-            # 1. STT
+            # 1. STT (Sementara kita set ke id-ID karena Google API gratis susah auto-detect murni)
             with st.spinner("👂 Memproses suara..."):
                 user_text, stt_status = transcribe_audio(audio_bytes)
                 
@@ -204,11 +235,12 @@ def main():
                 st.markdown(ai_text)
             st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
-            # 3. TTS & AUTO-PLAY
+            # 3. TTS & AUTO-PLAY (Deteksi bahasa otomatis)
             with st.spinner("🔊 Merespon..."):
-                # Generate suara dengan pitch rendah
-                audio_reply = text_to_speech(ai_text)
+                audio_reply, detected_lang = text_to_speech(ai_text)
                 if audio_reply:
+                    # Tampilkan bahasa yang terdeteksi (untuk memastikan logatnya pas)
+                    st.toast(f"Jarvis merespon dalam bahasa: {'Inggris (British)' if detected_lang == 'en' else 'Indonesia'}")
                     play_audio_auto(audio_reply)
 
 if __name__ == "__main__":
