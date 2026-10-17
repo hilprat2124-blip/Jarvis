@@ -52,7 +52,7 @@ st.set_page_config(
 st.title("🧊 3D Hand Tracking + 🤖 Jarvis (Live Eyes + Voice)")
 st.markdown("""
 **Fitur Spesial:** Jarvis punya **"Mata Live"** dan **"Suara British Natural"**. 
-Ketik chat pakai Bahasa Indonesia atau Inggris, Jarvis akan melihat kamera dan **selalu menjawab dengan suara otomatis dalam Bahasa Inggris British**.
+Ketik chat pakai Bahasa Indonesia (boleh singkat/typo) atau Bahasa Inggris. Jarvis akan melihat kamera dan **menjawab dengan suara otomatis dalam Bahasa Inggris British**.
 """)
 
 # ============ WebRTC & Konstanta ============
@@ -448,25 +448,39 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         return f"❌ Error Jarvis: {str(e)}"
 
 def translate_to_english(text: str) -> str:
-    """Fungsi rahasia untuk memastikan input dari user selalu Bahasa Inggris."""
+    """Fungsi rahasia untuk memahami singkatan & menerjemahkan ke Bahasa Inggris."""
     if not GROQ_AVAILABLE or not GROQ_API_KEY: 
         return text
     
-    # Jika teks sangat pendek, asumsikan sudah English atau sapaan
-    if len(text) < 4: return text
+    # Jika teks sangat pendek atau kosong, lewati
+    if len(text.strip()) < 3: 
+        return text
 
     try:
         client = Groq(api_key=GROQ_API_KEY)
         resp = client.chat.completions.create(
             model=JARVIS_TEXT_MODEL,
             messages=[
-                {"role": "system", "content": "You are a translator. Translate the user's input into natural English. Output ONLY the translated text, nothing else."},
+                {
+                    "role": "system", 
+                    "content": (
+                        "You are an expert translator specialized in Indonesian slang, abbreviations, and typos. "
+                        "The user will give you a messy Indonesian text (using words like 'blm', 'spRt', 'bikin', 'gmn'). "
+                        "Your job is to figure out exactly what they mean (fix the typos, expand the abbreviations mentally), "
+                        "and translate their INTENT into clear, natural, and professional English. "
+                        "Do not give any explanations. Output ONLY the final English translation."
+                    )
+                },
                 {"role": "user", "content": text}
             ],
-            temperature=0.1,
-            max_tokens=100,
+            temperature=0.2,
+            max_tokens=150,
         )
-        return resp.choices[0].message.content.strip()
+        translated = resp.choices[0].message.content.strip()
+        
+        # Jika AI gagal menerjemahkan dan mengembalikan teks kosong, fallback ke teks asli
+        return translated if translated else text
+        
     except Exception:
         return text
 
@@ -546,7 +560,7 @@ with col2:
 # ============================================================
 st.markdown("---")
 st.header("💬 Ngobrol dengan Jarvis (dengan Suara)")
-st.caption("Ketik pertanyaanmu pakai Bahasa Indonesia atau Inggris. Jarvis akan melihat kamera dan **menjawab dengan suara otomatis dalam Bahasa Inggris British**.")
+st.caption("Ketik pertanyaanmu pakai Bahasa Indonesia (santai/singkat) atau Inggris. Jarvis akan melihat kamera dan **menjawab dengan suara otomatis dalam Bahasa Inggris British**.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
