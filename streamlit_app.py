@@ -1,3 +1,15 @@
+"""
+==============================================================
+🤖 JARVIS WEB AI - Versi Groq (100% Gratis)
+==============================================================
+Fitur:
+- Input suara stabil via mikrofon
+- STT: HTTP Request langsung ke Google Speech API
+- AI: Groq API (Llama 3) - Tanpa biaya/kartu kredit
+- TTS: gTTS (Bahasa Indonesia)
+==============================================================
+"""
+
 import streamlit as st
 import io
 import os
@@ -18,7 +30,8 @@ st.set_page_config(
 
 STT_LANGUAGE = "id-ID"
 TTS_LANGUAGE = "id"
-AI_MODEL = "gpt-3.5-turbo"
+# Groq menggunakan model Llama (Gratis & Sangat Cepat)
+AI_MODEL = "llama-3.1-8b-instant" 
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.7
 
@@ -32,20 +45,19 @@ SYSTEM_PROMPT = (
 # API KEY MANAGEMENT
 # ============================================================
 def get_api_key():
-    if "openai_api_key" in st.session_state and st.session_state.openai_api_key:
-        return st.session_state.openai_api_key
+    if "groq_api_key" in st.session_state and st.session_state.groq_api_key:
+        return st.session_state.groq_api_key
     try:
-        if "OPENAI_API_KEY" in st.secrets:
-            return st.secrets["OPENAI_API_KEY"]
+        if "GROQ_API_KEY" in st.secrets:
+            return st.secrets["GROQ_API_KEY"]
     except Exception:
         pass
-    return os.environ.get("OPENAI_API_KEY", "")
+    return os.environ.get("GROQ_API_KEY", "")
 
 # ============================================================
-# STT (Speech-to-Text) VIA HTTP REQUEST
+# STT (Speech-to-Text)
 # ============================================================
 def transcribe_audio(audio_bytes):
-    """Mengubah audio bytes menjadi teks via Google Speech API."""
     try:
         url = "http://www.google.com/speech-api/v2/recognize"
         params = {
@@ -53,7 +65,6 @@ def transcribe_audio(audio_bytes):
             "lang": STT_LANGUAGE,
             "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw", 
         }
-        # Streamlit audio_input umumnya menghasilkan format WAV
         headers = {"Content-Type": "audio/l16; rate=16000"}
         
         response = requests.post(url, params=params, headers=headers, data=audio_bytes, timeout=15)
@@ -73,13 +84,18 @@ def transcribe_audio(audio_bytes):
         return f"Error STT: {e}", "error"
 
 # ============================================================
-# AI (OpenAI)
+# AI (Groq API)
 # ============================================================
 def get_ai_response(user_message, chat_history, api_key):
     if not api_key:
-        return "API Key OpenAI belum diisi di sidebar.", "error"
+        return "API Key Groq belum diisi di sidebar.", "error"
     try:
-        client = OpenAI(api_key=api_key)
+        # Inisialisasi client OpenAI namun diarahkan ke URL Groq
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1"
+        )
+        
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend(chat_history)
         messages.append({"role": "user", "content": user_message})
@@ -92,7 +108,10 @@ def get_ai_response(user_message, chat_history, api_key):
         )
         return response.choices[0].message.content.strip(), "ok"
     except Exception as e:
-        return f"Error OpenAI: {e}", "error"
+        err_msg = str(e)
+        if "401" in err_msg:
+            return "API Key Groq tidak valid. Periksa kembali.", "error"
+        return f"Error AI: {err_msg}", "error"
 
 # ============================================================
 # TTS (Text-to-Speech)
@@ -130,13 +149,15 @@ def main():
     # --- SIDEBAR ---
     with st.sidebar:
         st.header("⚙️ Pengaturan")
-        api_key_input = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
+        st.markdown("Dapatkan API Key gratis di [console.groq.com](https://console.groq.com)")
+        
+        api_key_input = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
         if api_key_input:
-            st.session_state.openai_api_key = api_key_input
+            st.session_state.groq_api_key = api_key_input
         
         api_key = get_api_key()
         if not api_key:
-            st.warning("⚠️ API Key wajib diisi!")
+            st.warning("⚠️ API Key Groq wajib diisi!")
             
         if st.button("🗑️ Hapus Riwayat Chat", use_container_width=True):
             st.session_state.messages = []
@@ -148,7 +169,7 @@ def main():
     st.caption("Bicara langsung dengan Jarvis. Jarvis akan otomatis merespon setelah Anda selesai bicara.")
 
     if not api_key:
-        st.info("👈 Silakan isi OpenAI API Key di sidebar kiri terlebih dahulu.")
+        st.info("👈 Silakan isi Groq API Key di sidebar kiri terlebih dahulu.")
 
     # --- RIWAYAT CHAT ---
     for msg in st.session_state.messages:
@@ -161,18 +182,15 @@ def main():
     st.markdown("### 🎤 Rekam Suara Anda")
     st.caption("Klik mikrofon, bicara, lalu **klik ⏹️ (Stop)**. Jarvis akan langsung memprosesnya.")
     
-    # Widget rekam bawaan Streamlit (paling stabil)
     audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
     # --- LOGIKA PROSES AUDIO OTOMATIS ---
     if audio_value is not None and api_key:
-        # Dapatkan ID unik audio untuk mencegah pemrosesan berulang
         current_id = getattr(audio_value, "file_id", None) or getattr(audio_value, "name", None) or id(audio_value)
 
         if current_id != st.session_state.last_audio_id:
             st.session_state.last_audio_id = current_id
             
-            # Baca bytes audio
             audio_bytes = audio_value.read()
             
             # 1. PROSES STT
@@ -181,14 +199,14 @@ def main():
                 
             if stt_status != "ok":
                 st.warning(user_text)
-                return # Berhenti jika suara tidak jelas
+                return
 
             # Tampilkan Pesan User
             with st.chat_message("user", avatar="🧑"):
                 st.markdown(user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            # 2. PROSES AI
+            # 2. PROSES AI (Groq)
             with st.spinner("🧠 Jarvis sedang berpikir..."):
                 history_for_ai = st.session_state.messages[:-1]
                 ai_text, ai_status = get_ai_response(user_text, history_for_ai, api_key)
@@ -208,7 +226,6 @@ def main():
                 if audio_reply:
                     autoplay_audio(audio_reply)
             
-            # Rerun untuk merapikan UI setelah selesai
             st.rerun()
 
 if __name__ == "__main__":
