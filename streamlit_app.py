@@ -13,7 +13,7 @@ from openai import OpenAI
 # ============================================================
 # KONFIGURASI UTAMA
 # ============================================================
-st.set_page_config(page_title="J.A.R.V.I.S - Lois Edition", page_icon="🔵", layout="centered")
+st.set_page_config(page_title="J.A.R.V.I.S", page_icon="🔵", layout="centered")
 
 AI_MODEL = "openai/gpt-oss-120b" 
 VOICE_EN = "en-GB-RyanNeural"    
@@ -44,7 +44,6 @@ def sanitize_latex(text):
     text = re.sub(r'(?<!\$)\b([a-zA-Z]\s*=\s*[0-9\.]+\s*(?:[a-zA-Z/]+)?)\b(?!\$)', r' $ \1 $ ', text)
     text = re.sub(r'([a-zA-Z0-9])\$', r'\1 $', text)
     text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
-    text = re.sub(r'\\text\{\s*(.*?)\s*\}', r'\\text{\1}', text)
     return text.strip()
 
 # ============================================================
@@ -70,13 +69,13 @@ class JarvisCore:
                         return data["result"][0]["alternative"][0]["transcript"], "ok"
                 except json.JSONDecodeError:
                     continue
-            return "Suara tidak terdeteksi, Tuan Lois.", "no_speech"
+            return "Suara tidak terdeteksi.", "no_speech"
         except Exception as e:
             return f"Error STT: {e}", "error"
 
     def generate_stream(self, user_message, chat_history):
         if not self.client: 
-            yield "API Key Groq belum diisi, Tuan Lois."
+            yield "API Key belum diisi."
             return
         try:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -122,150 +121,144 @@ class JarvisCore:
             return None
 
 # ============================================================
-# UI: BOLA FUTURISTIK & ANIMASI
+# FUNGSI UI HOLOGRAM
 # ============================================================
-def render_futuristic_ui():
-    # HTML + JS ini mengurus animasi bola, deteksi suara, dan menampilkan UI
+def render_hologram_ui():
+    """Menyuntikkan HTML/CSS/JS langsung ke Streamlit tanpa iframe kotak hitam"""
     html_code = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>
-            body {
-                margin: 0;
-                background: #000; /* Latar hitam pekat */
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                height: 100vh;
-                overflow: hidden;
-                font-family: 'Courier New', monospace;
-                color: #00ffff;
-            }
-            /* Container Bola */
-            .orb-container {
-                position: relative;
-                width: 200px;
-                height: 200px;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                transition: all 0.1s ease;
-            }
-            /* Bola Utama */
-            .orb {
-                width: 120px;
-                height: 120px;
-                background: radial-gradient(circle, #00ffff 0%, #0088cc 40%, #000 100%);
-                border-radius: 50%;
-                box-shadow: 0 0 40px #00ffff, 0 0 80px #00ffff inset;
-                animation: breathe 3s infinite alternate;
-                transition: transform 0.05s linear;
-            }
-            /* Animasi Napas (Idle) */
-            @keyframes breathe {
-                0% { transform: scale(1); box-shadow: 0 0 30px #00ffff; }
-                100% { transform: scale(1.05); box-shadow: 0 0 60px #00ffff, 0 0 100px #00ffff inset; }
-            }
-            /* Teks Status */
-            .status {
-                margin-top: 30px;
-                font-size: 14px;
-                letter-spacing: 2px;
-                text-transform: uppercase;
-                color: #00ffff;
-                opacity: 0.8;
-                animation: blink 2s infinite;
-            }
-            @keyframes blink {
-                0%, 100% { opacity: 0.8; }
-                50% { opacity: 0.3; }
-            }
-            /* Mic Indicator */
-            .mic-icon {
-                margin-top: 10px;
-                font-size: 24px;
-                color: #ff4b4b;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="orb-container" id="orbContainer">
-            <div class="orb" id="orb"></div>
-        </div>
-        <div class="status" id="statusText">Menunggu Perintah Suara...</div>
+    <style>
+        /* Latar belakang gelap futuristik */
+        .stApp {
+            background: radial-gradient(circle at 50% 50%, #001122 0%, #000000 100%);
+            overflow: hidden;
+        }
         
-        <script>
-            // Web Audio API untuk mendeteksi volume suara secara real-time
-            const orb = document.getElementById('orb');
-            const statusText = document.getElementById('statusText');
-            let audioContext;
-            let analyser;
-            let microphone;
-            let isListening = false;
+        /* Sembunyikan komponen Streamlit yang tidak perlu */
+        header, footer, #MainMenu { display: none !important; }
+        .block-container { padding-top: 2rem !important; }
+        
+        /* Container Bola */
+        .hologram-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            margin-top: 5vh;
+            margin-bottom: 2vh;
+            position: relative;
+        }
 
-            async function startListening() {
-                if (isListening) return;
-                isListening = true;
-                statusText.innerText = "Mendengarkan...";
+        /* Cincin Luar */
+        .ring-outer {
+            position: absolute;
+            width: 220px;
+            height: 220px;
+            border: 2px dashed #00ffff;
+            border-radius: 50%;
+            animation: spin 10s linear infinite;
+            opacity: 0.3;
+        }
 
-                try {
-                    // Minta akses mikrofon dengan filter noise (Voice Isolation)
-                    const stream = await navigator.mediaDevices.getUserMedia({
-                        audio: {
-                            echoCancellation: true,
-                            noiseSuppression: true, // Isolasi suara
-                            autoGainControl: true
-                        }
-                    });
+        /* Cincin Dalam */
+        .ring-inner {
+            position: absolute;
+            width: 180px;
+            height: 180px;
+            border: 1px solid #00ffff;
+            border-radius: 50%;
+            animation: spin-reverse 5s linear infinite;
+            opacity: 0.5;
+            box-shadow: 0 0 20px #00ffff inset;
+        }
 
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    analyser = audioContext.createAnalyser();
-                    microphone = audioContext.createMediaStreamSource(stream);
-                    
-                    analyser.fftSize = 256;
-                    microphone.connect(analyser);
-                    
-                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        /* Bola Utama (Plasma Core) */
+        .plasma-core {
+            width: 120px;
+            height: 120px;
+            background: radial-gradient(circle, #ffffff 0%, #00ffff 30%, #0055ff 70%, #000000 100%);
+            border-radius: 50%;
+            box-shadow: 0 0 40px #00ffff, 0 0 80px #0055ff;
+            animation: pulse 2s infinite alternate;
+            z-index: 10;
+            transition: transform 0.1s ease-out, box-shadow 0.1s ease-out;
+        }
 
-                    function updateOrb() {
-                        analyser.getByteFrequencyData(dataArray);
-                        let sum = 0;
-                        for (let i = 0; i < dataArray.length; i++) {
-                            sum += dataArray[i];
-                        }
-                        let average = sum / dataArray.length;
-                        
-                        // Jika ada suara yang cukup keras (di atas threshold)
-                        if (average > 10) { 
-                            statusText.innerText = "Mendengar suara...";
-                            // Bola membesar (efek suara)
-                            let scale = 1 + (average / 100); 
-                            orb.style.transform = `scale(${scale})`;
-                            orb.style.boxShadow = `0 0 ${40 + average}px #00ffff, 0 0 ${80 + average}px #00ffff inset`;
-                        } else {
-                            statusText.innerText = "Mendengarkan...";
-                            orb.style.transform = `scale(1)`;
-                            orb.style.boxShadow = `0 0 30px #00ffff, 0 0 60px #00ffff inset`;
-                        }
-                        
-                        requestAnimationFrame(updateOrb);
+        /* Animasi */
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        @keyframes spin-reverse { 100% { transform: rotate(-360deg); } }
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 30px #00ffff, 0 0 60px #0055ff; }
+            100% { transform: scale(1.05); box-shadow: 0 0 50px #00ffff, 0 0 100px #0055ff; }
+        }
+
+        /* Teks Status */
+        .status-text {
+            margin-top: 30px;
+            color: #00ffff;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 3px;
+            font-size: 14px;
+            text-transform: uppercase;
+            opacity: 0.8;
+            text-shadow: 0 0 10px #00ffff;
+        }
+    </style>
+
+    <div class="hologram-container">
+        <div class="ring-outer"></div>
+        <div class="ring-inner"></div>
+        <div class="plasma-core" id="jarvis-orb"></div>
+        <div class="status-text" id="status-text">Mendengarkan...</div>
+    </div>
+
+    <script>
+        // Script untuk mendeteksi mikrofon dan menggerakkan bola
+        const orb = document.getElementById('jarvis-orb');
+        const statusText = document.getElementById('status-text');
+        
+        async function initAudio() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { echoCancellation: true, noiseSuppression: true } 
+                });
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const analyser = audioContext.createAnalyser();
+                const microphone = audioContext.createMediaStreamSource(stream);
+                
+                analyser.fftSize = 256;
+                microphone.connect(analyser);
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+                function animate() {
+                    analyser.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+                    let avg = sum / dataArray.length;
+
+                    if (avg > 10) {
+                        // Saat ada suara
+                        statusText.innerText = "Mendengar Suara...";
+                        let scale = 1 + (avg / 80);
+                        if (scale > 1.8) scale = 1.8; // Batas maksimal
+                        orb.style.transform = `scale(${scale})`;
+                        orb.style.boxShadow = `0 0 ${50 + avg}px #00ffff, 0 0 ${100 + avg}px #0055ff`;
+                    } else {
+                        // Saat hening
+                        statusText.innerText = "Mendengarkan...";
+                        orb.style.transform = `scale(1)`;
+                        orb.style.boxShadow = `0 0 40px #00ffff, 0 0 80px #0055ff`;
                     }
-                    updateOrb();
-                } catch (err) {
-                    statusText.innerText = "Akses Mikrofon Gagal!";
+                    requestAnimationFrame(animate);
                 }
+                animate();
+            } catch (err) {
+                statusText.innerText = "Izin Mikrofon Ditolak";
             }
-
-            // Mulai mendeteksi saat halaman dimuat
-            startListening();
-        </script>
-    </body>
-    </html>
+        }
+        initAudio();
+    </script>
     """
-    # Tampilkan UI HTML penuh
-    components.html(html_code, height=350)
+    st.markdown(html_code, unsafe_allow_html=True)
 
 def play_audio_auto(audio_bytes):
     if not audio_bytes: return
@@ -290,7 +283,7 @@ def main():
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
 
-    # SIDEBAR (Sembunyikan default, buka jika butuh API Key)
+    # Sidebar untuk API Key
     with st.sidebar:
         st.header("⚙️ Sistem Kontrol")
         api_key_input = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
@@ -304,38 +297,45 @@ def main():
             st.session_state.last_audio_id = None
             st.rerun()
 
-    # Sembunyikan CSS Streamlit bawaan agar lebih bersih
+    # 1. RENDER BOLA HOLOGRAM (Tengah Layar)
+    render_hologram_ui()
+
+    # 2. TOMBOL REKAM (Desain Ulang Streamlit)
     st.markdown("""
         <style>
-            #MainMenu {visibility: hidden;}
-            footer {visibility: hidden;}
-            header {visibility: hidden;}
-            .block-container { padding-top: 2rem; padding-bottom: 2rem; }
-        </style>
-    """, unsafe_allow_html=True)
-
-    # 1. RENDER BOLA ANIMASI
-    render_futuristic_ui()
-
-    # 2. INPUT MIKROFON (Disembunyikan via CSS, tapi tetap berfungsi)
-    # Kita sembunyikan tombol rekam bawaan Streamlit, karena kita sudah punya bola.
-    st.markdown("""
-        <style>
+            /* Desain ulang tombol rekam bawaan Streamlit */
             [data-testid="stAudioInput"] {
-                opacity: 0;
-                height: 0;
-                position: absolute;
-                pointer-events: none;
+                background: rgba(0, 255, 255, 0.05);
+                border: 1px solid #00ffff;
+                border-radius: 50px;
+                padding: 10px;
+                box-shadow: 0 0 15px #00ffff;
+                margin: 0 auto;
+                display: flex;
+                justify-content: center;
+                width: fit-content;
+                transition: all 0.3s ease;
+            }
+            [data-testid="stAudioInput"]:hover {
+                box-shadow: 0 0 30px #00ffff;
+                background: rgba(0, 255, 255, 0.1);
+            }
+            /* Warna tombol di dalamnya */
+            [data-testid="stAudioInput"] button {
+                color: #00ffff !important;
             }
         </style>
     """, unsafe_allow_html=True)
     
-    # Audio Input yang berfungsi secara background
-    audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
+    # Kolom agar tombol di tengah
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
-    # 3. HISTORY CHAT SEBAGAI POP-UP DI BAWAH
+    # 3. RIWAYAT CHAT (POP-UP)
     if st.session_state.messages:
-        with st.expander("💬 Riwayat Percakapan (Klik untuk melihat)", expanded=False):
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("💬 Riwayat Percakapan", expanded=False):
             for msg in st.session_state.messages:
                 with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
                     st.markdown(msg["content"])
@@ -363,7 +363,6 @@ def main():
                 full_response = ""
                 for chunk in jarvis.generate_stream(user_text, st.session_state.messages[:-1]):
                     full_response += chunk
-                
                 clean_response = sanitize_latex(full_response)
             
             st.session_state.messages.append({"role": "assistant", "content": clean_response})
