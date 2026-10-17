@@ -39,8 +39,8 @@ except Exception:
 JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
 
-# Konfigurasi Suara Edge-TTS (Bahasa Indonesia)
-JARVIS_TTS_VOICE = "id-ID-ArdiNeural"  # Pria Indonesia. Bisa ganti: "id-ID-GadisNeural" untuk Wanita
+# Konfigurasi Suara Edge-TTS (British, Soft, Clean)
+JARVIS_TTS_VOICE = "en-GB-RyanNeural"  
 
 # ============ Konfigurasi Halaman ============
 st.set_page_config(
@@ -51,8 +51,8 @@ st.set_page_config(
 
 st.title("🧊 3D Hand Tracking + 🤖 Jarvis (Live Eyes + Voice)")
 st.markdown("""
-**Fitur Spesial:** Jarvis punya **"Mata Live"** dan **"Suara Indonesia Natural"**. 
-Ketik chat (misal: *"Apa yang kamu lihat?"*), Jarvis akan melihat kamera dan **menjawab dengan suara otomatis**.
+**Fitur Spesial:** Jarvis punya **"Mata Live"** dan **"Suara British Natural"**. 
+Ketik chat (misal: *"What do you see?"*), Jarvis akan melihat kamera dan **menjawab dengan suara otomatis**.
 """)
 
 # ============ WebRTC & Konstanta ============
@@ -448,13 +448,13 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         return f"❌ Error Jarvis: {str(e)}"
 
 def generate_tts_edge(text: str) -> bytes or None:
-    """Generate audio dari teks menggunakan Edge-TTS (Baca Full & Bersih)."""
+    """Generate audio dari teks menggunakan Edge-TTS (British, Soft, Clean)."""
     if not TTS_AVAILABLE: 
         return None
     
     # 1. BERSIHKAN TEKS DARI FORMAT MARKDOWN
-    clean_text = re.sub(r'[*#_`]', '', text)         # Hapus simbol markdown (*, #, _, `)
-    clean_text = re.sub(r'^\s*[-•]\s*', '', clean_text, flags=re.MULTILINE) # Hapus bullet (-, •)
+    clean_text = re.sub(r'[*#_`]', '', text)         
+    clean_text = re.sub(r'^\s*[-•]\s*', '', clean_text, flags=re.MULTILINE) 
     clean_text = clean_text.strip()
 
     if not clean_text:
@@ -462,7 +462,8 @@ def generate_tts_edge(text: str) -> bytes or None:
 
     async def _generate():
         # 2. BACA SEMUA TEKS (TIDAK DIPOTONG)
-        communicate = edge_tts.Communicate(clean_text, JARVIS_TTS_VOICE, rate="+10%") 
+        # rate="-5%" (sedikit lebih lambat) & pitch="-2Hz" (sedikit lebih rendah) = Soft & Tenang
+        communicate = edge_tts.Communicate(clean_text, JARVIS_TTS_VOICE, rate="-5%", pitch="-2Hz") 
         audio_data = b""
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
@@ -483,7 +484,7 @@ if "jarvis_messages" not in st.session_state:
     st.session_state.jarvis_messages = [
         {
             "role": "system",
-            "content": "Kamu adalah Jarvis, asisten AI cerdas yang terintegrasi dengan kamera. Jawab dalam Bahasa Indonesia natural. Jika user bertanya tentang apa yang kamu lihat, jelaskan objek di gambar kamera dengan detail."
+            "content": "You are Jarvis, an intelligent AI assistant integrated with a live camera. You must answer in natural, clean British English. If the user asks about what you see, describe the objects in the camera image in detail, maintaining a calm and sophisticated tone."
         }
     ]
 
@@ -516,7 +517,7 @@ with col2:
 # ============================================================
 st.markdown("---")
 st.header("💬 Ngobrol dengan Jarvis (dengan Suara)")
-st.caption("Ketik pertanyaanmu. Jarvis akan melihat kamera dan **menjawab dengan suara otomatis**.")
+st.caption("Ketik pertanyaanmu (misal: *'What do you see?'*). Jarvis akan melihat kamera dan **menjawab dengan suara otomatis**.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
@@ -595,7 +596,7 @@ with st.sidebar:
         st.session_state.jarvis_messages = [
             {
                 "role": "system",
-                "content": "Kamu adalah Jarvis, asisten AI ramah. Jawab dalam Bahasa Indonesia."
+                "content": "You are Jarvis, an intelligent AI assistant integrated with a live camera. You must answer in natural, clean British English. If the user asks about what you see, describe the objects in the camera image in detail, maintaining a calm and sophisticated tone."
             }
         ]
         st.rerun()
@@ -611,7 +612,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption(f"Vision: `{JARVIS_VISION_MODEL}`")
-    st.caption(f"TTS: `Edge-TTS` • Voice: `{JARVIS_TTS_VOICE}`")
+    st.caption(f"TTS: `Edge-TTS` • Voice: `{JARVIS_TTS_VOICE}` (British)")
 
 st.markdown("---")
 st.caption("💡 Jika suara tidak muncul, pastikan tab browser tidak di-mute dan kamu sudah berinteraksi dengan halaman.")
