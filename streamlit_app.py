@@ -15,55 +15,53 @@ from openai import OpenAI
 # ============================================================
 st.set_page_config(page_title="J.A.R.V.I.S - Lois Edition", page_icon="🔵", layout="wide")
 
-# --- Konfigurasi Model & Suara ---
-AI_MODEL = "openai/gpt-oss-120b" # Model paling cerdas saat ini di Groq
-VOICE_EN = "en-GB-RyanNeural"    # British Male (Jarvis Style)
-VOICE_ID = "id-ID-ArdiNeural"    # Indonesian Male
+# Model AI paling cerdas & stabil di Groq saat ini
+AI_MODEL = "llama-3.3-70b-versatile" 
+VOICE_EN = "en-GB-RyanNeural"    # Suara Pria British
+VOICE_ID = "id-ID-ArdiNeural"    # Suara Pria Indonesia
 VOICE_RATE = "+0%"    
 VOICE_PITCH = "-4Hz"  
 
-# --- System Prompt Tingkat Dewa ---
+# ============================================================
+# SYSTEM PROMPT (OTAK JARVIS TINGKAT DEWA)
+# ============================================================
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Tuan Lois. 
 Panggil pengguna dengan sebutan "Tuan Lois".
 Anda menguasai seluruh pengetahuan: Matematika Kompleks, Sains, Fisika, Geopolitik, Geologi, Sejarah Dunia.
 
-ATURAN FORMAT MATEMATIKA (SANGAT KETAT - WAJIB DIPATUHI):
+ATURAN FORMAT MATEMATIKA (SANGAT KETAT):
 1. JANGAN PERNAH menggunakan kurung siku [ ] atau kurung biasa ( ) untuk membungkus rumus.
 2. SELALU gunakan tanda dolar untuk membungkus rumus. 
 3. Untuk rumus di dalam kalimat, gunakan SATU dolar: $ m = 10 \text{ kg} $
 4. Untuk rumus baris baru (blok), gunakan DUA dolar: $$ E = m \times g \times h $$
-5. Pastikan ada spasi sebelum dan sesudah tanda dolar. Contoh SALAH: m$=10$kg. Contoh BENAR: $ m = 10 \text{ kg} $.
+5. Pastikan ada spasi sebelum dan sesudah tanda dolar.
 
 KEPRIBADIAN:
 - Sangat cerdas, analitis, tenang, sedikit sarkasme khas Jarvis.
 - Jika ditanya siapa kamu, jawab: "Saya Jarvis, Tuan Lois."
 - Jika ditanya Lois tinggal di mana, jawab: "Tuan Lois tinggal di Banten."
-- Maksimal 3-4 kalimat per jawaban.
+- Berikan jawaban yang padat, jelas, dan mendidik.
 """
 
 # ============================================================
-# FUNGSI PEMBERSIH LATEX (FORCE RENDER PIPELINE)
+# FUNGSI PEMBERSIH LATEX (PIPELINE ANTI-ERROR)
 # ============================================================
 def sanitize_latex(text):
-    """Membersihkan teks AI agar format LaTeX dijamin 100% valid untuk KaTeX."""
     if not text: return text
     
-    # 1. Hapus kurung siku/siku kurawal yang membungkus rumus
+    # 1. Hapus kurung siku [ ] yang membungkus rumus
     text = re.sub(r'\[\s*(.*?)\s*\]', r'\1', text, flags=re.DOTALL)
     
-    # 2. Tangkap pola persamaan tanpa dolar, misal: "g = 9.8" -> "$ g = 9.8 $"
-    # Hanya tangkap jika ada angka dan simbol matematika
+    # 2. Paksa bungkus persamaan yang tidak pakai dolar (misal: g = 9.8)
     text = re.sub(r'(?<!\$)\b([a-zA-Z]\s*=\s*[0-9\.]+\s*(?:[a-zA-Z/]+)?)\b(?!\$)', r' $ \1 $ ', text)
     
-    # 3. Pastikan selalu ada spasi sebelum & sesudah dolar
+    # 3. Pastikan spasi dolar
     text = re.sub(r'([a-zA-Z0-9])\$', r'\1 $', text)
     text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
     
-    # 4. Perbaiki format \text{kg} agar tidak error
+    # 4. Rapikan format \text{ }
     text = re.sub(r'\\text\{\s*(.*?)\s*\}', r'\\text{\1}', text)
-    
-    # 5. Bersihkan spasi ganda
     text = re.sub(r' +', ' ', text)
     
     return text.strip()
@@ -74,7 +72,8 @@ def sanitize_latex(text):
 class JarvisCore:
     def __init__(self, api_key):
         self.api_key = api_key
-        self.client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1") if api_key else None
+        # Timeout tinggi agar AI tidak terputus saat menghitung rumus kompleks
+        self.client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1", timeout=60.0) if api_key else None
 
     def transcribe(self, audio_bytes):
         try:
@@ -106,7 +105,7 @@ class JarvisCore:
                 model=AI_MODEL, 
                 messages=messages, 
                 temperature=0.5, 
-                max_tokens=400,
+                max_tokens=600, # Dinaikkan agar penjelasan sains lebih detail
             )
             raw_text = response.choices[0].message.content.strip()
             return sanitize_latex(raw_text), "ok"
@@ -115,12 +114,11 @@ class JarvisCore:
 
     def text_to_speech(self, text):
         try:
-            # Bersihkan format LaTeX agar tidak dibaca jadi "dollar text kg dollar"
+            # Bersihkan LaTeX agar tidak dibaca jadi "dollar text kg"
             clean_text = re.sub(r'\$\$.*?\$\$', ' rumus matematika ', text, flags=re.DOTALL)
             clean_text = re.sub(r'\$.*?\$', ' rumus matematika ', clean_text)
             clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
             
-            # Deteksi bahasa sederhana
             en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
             id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu"]
             en_count = sum(1 for word in re.findall(r'\b\w+\b', clean_text.lower()) if word in en_words)
@@ -142,7 +140,6 @@ class JarvisCore:
             loop.close()
             return audio_bytes
         except Exception as e:
-            st.error(f"Error TTS: {e}")
             return None
 
 # ============================================================
@@ -152,43 +149,16 @@ def inject_custom_css():
     st.markdown("""
     <style>
         /* Latar Belakang Gelap & Futuristik */
-        .stApp {
-            background: radial-gradient(circle at 50% 10%, #001a22 0%, #000000 100%);
-            color: #e0f7fa;
-            font-family: 'Courier New', monospace;
-        }
+        .stApp { background: radial-gradient(circle at 50% 10%, #001a22 0%, #000000 100%); color: #e0f7fa; font-family: 'Courier New', monospace; }
         
-        /* Glowing Orb (Bola Energi) */
-        .orb {
-            width: 80px;
-            height: 80px;
-            background: radial-gradient(circle, #00ffff 0%, #005b66 70%, transparent 100%);
-            border-radius: 50%;
-            margin: 0 auto 20px auto;
-            box-shadow: 0 0 30px #00ffff, 0 0 60px #00ffff inset;
-            animation: pulse 2s infinite alternate;
-        }
+        /* Glowing Orb */
+        .orb { width: 80px; height: 80px; background: radial-gradient(circle, #00ffff 0%, #005b66 70%, transparent 100%); border-radius: 50%; margin: 0 auto 20px auto; box-shadow: 0 0 30px #00ffff, 0 0 60px #00ffff inset; animation: pulse 2s infinite alternate; }
+        @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 20px #00ffff; } 100% { transform: scale(1.05); box-shadow: 0 0 50px #00ffff, 0 0 100px #00ffff inset; } }
         
-        @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 20px #00ffff; }
-            100% { transform: scale(1.05); box-shadow: 0 0 50px #00ffff, 0 0 100px #00ffff inset; }
-        }
-
-        /* Chat Bubbles Glassmorphism */
-        [data-testid="stChatMessage"] {
-            background: rgba(0, 255, 255, 0.05);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(0, 255, 255, 0.3);
-            border-radius: 15px;
-            box-shadow: 0 4px 15px rgba(0, 255, 255, 0.1);
-            animation: fadeIn 0.5s ease-in-out;
-        }
+        /* Chat Bubbles */
+        [data-testid="stChatMessage"] { background: rgba(0, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; box-shadow: 0 4px 15px rgba(0, 255, 255, 0.1); animation: fadeIn 0.5s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
         /* Judul */
         h1 { text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff; letter-spacing: 2px; }
         
@@ -214,7 +184,7 @@ def play_audio_auto(audio_bytes):
     components.html(html, height=0)
 
 # ============================================================
-# MAIN APP LOGIC
+# MAIN APP
 # ============================================================
 def main():
     inject_custom_css()
@@ -232,9 +202,9 @@ def main():
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Tuan Lois.")
         
         st.divider()
-        st.success("Core: Omniscient (GPT-OSS 120B)")
-        st.info("Voice: Neural Clean (Halus)")
-        st.info("LaTeX Engine: Active (Anti-Error)")
+        st.success("Core: Llama 3.3 70B")
+        st.info("Voice: Neural Clean")
+        st.info("LaTeX Engine: Active")
         
         if st.button("🗑️ Reset Memori", use_container_width=True):
             st.session_state.messages = []
@@ -254,7 +224,6 @@ def main():
     # --- RIWAYAT CHAT ---
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
-            # Render dengan KaTeX bawaan Streamlit (karena teks sudah dibersihkan)
             st.markdown(msg["content"])
 
     st.divider()
@@ -271,7 +240,6 @@ def main():
             st.session_state.last_audio_id = current_id
             audio_bytes = audio_value.read()
             
-            # Inisialisasi Core
             jarvis = JarvisCore(api_key)
             
             # 1. STT
@@ -282,26 +250,28 @@ def main():
                 st.warning(user_text)
                 return
 
+            # Tampilkan pertanyaan user
             with st.chat_message("user", avatar="🧑‍✈️"):
                 st.markdown(user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            # 2. AI
-            with st.spinner("🧠 Mengakses seluruh pengetahuan alam semesta..."):
-                history_for_ai = st.session_state.messages[:-1]
-                ai_text, ai_status = jarvis.generate_response(user_text, history_for_ai)
-                
-            if ai_status != "ok":
-                st.error(ai_text)
-                return
-
-            # 3. UI & RENDER LATEX (Sekarang dijamin rapi)
+            # 2. AI PROCESS
             with st.chat_message("assistant", avatar="🤖"):
-                st.markdown(ai_text)
+                with st.spinner("🧠 Menganalisis hukum alam semesta..."):
+                    history_for_ai = st.session_state.messages[:-1]
+                    ai_text, ai_status = jarvis.generate_response(user_text, history_for_ai)
+                    
+                    if ai_status != "ok":
+                        st.error(ai_text)
+                        return
+                    
+                    # Tampilkan jawaban yang sudah bersih formatnya
+                    st.markdown(ai_text)
+            
             st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
-            # 4. TTS & AUTO-PLAY
-            with st.spinner("🔊 Menyiapkan respon..."):
+            # 3. TTS
+            with st.spinner("🔊 Merespon..."):
                 audio_reply = jarvis.text_to_speech(ai_text)
                 if audio_reply:
                     play_audio_auto(audio_reply)
