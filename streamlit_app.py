@@ -41,9 +41,9 @@ JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
 JARVIS_TTS_VOICE = "en-GB-RyanNeural"  
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="Jarvis - Silent Visual Memory", page_icon="🧊", layout="wide")
-st.title("🧊 Jarvis - Silent Visual Memory")
-st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya. Tanya: *'Do you see the 3D cube rotating?'*")
+st.set_page_config(page_title="Jarvis - Visual Memory", page_icon="🧊", layout="wide")
+st.title("🧊 Jarvis - Live Visual Memory (3-Frame Buffer)")
+st.markdown("Jarvis sekarang merekam **gerakan** (buffer 3 frame). Tanya: *'Do you see the 3D cube rotating?'*")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -82,7 +82,7 @@ if not os.path.exists(MODEL_PATH):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
 # ============================================================
-# 🔒 KELAS KAMERA — SILENT VISUAL MEMORY
+# 🔒 KELAS KAMERA — DENGAN 3-FRAME VISUAL BUFFER
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
     def __init__(self):
@@ -130,10 +130,10 @@ class Hand3DProcessor(VideoProcessorBase):
             (0,4), (1,5), (2,6), (3,7)
         ]
         
-        # 🔥 SILENT VISUAL BUFFER (Merekam setiap 0.2 detik)
+        # 🔥 VISUAL BUFFER (Memori Visual Jarvis) - Max 3 Gambar
         self.frame_buffer = collections.deque(maxlen=3)
         self.last_buffer_time = time.time()
-        self.buffer_interval = 0.2 # Setiap 0.2 detik, gambar disimpan
+        self.buffer_interval = 0.2 
 
     def _to_pixel(self, landmark, w, h):
         return int(landmark.x * w), int(landmark.y * h)
@@ -408,7 +408,7 @@ class Hand3DProcessor(VideoProcessorBase):
         cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
         cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
-        # 🔥 SILENT VISUAL MEMORY (Simpan setiap 0.2 detik)
+        # 🔥 SIMPAN KE VISUAL BUFFER (0.2 detik)
         if current_time - self.last_buffer_time > self.buffer_interval:
             self.frame_buffer.append(img.copy())
             self.last_buffer_time = current_time
@@ -435,6 +435,7 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     try:
         client = Groq(api_key=GROQ_API_KEY)
+        # 🔥 PERBAIKAN: max_tokens diturunkan dari 1024 ke 800 agar tidak kena limit OTPM 1000
         resp = client.chat.completions.create(
             model=model, messages=api_messages, temperature=0.7, max_tokens=800,
         )
@@ -510,9 +511,9 @@ with col1:
 with col2:
     st.subheader("ℹ️ Status Visual")
     if ctx.state.playing:
-        st.success("🟢 Kamera aktif (Silent Memory)")
+        st.success("🟢 Kamera aktif (Merekam Memori Visual)")
         if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
-            st.info(f"📸 Memori Visual: {len(ctx.video_processor.frame_buffer)} frame siap dianalisis.")
+            st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame terakhir siap dianalisis.")
     else:
         st.info("⚪ Klik **START** untuk mulai")
     st.markdown("---")
@@ -522,8 +523,8 @@ with col2:
 # 🤖 JARVIS CHAT + VOICE
 # ============================================================
 st.markdown("---")
-st.header("💬 Ngobrol dengan Jarvis")
-st.caption("Ketik pertanyaanmu. Jarvis akan menganalisis **3 frame terakhir** dari memori visualnya.")
+st.header("💬 Ngobrol dengan Jarvis (Memori Visual)")
+st.caption("Ketik pertanyaanmu. Jarvis akan menganalisis **3 frame terakhir** untuk melihat pergerakan.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
@@ -539,7 +540,7 @@ if user_q:
     has_img = False
     pil_imgs = []
 
-    # 🔥 AMBIL DARI SILENT VISUAL BUFFER
+    # 🔥 AMBIL DARI VISUAL BUFFER
     if ctx.state.playing and ctx.video_processor is not None and len(ctx.video_processor.frame_buffer) > 0:
         # Ambil semua gambar di buffer (maksimal 3)
         for frame_bgr in ctx.video_processor.frame_buffer:
@@ -594,4 +595,30 @@ if user_q:
             with st.spinner("🎤 Menyiapkan suara..."):
                 audio_bytes = generate_tts_edge(answer)
                 if audio_bytes:
-                    b64_
+                    b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
+                    audio_html = f'<audio autoplay="true" style="display:none;"><source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3"></audio>'
+                    st.markdown(audio_html, unsafe_allow_html=True)
+
+    st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+with st.sidebar:
+    st.header("ℹ️ Info")
+    if st.button("🔄 Reset Chat Jarvis"):
+        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        st.rerun()
+
+    st.markdown("---")
+    if not TTS_AVAILABLE:
+        st.warning("⚠️ `edge-tts` belum terinstall.")
+
+    st.markdown("---")
+    st.caption("Teknologi:")
+    st.caption("• Camera: 60 FPS")
+    st.caption("• Buffer: 3 frame (0.2 detik/frame)")
+    st.caption("• Vision Model: Qwen 3.8")
+    st.caption("• Max Tokens: 800 (aman dari limit)")
+
+st.markdown("---")
