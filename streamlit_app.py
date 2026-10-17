@@ -1,572 +1,193 @@
-import av
+import streamlit as st
 import cv2
 import numpy as np
-import streamlit as st
-import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
-import urllib.request
+from PIL import Image
+import base64
+import io
 import os
-import time
+from groq import Groq
 
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+# ============ Konfigurasi ============
+st.set_page_config(page_title="AI Ngobrol + Lihat Kamera", page_icon="🤖", layout="wide")
 
-# ============ Konfigurasi Halaman ============
-st.set_page_config(
-    page_title="Interactive 3D Hand Tracking",
-    page_icon="🧊",
-    layout="wide"
-)
-
-st.title("🧊 3D Free View - Hand Tracking (Smooth Edition)")
+st.title("🤖 AI Ngobrol + Bisa Lihat Objek di Kamera")
 st.markdown("""
-**Panduan Gestur:**
-- ✋ **Swipe 5 Jari** → Putar objek dengan *inertia*
-- ☝️ **Telunjuk Berdiri** (tahan 1 detik) → Mode **Rotasi**
-- 👆 **Jempol + Telunjuk Pinch** (tahan 1 detik) → Mode **Geser (Pan)** — *1:1 dengan tangan*
-- 🤏 **Pinch 3 Jari** (tahan 1 detik) → Mode **Zoom**
-
-> 💡 **Tips:** Jaga tangan tetap dalam frame kamera. Pencahayaan cukup membantu akurasi.
+**Cara pakai:**
+1. **Ketik pertanyaan** di kolom chat (bisa tanpa gambar)
+2. **Ambil foto** lewat kamera, lalu tanya apa saja tentang isi foto
+3. AI akan menjawab berdasarkan **teks + gambar** yang kamu kirim
 """)
 
-# ============ Konfigurasi WebRTC ============
-RTC_CONFIGURATION = RTCConfiguration(
-    {
-        "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302"]},
-            {"urls": ["stun:stun1.l.google.com:19302"]},
-        ]
-    }
-)
+# ============ API Key ============
+# Prioritas: Streamlit secrets > environment variable
+try:
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+except Exception:
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-# ============ Konstanta ============
-PINCH_ENTER = 40
-PINCH_EXIT = 60
-HOLD_THRESHOLD = 1.0
-MIN_SCALE, MAX_SCALE = 0.5, 3.0
-ZOOM_SENSITIVITY = 0.01
-MAX_ZOOM_STEP = 0.03
+if not GROQ_API_KEY:
+    st.error("❌ GROQ_API_KEY belum diset.")
+    st.info("""
+    **Cara set API key:**
+    - Lokal: `export GROQ_API_KEY='gsk_...'` atau buat file `.streamlit/secrets.toml`
+    - Streamlit Cloud: Settings → Secrets → tambahkan `GROQ_API_KEY = "gsk_..."`
+    
+    Dapatkan API key gratis di [console.groq.com](https://console.groq.com)
+    """)
+    st.stop()
 
-THUMB_TIP = 4
-INDEX_TIP = 8
-MIDDLE_TIP = 12
-PINKY_TIP = 20
+client = Groq(api_key=GROQ_API_KEY)
 
-# ---- Tuning smoothness ----
-POS_ALPHA = 0.45        # posisi tangan umum (drawing)
-ROT_ALPHA = 0.20        # rotasi display menyusul target
-SCALE_ALPHA = 0.20      # zoom display menyusul target
-INERTIA_DECAY = 0.93
+# Model vision Groq (bisa teks + gambar)
+VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+TEXT_MODEL = "llama-3.3-70b-versatile"
 
-# ---- Tuning khusus PAN (harus responsif 1:1) ----
-PAN_POS_ALPHA = 0.7     # smooth sumber (pinch point) - tinggi = responsif
-PAN_DEADZONE = 0.5      # px - sangat kecil, hanya untuk noise
-PAN_APPLY_SMOOTH = 0.55 # smoothing output pan (1.0 = no smoothing / instant)
+# ============ Session State ============
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "system", "content": "Kamu adalah asisten AI yang ramah dan membantu. Jawab dalam Bahasa Indonesia yang natural. Jika user mengirim gambar, jelaskan apa yang kamu lihat dengan detail."}
+    ]
 
-HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4),
-    (0, 5), (5, 6), (6, 7), (7, 8),
-    (5, 9), (9, 10), (10, 11), (11, 12),
-    (9, 13), (13, 14), (14, 15), (15, 16),
-    (13, 17), (17, 18), (18, 19), (19, 20),
-    (0, 17)
-]
+if "pending_image" not in st.session_state:
+    st.session_state.pending_image = None
 
-# ============ Download Model ============
-MODEL_PATH = "hand_landmarker.task"
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-    "hand_landmarker/float16/1/hand_landmarker.task"
-)
+# ============ Helper: Encode Gambar ============
+def encode_image_to_base64(image: Image.Image) -> str:
+    """Konversi PIL Image ke base64 string."""
+    buffered = io.BytesIO()
+    # Resize agar tidak terlalu besar (max 1024px sisi terpanjang)
+    image.thumbnail((1024, 1024))
+    image.save(buffered, format="JPEG", quality=85)
+    return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-if not os.path.exists(MODEL_PATH):
-    with st.spinner("📥 Mengunduh model AI (sekali saja)..."):
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    st.success("✅ Model siap!")
+# ============ Helper: Panggil Groq ============
+def ask_groq(messages: list, use_vision: bool = False) -> str:
+    """Kirim pesan ke Groq, kembalikan respons teks."""
+    model = VISION_MODEL if use_vision else TEXT_MODEL
 
-
-class Hand3DProcessor(VideoProcessorBase):
-    def __init__(self):
-        base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
-        options = vision.HandLandmarkerOptions(
-            base_options=base_options,
-            running_mode=vision.RunningMode.VIDEO,
-            num_hands=1,
-            min_hand_detection_confidence=0.3,
-            min_hand_presence_confidence=0.3,
-            min_tracking_confidence=0.5
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1024,
         )
-        self.detector = vision.HandLandmarker.create_from_options(options)
-        self.frame_timestamp = 0
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
 
-        # ---- State 3D display ----
-        self.rx, self.ry = 0.5, 0.5
-        self.scale = 1.0
-        self.offset_x, self.offset_y = 0.0, 0.0
+# ============ Layout ============
+col_cam, col_chat = st.columns([1, 1.2])
 
-        # ---- State 3D target ----
-        self.target_rx, self.target_ry = 0.5, 0.5
-        self.target_scale = 1.0
-        self.target_offset_x, self.target_offset_y = 0.0, 0.0
+# ---------- Kolom Kamera ----------
+with col_cam:
+    st.subheader("📷 Kamera")
 
-        # ---- Inertia ----
-        self.vel_ry = 0.0
-        self.vel_rx = 0.0
+    camera_image = st.camera_input("Ambil foto objek", key="cam")
 
-        # ---- Smoothed positions ----
-        self.smooth_index = None
-        self.smooth_palm = None
-        self.smooth_mid_pinch = None
-        self.smooth_mid_pinch_pan = None   # khusus PAN, alpha lebih tinggi
+    if camera_image is not None:
+        # Simpan sebagai pending image
+        st.session_state.pending_image = Image.open(camera_image)
+        st.image(st.session_state.pending_image, caption="Foto siap dikirim", use_container_width=True)
+        st.success("✅ Foto siap! Ketik pertanyaan di chat, lalu kirim.")
 
-        # ---- Gesture state ----
-        self.prev_index_pos = None
-        self.prev_pan_pos = None           # khusus PAN
-        self.zoom_base_index = None
-        self.zoom_base_middle = None
+    if st.session_state.pending_image is not None:
+        if st.button("🗑️ Hapus foto"):
+            st.session_state.pending_image = None
+            st.rerun()
 
-        self.active_mode = None
-        self.candidate_mode = None
-        self.hold_start_time = 0.0
-        self.last_seen_time = 0.0
+# ---------- Kolom Chat ----------
+with col_chat:
+    st.subheader("💬 Ngobrol dengan AI")
 
-        self.smoothed_dist_index = None
-        self.smoothed_dist_middle = None
-        self.smoothed_dist_mid_index = None
+    # Tampilkan riwayat chat (skip system)
+    for msg in st.session_state.messages:
+        if msg["role"] == "system":
+            continue
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-        # ---- Swipe ----
-        self.prev_palm_pos = None
-        self.swipe_vel_smooth = np.array([0.0, 0.0])
+    # Input chat
+    user_input = st.chat_input("Ketik pertanyaan... (misal: 'Apa yang kamu lihat?' atau 'Halo, apa kabar?')")
 
-        # ---- Kubus ----
-        self.vertices = np.array([
-            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
-            [-1, -1,  1], [1, -1,  1], [1, 1,  1], [-1, 1,  1]
-        ], dtype=np.float32)
+    if user_input:
+        # Siapkan pesan user
+        has_image = st.session_state.pending_image is not None
 
-        self.edges = [
-            (0,1), (1,2), (2,3), (3,0),
-            (4,5), (5,6), (6,7), (7,4),
-            (0,4), (1,5), (2,6), (3,7)
-        ]
+        if has_image:
+            # Encode gambar
+            b64 = encode_image_to_base64(st.session_state.pending_image)
 
-    # ---------- Utility ----------
-    def _to_pixel(self, landmark, w, h):
-        return int(landmark.x * w), int(landmark.y * h)
-
-    def _draw_landmarks(self, img, landmarks, w, h):
-        for a, b in HAND_CONNECTIONS:
-            p1 = self._to_pixel(landmarks[a], w, h)
-            p2 = self._to_pixel(landmarks[b], w, h)
-            cv2.line(img, p1, p2, (80, 80, 80), 1, cv2.LINE_AA)
-        for lm in landmarks:
-            cv2.circle(img, self._to_pixel(lm, w, h), 2, (120, 120, 120), -1, cv2.LINE_AA)
-
-    def _draw_3d_cube(self, img, cx, cy):
-        cos_x, sin_x = np.cos(self.rx), np.sin(self.rx)
-        cos_y, sin_y = np.cos(self.ry), np.sin(self.ry)
-
-        rot_x = np.array([[1, 0, 0], [0, cos_x, -sin_x], [0, sin_x, cos_x]])
-        rot_y = np.array([[cos_y, 0, sin_y], [0, 1, 0], [-sin_y, 0, cos_y]])
-        rot_matrix = rot_y @ rot_x
-        transformed = self.vertices @ rot_matrix.T
-
-        pts_2d = []
-        fov = 4.0
-        for v in transformed:
-            v_scaled = v * self.scale
-            z = v_scaled[2] + fov
-            if z <= 0.1:
-                z = 0.1
-            px = int((v_scaled[0] / z) * 150) + cx + int(self.offset_x)
-            py = int((v_scaled[1] / z) * 150) + cy + int(self.offset_y)
-            pts_2d.append((px, py, v_scaled[2]))
-
-        for a, b in self.edges:
-            p1, p2 = pts_2d[a], pts_2d[b]
-            depth = (p1[2] + p2[2]) / 2
-            intensity = float(np.clip(1.0 - depth / 2.0, 0.2, 1.0))
-            color = (int(255 * intensity), int(255 * intensity), 0)
-            cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), color, 6, cv2.LINE_AA)
-            cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), (255, 255, 255), 1, cv2.LINE_AA)
-
-        for p in pts_2d:
-            cv2.circle(img, (p[0], p[1]), 3, (0, 0, 255), -1, cv2.LINE_AA)
-
-    def _draw_progress_ring(self, img, center, progress, color):
-        cv2.ellipse(
-            img, center, (25, 25), -90, 0,
-            int(360 * min(progress, 1.0)), color, 4, cv2.LINE_AA
-        )
-
-    @staticmethod
-    def _smooth(new_val, old_val, alpha):
-        if old_val is None:
-            return new_val
-        return alpha * new_val + (1 - alpha) * old_val
-
-    @staticmethod
-    def _smooth_pt(new_pt, old_pt, alpha):
-        if old_pt is None:
-            return new_pt
-        return (
-            alpha * new_pt[0] + (1 - alpha) * old_pt[0],
-            alpha * new_pt[1] + (1 - alpha) * old_pt[1],
-        )
-
-    @staticmethod
-    def _deadzone(delta, threshold):
-        if abs(delta) < threshold:
-            return 0.0
-        return delta - np.sign(delta) * threshold
-
-    # ---------- Frame loop ----------
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)
-        h, w, _ = img.shape
-
-        # Sharpening ringan
-        gaussian = cv2.GaussianBlur(img, (0, 0), 2.0)
-        img_sharp = cv2.addWeighted(img, 1.3, gaussian, -0.3, 0)
-
-        img_rgb = cv2.cvtColor(img_sharp, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-
-        self.frame_timestamp += 1
-        results = self.detector.detect_for_video(mp_image, self.frame_timestamp)
-
-        mode_text = "MODE: SIAP"
-        color_text = (200, 200, 200)
-        current_time = time.time()
-
-        # ============================================
-        # INERTIA → TARGET
-        # ============================================
-        self.target_ry += self.vel_ry
-        self.target_rx += self.vel_rx
-        self.vel_ry *= INERTIA_DECAY
-        self.vel_rx *= INERTIA_DECAY
-        if abs(self.vel_ry) < 0.0015:
-            self.vel_ry = 0.0
-        if abs(self.vel_rx) < 0.0015:
-            self.vel_rx = 0.0
-
-        # ============================================
-        # SMOOTH DISPLAY (ROTASI & SCALE)
-        # PAN TIDAK di sini — ditangani khusus di bawah
-        # ============================================
-        self.ry = self._smooth(self.target_ry, self.ry, ROT_ALPHA)
-        self.rx = self._smooth(self.target_rx, self.rx, ROT_ALPHA)
-        self.scale = self._smooth(self.target_scale, self.scale, SCALE_ALPHA)
-
-        # ============================================
-        # TIMEOUT RESET
-        # ============================================
-        hand_detected = False
-        if results.hand_landmarks:
-            hand_detected = True
-            self.last_seen_time = current_time
+            # Format pesan multimodal Groq
+            user_message = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_input},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                    }
+                ]
+            }
+            # Untuk history, kita simpan versi teks + penanda gambar
+            display_content = f"🖼️ *(dengan gambar)* {user_input}"
         else:
-            if current_time - self.last_seen_time > 0.4:
-                self.active_mode = None
-                self.candidate_mode = None
-                self.prev_palm_pos = None
-                self.prev_index_pos = None
-                self.prev_pan_pos = None
-                self.smooth_palm = None
-                self.smooth_index = None
-                self.smooth_mid_pinch = None
-                self.smooth_mid_pinch_pan = None
-                self.smoothed_dist_index = None
-                self.smoothed_dist_middle = None
-                self.smoothed_dist_mid_index = None
-                self.zoom_base_index = None
-                self.zoom_base_middle = None
+            user_message = {"role": "user", "content": user_input}
+            display_content = user_input
 
-        if hand_detected:
-            lm = results.hand_landmarks[0]
-            self._draw_landmarks(img, lm, w, h)
+        # Tambah ke session state (untuk ditampilkan)
+        st.session_state.messages.append({"role": "user", "content": display_content})
 
-            thumb = self._to_pixel(lm[THUMB_TIP], w, h)
-            index = self._to_pixel(lm[INDEX_TIP], w, h)
-            middle = self._to_pixel(lm[MIDDLE_TIP], w, h)
-            pinky = self._to_pixel(lm[PINKY_TIP], w, h)
-            wrist = self._to_pixel(lm[0], w, h)
-            palm_center = ((wrist[0] + middle[0]) // 2, (wrist[1] + middle[1]) // 2)
+        # Tampilkan pesan user
+        with st.chat_message("user"):
+            if has_image:
+                st.image(st.session_state.pending_image, width=200)
+            st.markdown(user_input)
 
-            # Smooth posisi untuk drawing indicator
-            self.smooth_index = self._smooth_pt(index, self.smooth_index, POS_ALPHA)
-            self.smooth_palm = self._smooth_pt(palm_center, self.smooth_palm, POS_ALPHA)
-            index_s = (int(self.smooth_index[0]), int(self.smooth_index[1]))
-            palm_s = (int(self.smooth_palm[0]), int(self.smooth_palm[1]))
+        # Panggil AI
+        with st.chat_message("assistant"):
+            with st.spinner("AI sedang berpikir..."):
+                # Siapkan messages untuk API
+                # Konversi history ke format yang sesuai
+                api_messages = [st.session_state.messages[0]]  # system
+                for m in st.session_state.messages[1:-1]:  # skip system & pesan user terbaru
+                    api_messages.append({"role": m["role"], "content": m["content"]})
 
-            # Jarak antar ujung jari
-            raw_di = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
-            raw_dm = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
-            raw_dmi = float(np.hypot(middle[0] - index[0], middle[1] - index[1]))
+                # Tambahkan pesan user terbaru (dengan gambar jika ada)
+                api_messages.append(user_message)
 
-            self.smoothed_dist_index = self._smooth(raw_di, self.smoothed_dist_index, 0.5)
-            self.smoothed_dist_middle = self._smooth(raw_dm, self.smoothed_dist_middle, 0.5)
-            self.smoothed_dist_mid_index = self._smooth(raw_dmi, self.smoothed_dist_mid_index, 0.5)
+                response_text = ask_groq(api_messages, use_vision=has_image)
+                st.markdown(response_text)
 
-            d_index = self.smoothed_dist_index
-            d_middle = self.smoothed_dist_middle
-            d_mid_index = self.smoothed_dist_mid_index
+        # Simpan respons AI
+        st.session_state.messages.append({"role": "assistant", "content": response_text})
 
-            # ---- Deteksi 5 jari ----
-            index_up = index[1] < wrist[1]
-            middle_up = middle[1] < wrist[1]
-            pinky_up = pinky[1] < wrist[1]
-            thumb_up = thumb[1] < wrist[1] - 20
-            is_5_fingers = (
-                index_up and middle_up and pinky_up and thumb_up
-                and d_index > 60 and d_middle > 60
-            )
+        # Reset pending image setelah dikirim
+        if has_image:
+            st.session_state.pending_image = None
+            st.rerun()
 
-            if is_5_fingers:
-                if self.prev_palm_pos is not None:
-                    dx = self._deadzone(palm_s[0] - self.prev_palm_pos[0], 3.0)
-                    dy = self._deadzone(palm_s[1] - self.prev_palm_pos[1], 3.0)
+# ============ Sidebar ============
+with st.sidebar:
+    st.header("ℹ️ Info")
 
-                    self.swipe_vel_smooth[0] = 0.7 * self.swipe_vel_smooth[0] + 0.3 * (dx * 0.012)
-                    self.swipe_vel_smooth[1] = 0.7 * self.swipe_vel_smooth[1] + 0.3 * (dy * 0.012)
-
-                    if abs(dx) > 3 or abs(dy) > 3:
-                        self.vel_ry += self.swipe_vel_smooth[0]
-                        self.vel_rx += self.swipe_vel_smooth[1]
-                        mode_text = "SWIPE INERTIA!"
-                        color_text = (0, 255, 255)
-
-                self.prev_palm_pos = palm_s
-                self.candidate_mode = None
-                self.active_mode = None
-            else:
-                self.prev_palm_pos = None
-
-            # ---- Deteksi gesture ----
-            detected = None
-            if not is_5_fingers:
-                th_i = PINCH_EXIT if self.active_mode == "PAN" else PINCH_ENTER
-                th_z = PINCH_EXIT if self.active_mode == "ZOOM" else PINCH_ENTER
-
-                if d_index < th_z and d_middle < th_z and d_mid_index < th_z + 20:
-                    detected = "ZOOM"
-                elif d_index < th_i and d_middle > th_i + 20:
-                    detected = "PAN"
-                elif index[1] < thumb[1] and middle[1] > thumb[1] and d_index > th_i:
-                    detected = "ROTASI"
-
-            # ---- Hold verification ----
-            if self.active_mode is None and detected:
-                if self.candidate_mode != detected:
-                    self.candidate_mode = detected
-                    self.hold_start_time = current_time
-
-                progress = (current_time - self.hold_start_time) / HOLD_THRESHOLD
-
-                if progress >= 1.0:
-                    self.active_mode = detected
-                    self.vel_ry = 0.0
-                    self.vel_rx = 0.0
-                    self.target_rx = self.rx
-                    self.target_ry = self.ry
-                    if self.active_mode == "ZOOM":
-                        self.zoom_base_index = d_index
-                        self.zoom_base_middle = d_middle
-                    self.prev_index_pos = None
-                    self.prev_pan_pos = None
-                    self.smooth_mid_pinch = None
-                    self.smooth_mid_pinch_pan = None
-                else:
-                    mid_pinch = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
-                    ring_color = (
-                        (255, 165, 0) if detected == "ZOOM"
-                        else (0, 0, 255) if detected == "PAN"
-                        else (0, 255, 0)
-                    )
-                    self._draw_progress_ring(img, mid_pinch, progress, ring_color)
-                    mode_text = f"VERIFIKASI: {detected}"
-                    color_text = ring_color
-            elif self.active_mode is None and not detected and not is_5_fingers:
-                self.candidate_mode = None
-                self.hold_start_time = 0.0
-
-            # ============================================
-            # EKSEKUSI MODE
-            # ============================================
-            if self.active_mode == "ROTASI":
-                mode_text = "MODE: ROTASI"
-                color_text = (0, 255, 0)
-                if self.prev_index_pos is not None:
-                    dx = self._deadzone(index_s[0] - self.prev_index_pos[0], 2.0)
-                    dy = self._deadzone(index_s[1] - self.prev_index_pos[1], 2.0)
-                    dx = np.clip(dx, -20, 20)
-                    dy = np.clip(dy, -20, 20)
-                    self.target_ry += dx * 0.010
-                    self.target_rx += dy * 0.010
-                self.prev_index_pos = index_s
-                if detected != "ROTASI":
-                    self.active_mode = None
-                    self.prev_index_pos = None
-
-            elif self.active_mode == "PAN":
-                mode_text = "MODE: GESER"
-                color_text = (0, 0, 255)
-
-                # --- Sumber: pinch point dengan alpha TINGGI (responsif) ---
-                mid = ((thumb[0] + index[0]) / 2.0, (thumb[1] + index[1]) / 2.0)
-                self.smooth_mid_pinch_pan = self._smooth_pt(
-                    mid, self.smooth_mid_pinch_pan, PAN_POS_ALPHA
-                )
-                pan_pt = self.smooth_mid_pinch_pan  # float
-
-                if self.prev_pan_pos is not None:
-                    # Delta 1:1 dari sumber
-                    dx = pan_pt[0] - self.prev_pan_pos[0]
-                    dy = pan_pt[1] - self.prev_pan_pos[1]
-
-                    # Deadzone minimal hanya untuk noise
-                    if abs(dx) < PAN_DEADZONE: dx = 0.0
-                    if abs(dy) < PAN_DEADZONE: dy = 0.0
-
-                    # Akumulasi ke target (tanpa clip!)
-                    self.target_offset_x += dx
-                    self.target_offset_y += dy
-
-                self.prev_pan_pos = pan_pt
-
-                # Output smoothing (bisa tinggi = hampir instant)
-                self.offset_x = self._smooth(
-                    self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH
-                )
-                self.offset_y = self._smooth(
-                    self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH
-                )
-
-                if detected != "PAN":
-                    self.active_mode = None
-                    self.prev_pan_pos = None
-
-            elif self.active_mode == "ZOOM":
-                # Sinkronkan offset_x/y ke target (karena tidak dismooth di atas)
-                self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH)
-                self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH)
-
-                if d_index < PINCH_EXIT and d_middle < PINCH_EXIT:
-                    self.zoom_base_index = d_index
-                    self.zoom_base_middle = d_middle
-                    mode_text = "ZOOM: PILIH JARI"
-                    color_text = (255, 165, 0)
-                else:
-                    if d_index > PINCH_ENTER + 15 and d_middle < PINCH_EXIT:
-                        mode_text = "ZOOM IN (Telunjuk Jauh)"
-                        color_text = (0, 255, 255)
-                        if self.zoom_base_index is not None:
-                            delta = d_index - self.zoom_base_index
-                            if delta > 0:
-                                sc = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
-                                self.target_scale = np.clip(self.target_scale + sc, MIN_SCALE, MAX_SCALE)
-                                self.zoom_base_index = d_index
-                    elif d_middle > PINCH_ENTER + 15 and d_index < PINCH_EXIT:
-                        mode_text = "ZOOM OUT (Jari Tengah Jauh)"
-                        color_text = (255, 0, 255)
-                        if self.zoom_base_middle is not None:
-                            delta = d_middle - self.zoom_base_middle
-                            if delta > 0:
-                                sc = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
-                                self.target_scale = np.clip(self.target_scale - sc, MIN_SCALE, MAX_SCALE)
-                                self.zoom_base_middle = d_middle
-
-                if d_index > PINCH_EXIT + 30 and d_middle > PINCH_EXIT + 30:
-                    self.active_mode = None
-                    self.zoom_base_index = None
-                    self.zoom_base_middle = None
-
-            else:
-                # Mode idle: pastikan offset tetap sinkron (tidak ada drift)
-                self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH)
-                self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH)
-
-            # Indikator titik
-            cv2.circle(img, thumb, 5, color_text, -1)
-            cv2.circle(img, index_s, 5, color_text, -1)
-            cv2.circle(img, middle, 5, color_text, -1)
-            if is_5_fingers:
-                cv2.circle(img, palm_s, 10, (0, 255, 255), -1)
-
-            # Debug: garis dari pinch point ke offset (opsional, komentar kalau tak perlu)
-            # if self.active_mode == "PAN" and self.smooth_mid_pinch_pan:
-            #     p = (int(self.smooth_mid_pinch_pan[0]), int(self.smooth_mid_pinch_pan[1]))
-            #     cv2.line(img, p, (p[0]+30, p[1]), (0, 0, 255), 2)
-
-        else:
-            # Tidak ada tangan: tetap sinkronkan offset
-            self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH)
-            self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH)
-
-        # ---- Render 3D ----
-        cx, cy = w // 2, h // 2
-        self._draw_3d_cube(img, cx, cy)
-
-        cv2.putText(img, mode_text, (20, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
-        cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
-
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-    def __del__(self):
-        try:
-            self.detector.close()
-        except Exception:
-            pass
-
-
-# ============ Streamlit WebRTC ============
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.subheader("📹 Kamera")
-    ctx = webrtc_streamer(
-        key="hand-3d-tracker-smooth",
-        video_processor_factory=Hand3DProcessor,
-        rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={
-            "video": {"width": 640, "height": 480},
-            "audio": False,
-        },
-        async_processing=True,
-    )
-
-with col2:
-    st.subheader("ℹ️ Status")
-    if ctx.state.playing:
-        st.success("🟢 Kamera aktif")
-    else:
-        st.info("⚪ Klik **START** untuk mulai")
+    if st.button("🔄 Reset Chat"):
+        st.session_state.messages = [
+            {"role": "system", "content": "Kamu adalah asisten AI yang ramah dan membantu. Jawab dalam Bahasa Indonesia yang natural. Jika user mengirim gambar, jelaskan apa yang kamu lihat dengan detail."}
+        ]
+        st.session_state.pending_image = None
+        st.rerun()
 
     st.markdown("---")
+    st.markdown(f"**Model Vision:** `{VISION_MODEL}`")
+    st.markdown(f"**Model Teks:** `{TEXT_MODEL}`")
     st.markdown("""
-    **Gesture Guide**
-
-    | Gesture | Fungsi |
-    |---|---|
-    | ✋ Swipe 5 jari | Rotasi + inertia |
-    | ☝️ Telunjuk tahan | Rotasi manual |
-    | 👆 Pinch jempol-telunjuk | Geser (pan) |
-    | 🤏 Pinch 3 jari | Zoom |
-
-    **Tuning cepat:**
-
-    | Konstanta | Efek |
-    |---|---|
-    | `PAN_POS_ALPHA` ↑ | Pinch point makin responsif |
-    | `PAN_APPLY_SMOOTH` → 1.0 | Pan instant (no smooth) |
-    | `PAN_DEADZONE` ↓ | Gerakan kecil lebih kebaca |
-    | `ROT_ALPHA` ↓ | Rotasi makin halus |
-    | `INERTIA_DECAY` ↑ | Inertia makin panjang |
+    **Tips:**
+    - Foto objek dengan pencahayaan cukup
+    - Tanya spesifik: "Apa warna benda ini?", "Berapa jumlah orang?"
+    - Bisa ngobrol tanpa gambar juga
+    - Gambar otomatis di-resize max 1024px agar hemat token
     """)
 
-st.markdown("---")
-st.caption("💡 Gunakan Chrome/Edge/Firefox terbaru. Izinkan akses kamera saat diminta.")
+    st.markdown("---")
+    st.caption("Ditenagai Groq API • Llama 4 Scout (Vision)")
