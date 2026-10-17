@@ -1,3 +1,5 @@
+import os
+import urllib.request
 import av
 import cv2
 import numpy as np
@@ -5,46 +7,45 @@ import streamlit as st
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-import urllib.request
-import os
+
+# === PERBAIKAN: Import RTCConfiguration dan webrtc_streamer ===
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="Hand Tracking Drawing - Streamlit", layout="wide")
+st.set_page_config(page_title="Hand Tracking Drawing", layout="wide")
 st.title("✌️ Hand Tracking - Visualisasi Garis Antar Jari")
 st.write(
-    "Aktifkan kamera di bawah. Aplikasi akan mendeteksi ketika ujung jari "
-    "(misal Jempol & Telunjuk) saling berdekatan / berinteraksi, lalu menarik "
-    "garis dinamis saat jari bergerak menjauh."
+    "Izinkan akses kamera jika browser meminta. Aplikasi akan mendeteksi ujung jari "
+    "dan menarik garis dinamis saat jari bergerak."
 )
 
 # ============ Konfigurasi WebRTC ============
+# Menggunakan STUN server Google agar koneksi WebRTC lancar
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
 # ============ Konstanta ============
-TOUCH_THRESHOLD = 45      # Jarak (px) dianggap "pinch"/sentuhan
-MAX_LINE_DIST = 300       # Jarak (px) maksimum untuk menggambar garis
+TOUCH_THRESHOLD = 45      
+MAX_LINE_DIST = 300       
 MIN_THICKNESS = 2
 MAX_THICKNESS = 8
 
-# Indeks landmark ujung jari MediaPipe
 THUMB_TIP = 4
 FINGER_TIPS = {
-    "Telunjuk":    (8,  (0, 255, 255)),   # Kuning
-    "Jari Tengah": (12, (255, 0, 255)),   # Magenta
-    "Jari Manis":  (16, (255, 255, 0)),   # Cyan
-    "Kelingking":  (20, (0, 255, 0)),     # Hijau
+    "Telunjuk":    (8,  (0, 255, 255)),   
+    "Jari Tengah": (12, (255, 0, 255)),   
+    "Jari Manis":  (16, (255, 255, 0)),   
+    "Kelingking":  (20, (0, 255, 0)),     
 }
 
-# Koneksi tulang tangan manual karena Tasks API tidak menyediakan drawer bawaan
 HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4),        # Ibu jari
-    (0, 5), (5, 6), (6, 7), (7, 8),        # Telunjuk
-    (5, 9), (9, 10), (10, 11), (11, 12),   # Jari tengah
-    (9, 13), (13, 14), (14, 15), (15, 16), # Jari manis
-    (13, 17), (17, 18), (18, 19), (19, 20),# Kelingking
-    (0, 17)                                # Telapak tangan
+    (0, 1), (1, 2), (2, 3), (3, 4),        
+    (0, 5), (5, 6), (6, 7), (7, 8),        
+    (5, 9), (9, 10), (10, 11), (11, 12),   
+    (9, 13), (13, 14), (14, 15), (15, 16), 
+    (13, 17), (17, 18), (18, 19), (19, 20),
+    (0, 17)                                
 ]
 
 # ============ Fungsi Download Model Otomatis ============
@@ -58,7 +59,6 @@ if not os.path.exists(MODEL_PATH):
 
 class HandInteractionProcessor(VideoProcessorBase):
     def __init__(self):
-        # Inisialisasi MediaPipe Tasks API (API baru)
         base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
         options = vision.HandLandmarkerOptions(
             base_options=base_options,
@@ -75,52 +75,40 @@ class HandInteractionProcessor(VideoProcessorBase):
         return int(landmark.x * w), int(landmark.y * h)
 
     def _draw_landmarks(self, img, landmarks, w, h):
-        # Menggambar skeleton (tulang) secara manual
         for connection in HAND_CONNECTIONS:
             start = self._to_pixel(landmarks[connection[0]], w, h)
             end = self._to_pixel(landmarks[connection[1]], w, h)
             cv2.line(img, start, end, (240, 240, 240), 1)
         
-        # Menggambar titik sendi
         for lm in landmarks:
             px = self._to_pixel(lm, w, h)
             cv2.circle(img, px, 2, (200, 200, 200), -1)
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)  # mirror
+        img = cv2.flip(img, 1)  
         h, w, _ = img.shape
 
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
-        # Konversi gambar ke format MediaPipe Image
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
         
-        # Proses deteksi (menggunakan timestamp untuk mode VIDEO)
         self.frame_timestamp += 1
         results = self.detector.detect_for_video(mp_image, self.frame_timestamp)
 
         if results.hand_landmarks:
             for hand_landmarks in results.hand_landmarks:
-                # Gambar skeleton tangan
                 self._draw_landmarks(img, hand_landmarks, w, h)
 
-                # Koordinat pixel ujung jari
                 thumb = self._to_pixel(hand_landmarks[THUMB_TIP], w, h)
-                cv2.circle(img, thumb, 8, (0, 0, 255), -1) # Jempol merah
+                cv2.circle(img, thumb, 8, (0, 0, 255), -1)
 
                 for name, (idx, color) in FINGER_TIPS.items():
                     tip = self._to_pixel(hand_landmarks[idx], w, h)
-
-                    # Lingkaran ujung jari
                     cv2.circle(img, tip, 8, color, -1)
 
-                    # Jarak Euclidean
                     dist = float(np.hypot(thumb[0] - tip[0], thumb[1] - tip[1]))
 
-                    # Garis dinamis jika dalam batas
                     if dist < MAX_LINE_DIST:
-                        # Ketebalan proporsional
                         thickness = int(
                             np.interp(dist, [0, MAX_LINE_DIST], [MAX_THICKNESS, MIN_THICKNESS])
                         )
@@ -151,6 +139,7 @@ class HandInteractionProcessor(VideoProcessorBase):
 
 
 # ============ Streamlit WebRTC ============
+# Komponen ini akan otomatis memunculkan pop-up "Allow Camera" di browser
 webrtc_streamer(
     key="hand-gesture-tracker",
     video_processor_factory=HandInteractionProcessor,
