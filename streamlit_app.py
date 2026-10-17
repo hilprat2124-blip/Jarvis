@@ -15,12 +15,11 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 st.set_page_config(page_title="Interactive 3D Hand Tracking", layout="wide")
 st.title("🧊 3D Free View - Hand Tracking")
 st.write("""
-**Panduan Gestur:**
-- **Tahan Gestur Selama 1 Detik** (sampai lingkaran penuh) untuk mengunci fitur agar tidak bentrok.
-- ☝️ **Telunjuk Berdiri:** Putar objek (Free View).
-- 👆 **Jempol + Telunjuk:** Tahan 1 detik -> Jauhkan **Telunjuk** untuk **ZOOM IN**.
-- 🖕 **Jempol + Jari Tengah:** Tahan 1 detik -> Jauhkan **Jari Tengah** untuk **ZOOM OUT**.
-- 🤏 **Pinch (Jempol+Telunjuk):** Tahan 1 detik -> Geser tangan untuk **PAN (Geser)**.
+**Panduan Gestur (Verifikasi Diperlukan):**
+- ☝️ **Telunjuk Berdiri:** Tahan **1 Detik** untuk memutar objek (Rotasi).
+- 👆 **Jempol + Telunjuk:** Tahan **1 Detik** -> Jauhkan **Telunjuk** untuk **ZOOM IN**.
+- 🖕 **Jempol + Jari Tengah:** Tahan **1 Detik** -> Jauhkan **Jari Tengah** untuk **ZOOM OUT**.
+- 🤏 **Pinch (Cubit):** Tahan **2 Detik** -> Geser tangan untuk **PAN (Geser)**.
 """)
 
 # ============ Konfigurasi WebRTC ============
@@ -30,7 +29,8 @@ RTC_CONFIGURATION = RTCConfiguration(
 
 # ============ Konstanta ============
 PINCH_THRESHOLD = 40      
-HOLD_THRESHOLD = 1.0      # Waktu tahan (detik) untuk verifikasi
+HOLD_TIME_ZOOM_ROTATE = 1.0  # 1 detik untuk Zoom & Rotasi
+HOLD_TIME_PAN = 2.0          # 2 detik untuk Pan (Geser)
 MIN_SCALE, MAX_SCALE = 0.5, 3.0
 ZOOM_SENSITIVITY = 0.01
 MAX_ZOOM_STEP = 0.03
@@ -81,9 +81,9 @@ class Hand3DProcessor(VideoProcessorBase):
         
         # State Verifikasi (Hold)
         self.active_mode = None    # "ZOOM_IN", "ZOOM_OUT", "PAN", "ROTASI"
-        self.candidate_mode = None # Kandidat yang sedang diverifikasi
+        self.candidate_mode = None 
         self.hold_start_time = 0.0
-        self.verified = False      # Apakah sudah lolos verifikasi 1 detik?
+        self.verified = False      
 
         # Vertex Kubus 3D
         self.vertices = np.array([
@@ -141,8 +141,8 @@ class Hand3DProcessor(VideoProcessorBase):
         for p in pts_2d:
             cv2.circle(img, (p[0], p[1]), 3, (0, 0, 255), -1, cv2.LINE_AA)
 
-    def _draw_progress_ring(self, img, center, progress, color):
-        cv2.ellipse(img, center, (25, 25), -90, 0, int(360 * min(progress, 1.0)), color, 3, cv2.LINE_AA)
+    def _draw_progress_ring(self, img, center, progress, color, radius=30):
+        cv2.ellipse(img, center, (radius, radius), -90, 0, int(360 * min(progress, 1.0)), color, 4, cv2.LINE_AA)
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
@@ -179,42 +179,44 @@ class Hand3DProcessor(VideoProcessorBase):
             if index[1] < thumb[1] and middle[1] > thumb[1] and dist_pinch_index > PINCH_THRESHOLD:
                 detected_gesture = "ROTASI"
             
-            # Cek Gestur Zoom/Pan (Berdasarkan pinch)
+            # Cek Gestur Pinch
             elif dist_pinch_index < PINCH_THRESHOLD:
                 if dist_pinch_middle < PINCH_THRESHOLD:
-                    detected_gesture = "ZOOM_IN" # Telunjuk & Tengah pinch jempol (Bisa jadi zoom in atau pan)
+                    detected_gesture = "ZOOM_IN"
                 else:
-                    detected_gesture = "PAN" # Hanya telunjuk pinch
+                    detected_gesture = "PAN"
                     
             elif dist_pinch_middle < PINCH_THRESHOLD:
-                detected_gesture = "ZOOM_OUT" # Hanya jari tengah pinch
+                detected_gesture = "ZOOM_OUT"
 
             # ==========================================
-            # LOGIKA VERIFIKASI 1 DETIK
+            # LOGIKA VERIFIKASI (1 atau 2 DETIK)
             # ==========================================
             
             if self.active_mode is None:
-                # Jika belum ada mode aktif, cek kandidat
                 if detected_gesture:
                     if self.candidate_mode != detected_gesture:
                         self.candidate_mode = detected_gesture
                         self.hold_start_time = current_time
                         self.verified = False
                     
-                    progress = (current_time - self.hold_start_time) / HOLD_THRESHOLD
+                    # Tentukan waktu tunggu berdasarkan gestur
+                    required_time = HOLD_TIME_PAN if detected_gesture == "PAN" else HOLD_TIME_ZOOM_ROTATE
+                    progress = (current_time - self.hold_start_time) / required_time
                     
                     if progress >= 1.0:
-                        # Verifikasi berhasil!
                         self.active_mode = detected_gesture
                         self.verified = True
-                        self.prev_zoom_dist = None # Reset jarak zoom
-                        self.prev_index_pos = None # Reset posisi pan/rotasi
+                        self.prev_zoom_dist = None 
+                        self.prev_index_pos = None 
                     else:
-                        # Tampilkan loading ring
                         mid_pinch = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
-                        self._draw_progress_ring(img, mid_pinch, progress, (0, 255, 255))
-                        mode_text = f"VERIFIKASI: {detected_gesture}"
-                        color_text = (0, 255, 255)
+                        # Warna ring beda: Merah untuk Pan (2s), Kuning untuk lainnya (1s)
+                        ring_color = (0, 0, 255) if detected_gesture == "PAN" else (0, 255, 255)
+                        self._draw_progress_ring(img, mid_pinch, progress, ring_color, radius=35 if detected_gesture=="PAN" else 25)
+                        
+                        mode_text = f"VERIFIKASI: {detected_gesture} ({required_time}s)"
+                        color_text = ring_color
                 else:
                     self.candidate_mode = None
                     self.hold_start_time = 0.0
@@ -233,7 +235,6 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.rx += dy * 0.015
                 self.prev_index_pos = index
                 
-                # Keluar dari mode jika gestur berubah drastis
                 if detected_gesture != "ROTASI":
                     self.active_mode = None
 
@@ -241,12 +242,11 @@ class Hand3DProcessor(VideoProcessorBase):
                 mode_text = f"MODE: {self.active_mode} (Aktif)"
                 color_text = (255, 165, 0)
                 
-                # Cek jarak mana yang harus dipantau
                 dist_to_track = dist_pinch_index if self.active_mode == "ZOOM_IN" else dist_pinch_middle
                 
                 if self.prev_zoom_dist is not None:
                     delta = dist_to_track - self.prev_zoom_dist
-                    if delta > 0: # Menjauh
+                    if delta > 0: 
                         scale_change = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
                         if self.active_mode == "ZOOM_IN":
                             self.scale = np.clip(self.scale + scale_change, MIN_SCALE, MAX_SCALE)
@@ -254,7 +254,6 @@ class Hand3DProcessor(VideoProcessorBase):
                             self.scale = np.clip(self.scale - scale_change, MIN_SCALE, MAX_SCALE)
                 self.prev_zoom_dist = dist_to_track
 
-                # Keluar dari mode jika jari kembali mendekat / pinch
                 if (self.active_mode == "ZOOM_IN" and dist_pinch_index < PINCH_THRESHOLD + 10) or \
                    (self.active_mode == "ZOOM_OUT" and dist_pinch_middle < PINCH_THRESHOLD + 10):
                     self.active_mode = None
@@ -271,7 +270,6 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.offset_y += dy
                 self.prev_index_pos = mid
 
-                # Keluar jika pinch dilepas
                 if dist_pinch_index > PINCH_THRESHOLD + 10:
                     self.active_mode = None
 
