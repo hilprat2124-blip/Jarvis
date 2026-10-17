@@ -26,8 +26,9 @@ try:
 except Exception:
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-JARVIS_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-JARVIS_TEXT_MODEL = "llama-3.3-70b-versatile"
+# 🔥 MODEL YANG MASIH AKTIF DI GROQ (per 2026)
+JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"          # pengganti llama-4-scout
+JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"         # pengganti llama-3.3-70b
 
 # ============ Konfigurasi Halaman ============
 st.set_page_config(
@@ -102,7 +103,7 @@ if not os.path.exists(MODEL_PATH):
 
 
 # ============================================================
-# 🔒 KELAS KAMERA — TIDAK DIUBAH SAMA SEKALI (fungsi utama utuh)
+# 🔒 KELAS KAMERA — TIDAK DIUBAH SAMA SEKALI
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
     def __init__(self):
@@ -493,7 +494,7 @@ class Hand3DProcessor(VideoProcessorBase):
         cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
-        # 🔥 TAMBAHAN: simpan frame terakhir untuk Jarvis (tanpa mengubah output)
+        # 🔥 TAMBAHAN: simpan frame terakhir untuk Jarvis
         try:
             self.latest_frame_bgr = img.copy()
         except Exception:
@@ -597,7 +598,7 @@ with col2:
     """)
 
 # ============================================================
-# 🤖 JARVIS: SNAPSHOT + CHAT (panel terpisah, kamera tetap utuh)
+# 🤖 JARVIS: SNAPSHOT + CHAT
 # ============================================================
 st.markdown("---")
 st.header("🤖 Jarvis — Tanya soal isi kamera")
@@ -634,7 +635,6 @@ with snap_col2:
 # ---------- Chat Jarvis ----------
 st.subheader("💬 Ngobrol dengan Jarvis")
 
-# Tampilkan riwayat (skip system)
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system":
         continue
@@ -663,14 +663,12 @@ if user_q:
         user_api_msg = {"role": "user", "content": user_q}
         display_text = user_q
 
-    # simpan untuk display
     st.session_state.jarvis_messages.append({"role": "user", "content": display_text})
     with st.chat_message("user"):
         if has_img:
             st.image(st.session_state.jarvis_snapshot, width=220)
         st.markdown(user_q)
 
-    # panggil Jarvis
     with st.chat_message("assistant"):
         with st.spinner("Jarvis sedang menganalisis..."):
             api_messages = [st.session_state.jarvis_messages[0]]
@@ -719,7 +717,7 @@ with st.sidebar:
         st.success("✅ Jarvis siap!")
 
     st.markdown("---")
-    st.caption("Jarvis menggunakan Groq API • Llama 4 Scout (Vision)")
+    st.caption(f"Jarvis • Vision: `{JARVIS_VISION_MODEL}` • Text: `{JARVIS_TEXT_MODEL}`")
 
 st.markdown("---")
 st.caption("💡 Gunakan Chrome/Edge/Firefox terbaru. Izinkan akses kamera saat diminta.")
