@@ -36,7 +36,7 @@ KEPRIBADIAN:
 """
 
 # ============================================================
-# FUNGSI PEMBERSIH LATEX & AUDIO
+# FUNGSI PEMBERSIH LATEX & AUDIO (AUTO-PLAY)
 # ============================================================
 def sanitize_latex(text):
     if not text: return text
@@ -47,20 +47,31 @@ def sanitize_latex(text):
     return text.strip()
 
 def play_audio_auto(audio_bytes):
+    """Memutar audio menggunakan HTML5 Autoplay & Base64 (Paling Ampuh)"""
     if not audio_bytes: return
     b64 = base64.b64encode(audio_bytes).decode()
-    html = f"""
-    <audio id="jarvis-audio" autoplay>
-        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-    </audio>
-    <script>
-        var audio = document.getElementById("jarvis-audio");
-        audio.play().catch(function(e) {{
-            document.body.addEventListener('click', function() {{ audio.play(); }}, {{ once: true }});
-        }});
-    </script>
+    
+    # Kita tampilkan audio player kecil agar user bisa menekan play jika diblokir
+    st.markdown("**🔊 Suara Jarvis:**")
+    audio_html = f"""
+        <audio controls autoplay id="jarvis-audio">
+            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+        </audio>
+        <script>
+            var audio = document.getElementById("jarvis-audio");
+            // Paksa putar
+            var playPromise = audio.play();
+            if (playPromise !== undefined) {{
+                playPromise.catch(function(error) {{
+                    // Jika diblokir browser, tunggu user klik di mana saja
+                    document.body.addEventListener('click', function() {{
+                        audio.play();
+                    }}, {{ once: true }});
+                }});
+            }}
+        </script>
     """
-    components.html(html, height=0)
+    components.html(audio_html, height=60)
 
 class JarvisCore:
     def __init__(self, api_key):
@@ -131,7 +142,7 @@ class JarvisCore:
             return None
 
 # ============================================================
-# UI: BOLA SIMULASI & DESAIN TOMBOL REKAM
+# UI: BOLA & DESAIN
 # ============================================================
 def inject_custom_css():
     st.markdown("""
@@ -145,25 +156,22 @@ def inject_custom_css():
             background: radial-gradient(circle, #00ffff 0%, #0055ff 80%, #000 100%);
             border-radius: 50%;
             box-shadow: 0 0 40px #00ffff, 0 0 80px #0055ff;
-            animation: pulse 2s infinite alternate; /* Animasi bernapas */
+            animation: pulse 2s infinite alternate;
         }
         .jarvis-ring {
             position: absolute; width: 160px; height: 160px;
             border: 1px dashed #00ffff; border-radius: 50%;
             animation: spin 10s linear infinite; opacity: 0.4;
         }
-        @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 30px #00ffff; }
-            100% { transform: scale(1.05); box-shadow: 0 0 60px #00ffff, 0 0 100px #0055ff; }
-        }
+        @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 30px #00ffff; } 100% { transform: scale(1.05); box-shadow: 0 0 60px #00ffff, 0 0 100px #0055ff; } }
         @keyframes spin { 100% { transform: rotate(360deg); } }
 
-        /* DESAIN ULANG TOMBOL REKAM STREAMLIT (Agar futuristik) */
+        /* Desain Tombol Rekam */
         [data-testid="stAudioInput"] {
             background: rgba(0, 255, 255, 0.05);
             border: 2px solid #00ffff;
             border-radius: 50px;
-            padding: 15px;
+            padding: 10px;
             box-shadow: 0 0 25px #00ffff, 0 0 10px #00ffff inset;
             margin: 0 auto;
             display: flex;
@@ -171,14 +179,8 @@ def inject_custom_css():
             width: fit-content;
             transition: all 0.3s ease;
         }
-        [data-testid="stAudioInput"]:hover {
-            box-shadow: 0 0 50px #00ffff, 0 0 20px #00ffff inset;
-            background: rgba(0, 255, 255, 0.1);
-        }
-        [data-testid="stAudioInput"] button {
-            color: #00ffff !important;
-            font-weight: bold;
-        }
+        [data-testid="stAudioInput"]:hover { box-shadow: 0 0 50px #00ffff, 0 0 20px #00ffff inset; }
+        [data-testid="stAudioInput"] button { color: #00ffff !important; }
         
         /* Expander */
         .stExpander { background: rgba(0, 255, 255, 0.05); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; }
@@ -198,6 +200,7 @@ def main():
     
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio" not in st.session_state: st.session_state.last_audio = None
+    if "audio_bytes" not in st.session_state: st.session_state.audio_bytes = None
 
     # SIDEBAR
     with st.sidebar:
@@ -210,20 +213,26 @@ def main():
         if st.button("🗑️ Reset Memori", use_container_width=True):
             st.session_state.messages = []
             st.session_state.last_audio = None
+            st.session_state.audio_bytes = None
             st.rerun()
 
     # HEADER
     st.markdown("<h1 style='text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff;'>J A R V I S</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
 
-    # TOMBOL REKAM (Didesain ulang futuristik via CSS di atas)
+    # TOMBOL REKAM
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
+    # JIKA AUDIO SUDAH DIPROSES, TAMPILKAN SUARANYA DI SINI
+    if st.session_state.audio_bytes:
+        play_audio_auto(st.session_state.audio_bytes)
+        st.divider()
+
     # RIWAYAT CHAT
     if st.session_state.messages:
-        with st.expander("💬 Lihat Riwayat Obrolan", expanded=False):
+        with st.expander("💬 Lihat Riwayat Obrolan", expanded=True):
             for msg in st.session_state.messages:
                 with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
                     st.markdown(msg["content"])
@@ -234,12 +243,12 @@ def main():
 
         if current_id != st.session_state.last_audio:
             st.session_state.last_audio = current_id
-            audio_bytes = audio_value.read()
+            raw_audio = audio_value.read()
             
             jarvis = JarvisCore(api_key)
             
             with st.spinner("👂 Menganalisis gelombang suara..."):
-                user_text, stt_status = jarvis.transcribe(audio_bytes)
+                user_text, stt_status = jarvis.transcribe(raw_audio)
                 
             if stt_status != "ok":
                 st.warning(user_text)
@@ -263,8 +272,9 @@ def main():
             with st.spinner("🔊 Menyiapkan suara..."):
                 audio_reply = jarvis.text_to_speech(clean_response)
                 if audio_reply:
-                    play_audio_auto(audio_reply)
+                    st.session_state.audio_bytes = audio_reply
             
+            # Rerun dilakukan SETELAH audio disimpan, agar player muncul dan autoplay
             st.rerun()
 
 if __name__ == "__main__":
