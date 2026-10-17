@@ -21,23 +21,15 @@ try:
 except ImportError:
     GROQ_AVAILABLE = False
 
-# Untuk autoplay audio di browser
-try:
-    from streamlit_TTS import auto_play
-    TTS_AVAILABLE = True
-except ImportError:
-    TTS_AVAILABLE = False
-
 try:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 except Exception:
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-# Model Groq
 JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
-JARVIS_TTS_MODEL = "playai-tts"           # Model TTS Groq
-JARVIS_TTS_VOICE = "Fritz-PlayAI"         # Suara cowok (bisa ganti: Arista-PlayAI, dll)
+JARVIS_TTS_MODEL = "playai-tts"
+JARVIS_TTS_VOICE = "Fritz-PlayAI"
 
 # ============ Konfigurasi Halaman ============
 st.set_page_config(
@@ -49,17 +41,12 @@ st.set_page_config(
 st.title("🧊 3D Hand Tracking + 🤖 Jarvis (Live Eyes + Voice)")
 st.markdown("""
 **Fitur Spesial:** Jarvis punya **"Mata Live"** dan **"Suara"**. 
-Ketik chat (misal: *"Apa yang kamu lihat?"*), Jarvis akan otomatis melihat kamera dan **menjawab dengan suara**.
+Ketik chat (misal: *"Apa yang kamu lihat?"*), Jarvis akan melihat kamera dan **menjawab dengan suara otomatis**.
 """)
 
-# ============ WebRTC & Konstanta (Tidak Diubah) ============
+# ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
-    {
-        "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302"]},
-            {"urls": ["stun:stun1.l.google.com:19302"]},
-        ]
-    }
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}, {"urls": ["stun:stun1.l.google.com:19302"]}]}
 )
 
 PINCH_ENTER = 40
@@ -86,7 +73,7 @@ HAND_CONNECTIONS = [
     (15, 16), (13, 17), (17, 18), (18, 19), (19, 20), (0, 17)
 ]
 
-# ============ Download Model (Tidak Diubah) ============
+# ============ Download Model ============
 MODEL_PATH = "hand_landmarker.task"
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
@@ -99,18 +86,15 @@ if not os.path.exists(MODEL_PATH):
     st.success("✅ Model siap!")
 
 # ============================================================
-# 🔒 KELAS KAMERA — TIDAK DIUBAH SAMA SEKALI
+# 🔒 KELAS KAMERA — TIDAK DIUBAH
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
     def __init__(self):
         base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
         options = vision.HandLandmarkerOptions(
-            base_options=base_options,
-            running_mode=vision.RunningMode.VIDEO,
-            num_hands=1,
-            min_hand_detection_confidence=0.3,
-            min_hand_presence_confidence=0.3,
-            min_tracking_confidence=0.5
+            base_options=base_options, running_mode=vision.RunningMode.VIDEO,
+            num_hands=1, min_hand_detection_confidence=0.3,
+            min_hand_presence_confidence=0.3, min_tracking_confidence=0.5
         )
         self.detector = vision.HandLandmarker.create_from_options(options)
         self.frame_timestamp = 0
@@ -452,10 +436,9 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     except Exception as e:
         return f"❌ Error Jarvis: {str(e)}"
 
-def generate_tts_audio(text: str) -> dict or None:
-    """Generate audio dari teks menggunakan Groq TTS, return dict untuk auto_play."""
-    if not GROQ_AVAILABLE or not TTS_AVAILABLE:
-        return None
+def generate_tts_audio(text: str) -> bytes or None:
+    """Generate audio dari teks menggunakan Groq TTS."""
+    if not GROQ_AVAILABLE: return None
     try:
         client = Groq(api_key=GROQ_API_KEY)
         response = client.audio.speech.create(
@@ -464,16 +447,7 @@ def generate_tts_audio(text: str) -> dict or None:
             input=text,
             response_format="wav",
         )
-        # Response berupa binary audio, kita simpan ke bytes
-        audio_bytes = response.content  # atau response.read()
-        # auto_play butuh format: {'bytes': ..., 'sample_rate': ..., 'sample_width': ...}
-        # Groq TTS mengembalikan WAV. Kita bisa parsing header atau asumsikan default.
-        # Untuk aman, kita gunakan sample_rate 24000 (default Groq) dan sample_width 2 (16-bit)
-        return {
-            "bytes": audio_bytes,
-            "sample_rate": 24000,
-            "sample_width": 2,
-        }
+        return response.read() # Mengembalikan data binary audio
     except Exception as e:
         st.error(f"Gagal generate suara: {e}")
         return None
@@ -572,14 +546,24 @@ if user_q:
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
 
-    # === TAMBAHAN: Generate dan Putar Suara Otomatis ===
-    if TTS_AVAILABLE and answer and not answer.startswith("❌"):
+    # ===============================================
+    # 🔥 TAMBAHAN: PUTAR SUARA OTOMATIS (HTML5 AUDIO)
+    # ===============================================
+    if answer and not answer.startswith("❌"):
         with st.spinner("Menyiapkan suara Jarvis..."):
-            audio_dict = generate_tts_audio(answer)
-            if audio_dict:
-                auto_play(audio_dict, wait=False)  # wait=False agar tidak memblokir UI
-    elif not TTS_AVAILABLE:
-        st.info("💡 Install `streamlit-TTS` untuk fitur suara otomatis: `pip install streamlit-TTS`")
+            audio_bytes = generate_tts_audio(answer)
+            
+            if audio_bytes:
+                # Encode audio ke base64
+                b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
+                
+                # HTML5 Audio dengan autoplay (paling stabil di Streamlit)
+                audio_html = f"""
+                    <audio autoplay="true" style="display:none;">
+                        <source src="data:audio/wav;base64,{b64_audio}" type="audio/wav">
+                    </audio>
+                """
+                st.markdown(audio_html, unsafe_allow_html=True)
 
 # ============================================================
 # SIDEBAR
@@ -600,13 +584,9 @@ with st.sidebar:
     elif not GROQ_API_KEY: st.warning("⚠️ GROQ_API_KEY belum diset.")
     else: st.success("✅ Jarvis siap!")
 
-    if not TTS_AVAILABLE:
-        st.warning("⚠️ `streamlit-TTS` belum terinstall. Suara otomatis nonaktif.")
-        st.code("pip install streamlit-TTS")
-
     st.markdown("---")
     st.caption(f"Vision: `{JARVIS_VISION_MODEL}`")
     st.caption(f"TTS: `{JARVIS_TTS_MODEL}` • Voice: `{JARVIS_TTS_VOICE}`")
 
 st.markdown("---")
-st.caption("💡 Gunakan Chrome/Edge/Firefox terbaru. Izinkan akses kamera dan audio saat diminta.")
+st.caption("💡 Jika suara tidak muncul, pastikan tab browser tidak dalam keadaan *mute* dan kamu sudah berinteraksi dengan halaman (klik di mana saja) agar browser mengizinkan autoplay.")
