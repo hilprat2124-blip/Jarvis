@@ -1,12 +1,6 @@
 """
 ==============================================================
-🤖 JARVIS WEB AI - Versi Groq (100% Gratis)
-==============================================================
-Fitur:
-- Input suara stabil via mikrofon
-- STT: HTTP Request langsung ke Google Speech API
-- AI: Groq API (Llama 3) - Tanpa biaya/kartu kredit
-- TTS: gTTS (Bahasa Indonesia)
+🤖 JARVIS WEB AI - Versi Groq (100% Gratis) - Fixed Model
 ==============================================================
 """
 
@@ -30,8 +24,8 @@ st.set_page_config(
 
 STT_LANGUAGE = "id-ID"
 TTS_LANGUAGE = "id"
-# Groq menggunakan model Llama (Gratis & Sangat Cepat)
-AI_MODEL = "llama-3.1-8b-instant" 
+# Model Groq terbaru yang gratis dan masih aktif
+AI_MODEL = "openai/gpt-oss-20b"
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.7
 
@@ -90,7 +84,6 @@ def get_ai_response(user_message, chat_history, api_key):
     if not api_key:
         return "API Key Groq belum diisi di sidebar.", "error"
     try:
-        # Inisialisasi client OpenAI namun diarahkan ke URL Groq
         client = OpenAI(
             api_key=api_key,
             base_url="https://api.groq.com/openai/v1"
@@ -146,7 +139,6 @@ def main():
     if "last_audio_id" not in st.session_state:
         st.session_state.last_audio_id = None
 
-    # --- SIDEBAR ---
     with st.sidebar:
         st.header("⚙️ Pengaturan")
         st.markdown("Dapatkan API Key gratis di [console.groq.com](https://console.groq.com)")
@@ -164,27 +156,23 @@ def main():
             st.session_state.last_audio_id = None
             st.rerun()
 
-    # --- HEADER ---
     st.title("🤖 Jarvis: Asisten Suara AI")
     st.caption("Bicara langsung dengan Jarvis. Jarvis akan otomatis merespon setelah Anda selesai bicara.")
 
     if not api_key:
         st.info("👈 Silakan isi Groq API Key di sidebar kiri terlebih dahulu.")
 
-    # --- RIWAYAT CHAT ---
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"], avatar="🧑" if msg["role"] == "user" else "🤖"):
             st.markdown(msg["content"])
 
     st.divider()
 
-    # --- INDIKATOR MIKROFON ---
     st.markdown("### 🎤 Rekam Suara Anda")
     st.caption("Klik mikrofon, bicara, lalu **klik ⏹️ (Stop)**. Jarvis akan langsung memprosesnya.")
     
     audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
-    # --- LOGIKA PROSES AUDIO OTOMATIS ---
     if audio_value is not None and api_key:
         current_id = getattr(audio_value, "file_id", None) or getattr(audio_value, "name", None) or id(audio_value)
 
@@ -193,7 +181,6 @@ def main():
             
             audio_bytes = audio_value.read()
             
-            # 1. PROSES STT
             with st.spinner("👂 Mendengarkan dan memproses suara..."):
                 user_text, stt_status = transcribe_audio(audio_bytes)
                 
@@ -201,12 +188,10 @@ def main():
                 st.warning(user_text)
                 return
 
-            # Tampilkan Pesan User
             with st.chat_message("user", avatar="🧑"):
                 st.markdown(user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            # 2. PROSES AI (Groq)
             with st.spinner("🧠 Jarvis sedang berpikir..."):
                 history_for_ai = st.session_state.messages[:-1]
                 ai_text, ai_status = get_ai_response(user_text, history_for_ai, api_key)
@@ -215,12 +200,10 @@ def main():
                 st.error(ai_text)
                 return
 
-            # Tampilkan Pesan AI
             with st.chat_message("assistant", avatar="🤖"):
                 st.markdown(ai_text)
             st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
-            # 3. PROSES TTS & AUTOPLAY
             with st.spinner("🔊 Menyiapkan suara Jarvis..."):
                 audio_reply = text_to_speech(ai_text)
                 if audio_reply:
