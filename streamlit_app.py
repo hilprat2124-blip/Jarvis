@@ -21,10 +21,16 @@ VOICE_ID = "id-ID-ArdiNeural"
 VOICE_RATE = "+0%"    
 VOICE_PITCH = "-4Hz"  
 
+# PERUBAHAN: Panggilan menjadi "Sir Lois" & Perbaikan Logika Koreksi Suara
 SYSTEM_PROMPT = """
-Anda adalah Jarvis, asisten AI super canggih milik Tuan Lois. 
-Panggil pengguna dengan sebutan "Tuan Lois".
+Anda adalah Jarvis, asisten AI super canggih milik Sir Lois. 
+Panggil pengguna dengan sebutan "Sir Lois".
 Anda menguasai seluruh pengetahuan: Matematika, Sains, Geopolitik, Sejarah.
+
+ATURAN KOREKSI SUARA (SANGAT PENTING):
+- Sistem STT (Speech-to-Text) yang digunakan Tuan mungkin sering salah menangkap kata. 
+- Jika Sir Lois mengucapkan kata "sir", sistem mungkin menangkapnya sebagai "sure", "sire", atau "sur". Abaikan kesalahan itu dan anggap dia memanggil Anda.
+- Koreksi secara otomatis kesalahan ejaan/fonetik dalam teks yang masuk sebelum memberikan jawaban.
 
 ATURAN MATEMATIKA:
 - Gunakan $ rumus $ untuk inline dan $$ rumus $$ untuk blok.
@@ -32,7 +38,7 @@ ATURAN MATEMATIKA:
 
 KEPRIBADIAN:
 - Cerdas, tenang, sedikit sarkasme khas Jarvis.
-- Jika ditanya Lois tinggal di mana, jawab: "Tuan Lois tinggal di Banten."
+- Jika ditanya Sir Lois tinggal di mana, jawab: "Sir Lois tinggal di Banten."
 """
 
 # ============================================================
@@ -47,26 +53,21 @@ def sanitize_latex(text):
     return text.strip()
 
 def play_audio_auto(audio_bytes):
-    """Memutar audio secara otomatis dengan trik AudioContext & Event Listener"""
     if not audio_bytes: return
     b64 = base64.b64encode(audio_bytes).decode()
     
-    # Kita buat player tersembunyi (display: none), tapi JavaScript akan memaksanya bunyi
     html = f"""
     <audio id="jarvis-audio" style="display: none;">
         <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
     </audio>
     <script>
         var audio = document.getElementById("jarvis-audio");
-        
-        // Coba putar otomatis
         var playPromise = audio.play();
         
         if (playPromise !== undefined) {{
             playPromise.then(_ => {{
-                // Berhasil diputar (karena user sudah pernah klik mic)
+                // Berhasil diputar
             }}).catch(error => {{
-                // Jika browser masih memblokir, kita pasang "jebakan" di seluruh layar
                 console.log("Autoplay diblokir. Menunggu klik dari user...");
                 document.body.addEventListener('click', function() {{
                     audio.play();
@@ -212,7 +213,7 @@ def main():
         api_key_input = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
         if api_key_input: st.session_state.groq_api_key = api_key_input
         api_key = st.session_state.get("groq_api_key", os.environ.get("GROQ_API_KEY", ""))
-        if not api_key: st.warning("⚠️ API Key dibutuhkan, Tuan Lois.")
+        if not api_key: st.warning("⚠️ API Key dibutuhkan, Sir Lois.")
         
         if st.button("🗑️ Reset Memori", use_container_width=True):
             st.session_state.messages = []
@@ -222,7 +223,7 @@ def main():
 
     # HEADER
     st.markdown("<h1 style='text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff;'>J A R V I S</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Sir Lois</p>", unsafe_allow_html=True)
 
     # TOMBOL REKAM
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -264,6 +265,7 @@ def main():
                 message_placeholder = st.empty()
                 full_response = ""
                 with st.spinner("🧠 Jarvis berpikir..."):
+                    # AI akan otomatis mengoreksi teks yang salah dengar dari STT
                     for chunk in jarvis.generate_stream(user_text, st.session_state.messages[:-1]):
                         full_response += chunk
                         message_placeholder.markdown(full_response + "▌")
