@@ -132,7 +132,7 @@ class JarvisCore:
             return None
 
 # ============================================================
-# UI: REAL-TIME ORB
+# UI: REAL-TIME ORB DENGAN AUDIO ANALYZER (JAVASCRIPT)
 # ============================================================
 def inject_custom_css():
     st.markdown("""
@@ -146,21 +146,17 @@ def inject_custom_css():
             background: radial-gradient(circle, #00ffff 0%, #0055ff 80%, #000 100%);
             border-radius: 50%;
             box-shadow: 0 0 40px #00ffff, 0 0 80px #0055ff;
-            animation: pulse 2s infinite alternate;
-            transition: transform 0.1s ease-out;
+            transition: transform 0.05s ease-out; /* Transisi cepat agar responsif */
         }
         .jarvis-ring {
             position: absolute; width: 160px; height: 160px;
             border: 1px dashed #00ffff; border-radius: 50%;
             animation: spin 10s linear infinite; opacity: 0.4;
         }
-        @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 30px #00ffff; } 100% { transform: scale(1.05); box-shadow: 0 0 60px #00ffff, 0 0 100px #0055ff; } }
         @keyframes spin { 100% { transform: rotate(360deg); } }
         
-        /* Tombol Rekam Streamlit (Disembunyikan) */
+        /* Sembunyikan Tombol Streamlit */
         [data-testid="stAudioInput"] { display: none; }
-        
-        /* Desain Expander */
         .stExpander { background: rgba(0, 255, 255, 0.05); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; }
     </style>
 
@@ -169,6 +165,57 @@ def inject_custom_css():
         <div class="jarvis-orb" id="orb"></div>
     </div>
     """, unsafe_allow_html=True)
+
+    # Script JS untuk mendeteksi mikrofon secara real-time
+    js_audio = """
+    <script>
+        const orb = document.getElementById("orb");
+        let audioContext, analyser, microphone, dataArray;
+
+        async function startMic() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { echoCancellation: true, noiseSuppression: true } 
+                });
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                analyser.fftSize = 256;
+                microphone.connect(analyser);
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+                animate();
+            } catch (e) {
+                console.log("Microphone access denied or unavailable.");
+            }
+        }
+
+        function animate() {
+            if(!analyser) return;
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+            let avg = sum / dataArray.length;
+
+            // Jika ada suara, perbesar bola (maksimal 1.8x)
+            if (avg > 5) {
+                let scale = 1 + (avg / 100); 
+                if (scale > 1.8) scale = 1.8; 
+                orb.style.transform = `scale(${scale})`;
+                orb.style.boxShadow = `0 0 ${50 + avg}px #00ffff, 0 0 ${100 + avg}px #0055ff`;
+            } else {
+                // Kembali normal jika hening
+                orb.style.transform = `scale(1)`;
+                orb.style.boxShadow = `0 0 40px #00ffff, 0 0 80px #0055ff`;
+            }
+            requestAnimationFrame(animate);
+        }
+        
+        // Mulai mendeteksi suara
+        startMic();
+    </script>
+    """
+    # Tinggi 0 agar tidak memakan tempat
+    components.html(js_audio, height=0)
 
 # ============================================================
 # MAIN APP
@@ -196,11 +243,12 @@ def main():
     st.markdown("<h1 style='text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff;'>J A R V I S</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
 
-    # REKAM SUARA (Menggunakan streamlit-mic-recorder)
-    # Komponen ini memunculkan tombol Start/Stop yang jauh lebih stabil
+    # KOMPONEN MIKROFON (Start / Stop)
+    # Saat tombol ini diklik, browser otomatis mengizinkan akses mikrofon,
+    # dan script JS di atas akan langsung bereaksi menggerakkan bola.
     audio_info = mic_recorder(
-        start_prompt="Klik Untuk Berbicara",
-        stop_prompt="Klik Untuk Selesai",
+        start_prompt="🎤 Mulai Bicara",
+        stop_prompt="⏹️ Selesai Bicara",
         just_once=True,
         use_container_width=True,
         key='recorder'
