@@ -42,14 +42,14 @@ st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Si
 with st.sidebar:
     st.header("⚙️ Konfigurasi Realtime API")
     gemini_key = st.text_input("Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
-    st.info("Sistem ini menggunakan koneksi WebSocket audio-to-audio langsung (tanpa melalui jeda teks).")
+    st.info("Pastikan Anda menggunakan API key yang valid dari Google AI Studio.")
 
 if not gemini_key:
     st.warning("⚠️ Masukkan Gemini API Key di sidebar untuk memulai percakapan suara langsung.")
     st.stop()
 
 # ============================================================
-# WEBRTC / WEBSOCKET FRONTEND CLIENT
+# WEBSOCKET FRONTEND CLIENT (STABILIZED)
 # ============================================================
 html_code = f"""
 <!DOCTYPE html>
@@ -87,8 +87,10 @@ html_code = f"""
         }}
         #status {{
             margin-top: 15px;
-            font-size: 14px;
+            font-size: 13px;
             color: #aaaaaa;
+            word-break: break-all;
+            padding: 0 10px;
         }}
     </style>
 </head>
@@ -125,22 +127,22 @@ html_code = f"""
             statusDiv.innerText = "Menghubungkan ke Jarvis...";
             
             try {{
-                // Inisialisasi Audio Context
+                // Inisialisasi Audio Context dengan sampleRate aman 16000Hz
                 audioContext = new (window.AudioContext || window.webkitAudioContext)({{ sampleRate: 16000 }});
                 mediaStream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
                 
-                // Buka WebSocket ke Gemini Live Multimodal API
+                // Gunakan endpoint v1alpha BidiGenerateContent yang stabil
                 const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${{apiKey}}`;
                 ws = new WebSocket(wsUrl);
 
                 ws.onopen = () => {{
                     isConnected = true;
-                    statusDiv.innerText = "🟢 Terhubung - Bicara langsung dengan Sir Lois";
+                    statusDiv.innerText = "🟢 Terhubung - Silakan berbicara dengan Sir Lois";
                     toggleBtn.innerText = "🛑 Akhiri Panggilan";
                     toggleBtn.classList.add("active");
                     orb.classList.add("active");
 
-                    // Kirim Setup Handshake
+                    // Kirim Setup Handshake sesuai skema Live API terbaru
                     const setupMessage = {{
                         setup: {{
                             model: "models/gemini-2.0-flash-exp",
@@ -148,12 +150,12 @@ html_code = f"""
                                 responseModalities: ["AUDIO"],
                                 speechConfig: {{
                                     voiceConfig: {{
-                                        prebuiltVoiceConfig: {{ voiceName: "Puck" }} // Pilihan suara manusiawi
+                                        prebuiltVoiceConfig: {{ voiceName: "Puck" }}
                                     }}
                                 }}
                             }},
                             systemInstruction: {{
-                                parts: [{{ text: "Anda adalah Jarvis, asisten AI pribadi Sir Lois. Panggil pengguna dengan Sir Lois atau Sir. Berbicaralah santai, empati, manusiawi, dan lengkap dengan ekspresi napas atau tawa secara alami." }}]
+                                parts: [{{ text: "Anda adalah Jarvis, asisten AI pribadi Sir Lois. Panggil pengguna dengan Sir Lois atau Sir. Berbicaralah santai, empati, manusiawi, dan gunakan intonasi suara yang ramah." }}]
                             }}
                         }}
                     }};
@@ -162,27 +164,44 @@ html_code = f"""
                 }};
 
                 ws.onmessage = async (event) => {{
-                    const response = JSON.parse(event.data);
-                    if (response.serverContent && response.serverContent.modelTurn) {{
-                        const parts = response.serverContent.modelTurn.parts;
-                        for (const part of parts) {{
-                            if (part.inlineData && part.inlineData.mimeType.startsWith("audio/")) {{
-                                playAudioChunk(part.inlineData.data);
+                    let parsedData;
+                    try {{
+                        if (event.data instanceof Blob) {{
+                            const textData = await event.data.text();
+                            parsedData = JSON.parse(textData);
+                        }} else {{
+                            parsedData = JSON.parse(event.data);
+                        }}
+
+                        if (parsedData.serverContent && parsedData.serverContent.modelTurn) {{
+                            const parts = parsedData.serverContent.modelTurn.parts;
+                            for (const part of parts) {{
+                                if (part.inlineData && part.inlineData.mimeType.startsWith("audio/")) {{
+                                    playAudioChunk(part.inlineData.data);
+                                }}
                             }}
                         }}
+                    }} catch (err) {{
+                        console.error("Gagal memproses pesan masuk:", err);
                     }}
                 }};
 
-                ws.onclose = () => {{ stopAudioSession(); }};
+                ws.onclose = (event) => {{ 
+                    console.warn("WebSocket ditutup:", event);
+                    statusDiv.innerText = `⚠️ Koneksi terputus (Kode: ${{event.code}})`;
+                    stopAudioSession(); 
+                }};
+
                 ws.onerror = (err) => {{ 
-                    console.error(err); 
-                    statusDiv.innerText = "❌ Koneksi Gagal"; 
+                    console.error("WebSocket Error:", err); 
+                    statusDiv.innerText = "❌ Kesalahan koneksi jaringan/API Key"; 
                     stopAudioSession(); 
                 }};
 
             }} catch (e) {{
-                statusDiv.innerText = "❌ Akses Mikrofon Ditolak";
+                statusDiv.innerText = "❌ Gagal mengakses mikrofon atau inisialisasi audio";
                 console.error(e);
+                stopAudioSession();
             }}
         }}
 
@@ -194,14 +213,20 @@ html_code = f"""
                 if (!isConnected || ws.readyState !== WebSocket.OPEN) return;
                 const inputData = e.inputBuffer.getChannelData(0);
                 
-                // Convert PCM 32bit float to PCM 16bit integer
+                // Konversi Float32 ke PCM 16-bit
                 const pcm16 = new Int16Array(inputData.length);
                 for (let i = 0; i < inputData.length; i++) {{
                     pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
                 }}
                 
-                // Encode to Base64
-                const base64Audio = btoa(String.fromCharCode(...new Uint8Array(pcm16.buffer)));
+                // Encode Base64
+                let binaryString = "";
+                const bytes = new Uint8Array(pcm16.buffer);
+                const len = bytes.byteLength;
+                for (let i = 0; i < len; i++) {{
+                    binaryString += String.fromCharCode(bytes[i]);
+                }}
+                const base64Audio = btoa(binaryString);
                 
                 const message = {{
                     realtimeInput: {{
@@ -219,36 +244,49 @@ html_code = f"""
         }}
 
         function playAudioChunk(base64Data) {{
-            const binary = atob(base64Data);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {{
-                bytes[i] = binary.charCodeAt(i);
-            }}
-            const pcm16 = new Int16Array(bytes.buffer);
-            const float32 = new Float32Array(pcm16.length);
-            for (let i = 0; i < pcm16.length; i++) {{
-                float32[i] = pcm16[i] / 0x7FFF;
-            }}
+            try {{
+                const binary = atob(base64Data);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {{
+                    bytes[i] = binary.charCodeAt(i);
+                }}
+                const pcm16 = new Int16Array(bytes.buffer);
+                const float32 = new Float32Array(pcm16.length);
+                for (let i = 0; i < pcm16.length; i++) {{
+                    float32[i] = pcm16[i] / 0x7FFF;
+                }}
 
-            const buffer = audioContext.createBuffer(1, float32.length, 24000);
-            buffer.getChannelData(0).set(float32);
+                if (!audioContext) return;
+                const buffer = audioContext.createBuffer(1, float32.length, 24000);
+                buffer.getChannelData(0).set(float32);
 
-            const source = audioContext.createBufferSource();
-            source.buffer = buffer;
-            source.connect(audioContext.destination);
-            source.start();
+                const source = audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.connect(audioContext.destination);
+                source.start();
+            }} catch (e) {{
+                console.error("Gagal memutar audio:", e);
+            }}
         }}
 
         function stopAudioSession() {{
             isConnected = false;
-            if (ws) ws.close();
-            if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
-            if (audioContext) audioContext.close();
+            if (ws) {{
+                ws.close();
+                ws = null;
+            }}
+            if (mediaStream) {{
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }}
+            if (audioContext) {{
+                audioContext.close();
+                audioContext = null;
+            }}
             
             toggleBtn.innerText = "🎙️ Hubungkan Panggilan Suara";
             toggleBtn.classList.remove("active");
             orb.classList.remove("active");
-            statusDiv.innerText = "Status: Terputus";
         }}
     </script>
 </body>
