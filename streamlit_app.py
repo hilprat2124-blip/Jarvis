@@ -27,7 +27,7 @@ except Exception:
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 # Model Groq yang mendukung vision (gambar)
-JARVIS_VISION_MODEL = "qwen/qwen3.8-27b" # Model vision Groq
+JARVIS_VISION_MODEL = "qwen/qwen3.8-27b" 
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
 
 # ============ Konfigurasi Halaman ============
@@ -37,14 +37,10 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🧊 3D Hand Tracking + 🤖 Jarvis Live Vision")
+st.title("🧊 3D Hand Tracking + 🤖 Jarvis (Live Eyes)")
 st.markdown("""
-**Fitur Baru: Live Vision**
-Jarvis sekarang bisa **melihat secara otomatis** saat kamera aktif! 
-Aktifkan centang **"Live Vision"** di bawah kamera, dan Jarvis akan menganalisis frame secara berkala.
-
-**Panduan Gestur:** (Sama seperti sebelumnya)
-- ✋ Swipe 5 Jari | ☝️ Telunjuk Tahan | 👆 Pinch Jempol-Telunjuk | 🤏 Pinch 3 Jari
+**Fitur Spesial:** Jarvis sekarang punya **"Mata Live"**. 
+Selama kamera menyala, kamu tidak perlu klik tombol apapun. Langsung ketik chat (misal: *"Apa yang kamu lihat di kamera?"*), dan Jarvis akan otomatis mengambil gambar dari kamera saat itu juga untuk dianalisis.
 """)
 
 # ============ WebRTC & Konstanta ============
@@ -419,16 +415,15 @@ class Hand3DProcessor(VideoProcessorBase):
         cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
         cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
-        self.latest_frame_bgr = img.copy() # Simpan untuk live vision
+        self.latest_frame_bgr = img.copy() # Simpan untuk Jarvis
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
     def __del__(self):
         try: self.detector.close()
         except: pass
 
-
 # ============================================================
-# 🤖 HELPER JARVIS (Vision)
+# 🤖 HELPER JARVIS
 # ============================================================
 def image_to_base64(pil_img: Image.Image, max_size=1024, quality=85) -> str:
     img = pil_img.copy()
@@ -437,45 +432,42 @@ def image_to_base64(pil_img: Image.Image, max_size=1024, quality=85) -> str:
     img.save(buf, format="JPEG", quality=quality)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-def ask_jarvis_vision(pil_image: Image.Image, prompt: str) -> str:
-    """Kirim gambar + pertanyaan ke Groq Vision."""
-    if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall."
+def ask_jarvis(api_messages: list, use_vision: bool) -> str:
+    if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall. Jalankan: `pip install groq`"
     if not GROQ_API_KEY: return "❌ GROQ_API_KEY belum diset."
 
+    model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     try:
-        b64 = image_to_base64(pil_image)
         client = Groq(api_key=GROQ_API_KEY)
         resp = client.chat.completions.create(
-            model=JARVIS_VISION_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-                    ]
-                }
-            ],
-            temperature=0.7,
-            max_tokens=512,
+            model=model, messages=api_messages, temperature=0.7, max_tokens=1024,
         )
         return resp.choices[0].message.content
     except Exception as e:
         return f"❌ Error Jarvis: {str(e)}"
 
 # ============================================================
-# 🧠 SESSION STATE
+# 🧠 SESSION STATE JARVIS
 # ============================================================
-if "live_log" not in st.session_state:
-    st.session_state.live_log = [] # Menyimpan hasil analisis live
+if "jarvis_messages" not in st.session_state:
+    st.session_state.jarvis_messages = [
+        {
+            "role": "system",
+            "content": (
+                "Kamu adalah Jarvis, asisten AI cerdas yang terintegrasi dengan kamera hand-tracking. "
+                "Jawab dalam Bahasa Indonesia natural. Jika user bertanya tentang apa yang kamu lihat, "
+                "jelaskan objek yang ada di gambar kamera dengan detail."
+            )
+        }
+    ]
 
 # ============================================================
-# 📹 LAYOUT UTAMA
+# 📹 LAYOUT KAMERA
 # ============================================================
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.subheader("📹 Kamera")
+    st.subheader("📹 Kamera (Live)")
     ctx = webrtc_streamer(
         key="hand-3d-tracker-smooth",
         video_processor_factory=Hand3DProcessor,
@@ -487,102 +479,96 @@ with col1:
 with col2:
     st.subheader("ℹ️ Status")
     if ctx.state.playing:
-        st.success("🟢 Kamera aktif")
+        st.success("🟢 Kamera aktif (Jarvis bisa melihat)")
     else:
         st.info("⚪ Klik **START** untuk mulai")
     st.markdown("---")
     st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
 
 # ============================================================
-# 🤖 JARVIS LIVE VISION
+# 🤖 JARVIS CHAT (LIVE VISION OTOMATIS SAAT CHAT)
 # ============================================================
 st.markdown("---")
-st.header("🤖 Jarvis Live Vision (Otomatis)")
+st.header("💬 Ngobrol dengan Jarvis")
 
-st.markdown("""
-Jarvis akan **otomatis menganalisis frame kamera** setiap beberapa detik saat Live Vision aktif. 
-Tidak perlu klik tombol snapshot lagi!
-""")
+st.caption("Ketik pertanyaanmu (misal: *'Apa yang kamu lihat di kamera?'*). Jarvis akan otomatis mengambil frame kamera saat ini juga.")
 
-# Kontrol Live Vision
-live_col1, live_col2 = st.columns([1, 3])
-with live_col1:
-    live_active = st.checkbox("Aktifkan Live Vision", value=False)
+# Tampilkan riwayat chat
+for msg in st.session_state.jarvis_messages:
+    if msg["role"] == "system": continue
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# Input Chat
+user_q = st.chat_input("Tanya Jarvis...")
+
+if user_q:
+    # 1. Cek apakah kamera aktif dan punya frame
+    has_img = False
+    pil_img = None
     
-    # Interval analisis (detik)
-    analysis_interval = st.slider("Interval analisis (detik)", min_value=2, max_value=10, value=3)
+    if ctx.state.playing and ctx.video_processor is not None and ctx.video_processor.latest_frame_bgr is not None:
+        # Ambil frame langsung dari kamera (TANPA TOMBOL SNAPSHOT)
+        frame_bgr = ctx.video_processor.latest_frame_bgr.copy()
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(frame_rgb)
+        has_img = True
 
-    if st.button("🗑️ Hapus Log"):
-        st.session_state.live_log = []
-        st.rerun()
-
-with live_col2:
-    if live_active and ctx.state.playing:
-        # Placeholder untuk update live
-        live_output = st.empty()
-        
-        # Loop live vision
-        # Karena Streamlit tidak punya loop bawaan, kita gunakan while + sleep.
-        # Namun, ini akan memblokir UI jika tidak hati-hati.
-        # Solusi: Gunakan container yang di-update secara manual.
-        # Untuk demo sederhana, kita jalankan analisis periodik.
-        
-        st.info("⏳ Live Vision aktif. Menunggu frame pertama...")
-        
-        # Kita perlu mekanisme untuk mengambil frame terbaru dari processor
-        # Karena processor berjalan di thread terpisah, kita akses latest_frame_bgr.
-        
-        if ctx.video_processor is not None and ctx.video_processor.latest_frame_bgr is not None:
-            # Ambil frame terbaru
-            frame_bgr = ctx.video_processor.latest_frame_bgr.copy()
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(frame_rgb)
-            
-            # Tampilkan frame yang sedang dianalisis
-            live_output.image(pil_img, caption="Frame yang dianalisis", use_container_width=True)
-            
-            # Panggil Jarvis
-            with st.spinner("Jarvis menganalisis frame..."):
-                prompt = "Jelaskan secara singkat apa yang kamu lihat di gambar ini. Sebutkan objek utama, suasana, dan jika ada orang atau aktivitas. Jawab dalam Bahasa Indonesia."
-                result = ask_jarvis_vision(pil_img, prompt)
-            
-            # Simpan ke log
-            timestamp = time.strftime("%H:%M:%S")
-            log_entry = f"**[{timestamp}]** {result}"
-            st.session_state.live_log.append(log_entry)
-            
-            # Tampilkan log terbaru
-            st.markdown("### 📝 Log Analisis Terbaru")
-            for entry in reversed(st.session_state.live_log[-5:]): # Tampilkan 5 terakhir
-                st.markdown(entry)
-            
-            # Trigger rerun untuk loop berikutnya (delay)
-            time.sleep(analysis_interval)
-            st.rerun()
-        else:
-            st.warning("⚠️ Kamera belum mengirim frame. Pastikan START sudah diklik dan tunggu 1-2 detik.")
-            time.sleep(1)
-            st.rerun()
-    elif live_active and not ctx.state.playing:
-        st.warning("⚠️ Kamera belum aktif. Klik START di atas.")
+    # 2. Siapkan pesan untuk API
+    if has_img:
+        b64 = image_to_base64(pil_img)
+        user_api_msg = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_q},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ],
+        }
+        display_text = f"🖼️ *(Live Kamera)* {user_q}"
     else:
-        st.info("💡 Centang **Aktifkan Live Vision** untuk mulai analisis otomatis.")
+        user_api_msg = {"role": "user", "content": user_q}
+        display_text = user_q
+        if ctx.state.playing:
+            st.warning("⚠️ Kamera aktif tapi belum ada frame. Tunggu 1 detik lalu kirim lagi.")
+
+    # 3. Simpan & tampilkan chat user
+    st.session_state.jarvis_messages.append({"role": "user", "content": display_text})
+    with st.chat_message("user"):
+        if has_img:
+            st.image(pil_img, width=250, caption="Frame yang dikirim ke Jarvis")
+        st.markdown(user_q)
+
+    # 4. Panggil Jarvis
+    with st.chat_message("assistant"):
+        with st.spinner("Jarvis sedang menganalisis gambar..."):
+            api_messages = [st.session_state.jarvis_messages[0]]
+            for m in st.session_state.jarvis_messages[1:-1]:
+                api_messages.append({"role": m["role"], "content": m["content"]})
+            api_messages.append(user_api_msg)
+
+            answer = ask_jarvis(api_messages, use_vision=has_img)
+            st.markdown(answer)
+
+    st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 with st.sidebar:
     st.header("ℹ️ Info")
-    if st.button("🔄 Reset Log"):
-        st.session_state.live_log = []
+    if st.button("🔄 Reset Chat Jarvis"):
+        st.session_state.jarvis_messages = [
+            {
+                "role": "system",
+                "content": "Kamu adalah Jarvis, asisten AI ramah. Jawab dalam Bahasa Indonesia."
+            }
+        ]
         st.rerun()
+
     st.markdown("---")
     if not GROQ_AVAILABLE: st.error("❌ `groq` belum terinstall.")
     elif not GROQ_API_KEY: st.warning("⚠️ GROQ_API_KEY belum diset.")
     else: st.success("✅ Jarvis siap!")
-    st.markdown("---")
-    st.caption(f"Model Vision: `{JARVIS_VISION_MODEL}`")
-    st.caption("Groq API hanya mendukung input gambar, bukan video langsung. Live Vision menggunakan sampling frame periodik.")
 
 st.markdown("---")
 st.caption("💡 Gunakan Chrome/Edge/Firefox terbaru. Izinkan akses kamera saat diminta.")
