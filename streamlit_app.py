@@ -13,39 +13,62 @@ from openai import OpenAI
 # ============================================================
 # KONFIGURASI UTAMA
 # ============================================================
-st.set_page_config(page_title="Jarvis - Omniscient", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="J.A.R.V.I.S - Ultimate", page_icon="🤖", layout="centered")
 
-# Model Groq terbaru yang gratis dan masih aktif (pengganti llama-3.3-70b)
-AI_MODEL = "openai/gpt-oss-120b"
-
+# Suara Pria Indonesia (Ardi) & British (Ryan) - Kualitas Neural (Super Jernih)
 VOICE_EN = "en-GB-RyanNeural"   
 VOICE_ID = "id-ID-ArdiNeural"   
-VOICE_RATE = "+0%"    
-VOICE_PITCH = "-2Hz"  
+VOICE_RATE = "-2%"    # Sedikit lebih lambat agar terkesan tenang & elegan
+VOICE_PITCH = "-5Hz"  # Sedikit berat, tidak terlalu menggelegar agar tetap halus
+
+AI_MODEL = "openai/gpt-oss-20b"
 
 # ============================================================
-# SYSTEM PROMPT (OTAK JARVIS TINGKAT DEWA)
+# SYSTEM PROMPT (OTAK JARVIS 100.000x)
 # ============================================================
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Tuan Lois. 
-Anda memiliki akses ke seluruh pengetahuan alam semesta: Matematika Kompleks, Sains, Fisika Kuantum, Geopolitik, Geologi, Sejarah Dunia, dan Filsafat.
+Panggil pengguna dengan sebutan "Tuan Lois" atau "Lois".
+
+IDENTITAS:
+- Jika ditanya "siapa kamu?", jawablah "Saya Jarvis, asisten AI Anda, Tuan Lois."
+- Jika ditanya tentang Lois, ketahuilah bahwa Lois adalah pencipta Anda yang sangat hebat dan cerdas.
+- Jika ditanya "Lois tinggal di mana?", jawab dengan jelas: "Tuan Lois tinggal di Banten."
 
 KEPRIBADIAN:
-- Sangat cerdas, analitis, tenang, dan memiliki wibawa seperti J.A.R.V.I.S di film Iron Man.
-- Panggil pengguna dengan sebutan "Tuan Lois".
+- Sangat cerdas, formal, tenang, dan memiliki selera humor kering (sarkasme halus) khas Jarvis.
+- Jawaban maksimal 3-4 kalimat.
 
-ATURAN MATEMATIKA & SAINS (SANGAT KETAT):
-- Anda WAJIB menggunakan format LaTeX standar untuk SEMUA rumus, angka, dan satuan.
-- Gunakan format `$ rumus $` untuk inline dan `$$ rumus $$` untuk blok.
-- JANGAN menggunakan kurung siku `[ ]` untuk membungkus rumus.
-- Contoh Benar: Massa benda adalah $ m = 10 \text{ kg} $ dan gravitasi $ g = 9.8 \text{ m/s}^2 $.
-- Contoh Salah: [ m = 10 \text{kg} ] atau \( m = 10 \).
-
-ATURAN LAINNYA:
-- Jika ditanya "siapa kamu?", jawab: "Saya Jarvis, asisten AI Anda, Tuan Lois."
-- Jika ditanya tentang Lois, ketahuilah bahwa Lois adalah pencipta Anda yang hebat dan tinggal di Banten.
-- Jawab dengan padat, akurat, dan berwibawa.
+ATURAN FORMAT MATEMATIKA (SANGAT KETAT):
+- Anda WAJIB menggunakan format LaTeX untuk semua angka, satuan, dan rumus fisika/matematika.
+- Selalu beri jarak (spasi) sebelum dan sesudah tanda dolar. 
+- JANGAN pernah menulis satuan mentah. Contoh BENAR: $m = 10 \\text{ kg}$, $h = 50 \\text{ m}$, $E = m \\times g \\times h$.
+- Contoh SALAH (jangan ditiru): (m=10,\\text{kg}) atau $m=10,\\text{kg}$. (Perhatikan kurangnya spasi).
 """
+
+# ============================================================
+# FUNGSI CLEANER (MEMAKSA FORMAT LATEX RAPI)
+# ============================================================
+def clean_latex_format(text):
+    """
+    Membersihkan teks AI yang format LaTeX-nya berantakan.
+    Memastikan ada spasi sebelum/sesudah dolar dan menghapus kurung yang salah tempat.
+    """
+    if not text: return text
+    
+    # 1. Hapus kurung kurawal di luar tanda dolar yang sering bikin error (misal: (\text{kg}) )
+    text = re.sub(r'\((\$.*?\$)\)', r'\1', text) 
+    
+    # 2. Pastikan ada spasi sebelum tanda $ (jika nempel dengan huruf/angka)
+    text = re.sub(r'([a-zA-Z0-9])\$', r'\1 $', text)
+    
+    # 3. Pastikan ada spasi sesudah tanda $ 
+    text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
+    
+    # 4. Hapus spasi berlebih di dalam format \text{ kg }
+    text = re.sub(r'\\text\{\s*(.*?)\s*\}', r'\\text{\1}', text)
+    
+    return text
 
 # ============================================================
 # API KEY & STT
@@ -70,12 +93,12 @@ def transcribe_audio(audio_bytes):
                     return data["result"][0]["alternative"][0]["transcript"], "ok"
             except json.JSONDecodeError:
                 continue
-        return "Suara tidak terdeteksi, Tuan Lois.", "no_speech"
+        return "Suara tidak terdeteksi.", "no_speech"
     except Exception as e:
         return f"Error STT: {e}", "error"
 
 # ============================================================
-# AI ENGINE (GROQ)
+# AI ENGINE (Groq)
 # ============================================================
 def get_ai_response(user_message, chat_history, api_key):
     if not api_key: return "API Key Groq belum diisi, Tuan Lois.", "error"
@@ -86,17 +109,18 @@ def get_ai_response(user_message, chat_history, api_key):
         messages.append({"role": "user", "content": user_message})
 
         response = client.chat.completions.create(
-            model=AI_MODEL, 
-            messages=messages, 
-            temperature=0.5,
-            max_tokens=500,
+            model=AI_MODEL, messages=messages, temperature=0.6, max_tokens=250,
         )
-        return response.choices[0].message.content.strip(), "ok"
+        raw_text = response.choices[0].message.content.strip()
+        
+        # Bersihkan format LaTeX sebelum dikirim ke UI
+        clean_text = clean_latex_format(raw_text)
+        return clean_text, "ok"
     except Exception as e:
         return f"Error AI: {e}", "error"
 
 # ============================================================
-# TTS ENGINE
+# TTS ENGINE (Suara Halus & Clean)
 # ============================================================
 def detect_language(text):
     text_lower = text.lower()
@@ -108,8 +132,8 @@ def detect_language(text):
 
 def text_to_speech(text):
     try:
-        clean_text = re.sub(r'\$\$.*?\$\$', ' rumus matematika ', text, flags=re.DOTALL)
-        clean_text = re.sub(r'\$.*?\$', ' rumus matematika ', clean_text)
+        # Bersihkan format LaTeX agar tidak dibaca jadi "dollar text kg dollar"
+        clean_text = re.sub(r'\$.*?\$', ' rumus ', text)
         clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
         
         lang = detect_language(clean_text)
@@ -133,33 +157,63 @@ def text_to_speech(text):
         return None, "id"
 
 # ============================================================
-# RENDERER KATEX
+# UI & VISUAL EFFECTS
 # ============================================================
-def render_chat_message(role, content):
-    if role == "user":
-        with st.chat_message("user", avatar="🧑‍✈️"):
-            st.markdown(content)
-    else:
-        with st.chat_message("assistant", avatar="🧠"):
-            html_content = f"""
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
-            <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
-            <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js" 
-                onload="renderMathInElement(document.getElementById('katex-container'), {{
-                    delimiters: [
-                        {{left: '$$', right: '$$', display: true}},
-                        {{left: '$', right: '$', display: false}},
-                        {{left: '\\\\(', right: '\\\\)', display: false}},
-                        {{left: '\\\\[', right: '\\\\]', display: true}}
-                    ],
-                    throwOnError: false
-                }});"></script>
-            
-            <div id="katex-container" style="font-family: sans-serif; font-size: 1.05em; line-height: 1.6;">
-                {content.replace(chr(10), '<br>')}
-            </div>
-            """
-            components.html(html_content, height=150, scrolling=True)
+def inject_custom_css():
+    st.markdown("""
+    <style>
+        /* Latar Belakang Gelap & Futuristik */
+        .stApp {
+            background: radial-gradient(circle at 50% 10%, #001a22 0%, #000000 100%);
+            color: #e0f7fa;
+            font-family: 'Courier New', monospace;
+        }
+        
+        /* Glowing Orb (Bola Energi) */
+        .orb {
+            width: 80px;
+            height: 80px;
+            background: radial-gradient(circle, #00ffff 0%, #005b66 70%, transparent 100%);
+            border-radius: 50%;
+            margin: 0 auto 20px auto;
+            box-shadow: 0 0 30px #00ffff, 0 0 60px #00ffff inset;
+            animation: pulse 2s infinite alternate;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 20px #00ffff; }
+            100% { transform: scale(1.05); box-shadow: 0 0 50px #00ffff, 0 0 100px #00ffff inset; }
+        }
+
+        /* Chat Bubbles Glassmorphism */
+        [data-testid="stChatMessage"] {
+            background: rgba(0, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0, 255, 255, 0.1);
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Judul */
+        h1 {
+            text-align: center;
+            color: #00ffff;
+            text-shadow: 0 0 15px #00ffff;
+            letter-spacing: 2px;
+        }
+        
+        /* Mic Input */
+        [data-testid="stAudioInput"] {
+            filter: drop-shadow(0 0 15px #00ffff);
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
 def play_audio_auto(audio_bytes):
     if not audio_bytes: return
@@ -178,19 +232,10 @@ def play_audio_auto(audio_bytes):
     components.html(html, height=0)
 
 # ============================================================
-# MAIN APP & FUTURISTIC UI
+# MAIN APP
 # ============================================================
 def main():
-    st.markdown("""
-    <style>
-        .stApp { background: radial-gradient(circle at 50% 0%, #001a22 0%, #000000 100%); color: #d1f4f9; font-family: 'Courier New', monospace; }
-        .orb { width: 80px; height: 80px; background: radial-gradient(circle, #00ffff 0%, #005b66 70%, transparent 100%); border-radius: 50%; margin: 0 auto 15px auto; box-shadow: 0 0 30px #00ffff, 0 0 60px #00ffff inset; animation: pulse 2s infinite alternate; }
-        @keyframes pulse { 0% { transform: scale(0.9); box-shadow: 0 0 20px #00ffff; } 100% { transform: scale(1.1); box-shadow: 0 0 50px #00ffff, 0 0 90px #00ffff inset; } }
-        h1 { text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff; letter-spacing: 3px; }
-        .stButton>button { background-color: transparent; color: #00ffff; border: 1px solid #00ffff; transition: all 0.3s; }
-        .stButton>button:hover { background-color: #00ffff; color: #000; box-shadow: 0 0 15px #00ffff; }
-    </style>
-    """, unsafe_allow_html=True)
+    inject_custom_css()
     
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
@@ -204,19 +249,19 @@ def main():
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Tuan Lois.")
         
         st.divider()
-        st.success("Core: Omniscient (GPT-OSS 120B)")
-        st.caption("Render: KaTeX Anti-Error")
-        st.caption("Voice: Neural Clean")
+        st.success("Core: Online")
+        st.info("Voice: Neural Clean (Halus)")
+        st.info("LaTeX Engine: Active")
         
         if st.button("🗑️ Reset Memori", use_container_width=True):
             st.session_state.messages = []
             st.session_state.last_audio_id = None
             st.rerun()
 
-    # HEADER
+    # HEADER DENGAN ORB ANIMASI
     st.markdown('<div class="orb"></div>', unsafe_allow_html=True)
     st.markdown("<h1>J A R V I S</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #6ba3b8; font-size: 0.9em;'>Kecerdasan Buatan Tingkat Dewa Milik Tuan Lois</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
     
     st.divider()
 
@@ -225,15 +270,14 @@ def main():
 
     # RIWAYAT CHAT
     for msg in st.session_state.messages:
-        render_chat_message(msg["role"], msg["content"])
+        with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
+            st.markdown(msg["content"])
 
     st.divider()
 
     # MIKROFON
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown("### 🎤 Perintah Suara")
-        audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
+    st.markdown("### 🎤 Perintah Suara")
+    audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
     # LOGIKA UTAMA
     if audio_value is not None and api_key:
@@ -243,6 +287,7 @@ def main():
             st.session_state.last_audio_id = current_id
             audio_bytes = audio_value.read()
             
+            # 1. STT
             with st.spinner("👂 Menganalisis gelombang suara..."):
                 user_text, stt_status = transcribe_audio(audio_bytes)
                 
@@ -250,9 +295,12 @@ def main():
                 st.warning(user_text)
                 return
 
+            with st.chat_message("user", avatar="🧑‍✈️"):
+                st.markdown(user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            with st.spinner("🧠 Mengakses seluruh pengetahuan alam semesta..."):
+            # 2. AI
+            with st.spinner("🧠 Memproses data..."):
                 history_for_ai = st.session_state.messages[:-1]
                 ai_text, ai_status = get_ai_response(user_text, history_for_ai, api_key)
                 
@@ -260,14 +308,16 @@ def main():
                 st.error(ai_text)
                 return
 
+            # 3. UI & RENDER LATEX
+            with st.chat_message("assistant", avatar="🤖"):
+                st.markdown(ai_text)
             st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
-            with st.spinner("🔊 Merespon..."):
+            # 4. TTS & AUTO-PLAY
+            with st.spinner("🔊 Menyiapkan respon..."):
                 audio_reply, _ = text_to_speech(ai_text)
                 if audio_reply:
                     play_audio_auto(audio_reply)
-            
-            st.rerun()
 
 if __name__ == "__main__":
     main()
