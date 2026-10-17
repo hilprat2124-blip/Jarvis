@@ -13,7 +13,7 @@ from openai import OpenAI
 # ============================================================
 # KONFIGURASI UTAMA & STATE MANAGEMENT
 # ============================================================
-st.set_page_config(page_title="J.A.R.V.I.S - Lois Edition", page_icon="🔵", layout="wide")
+st.set_page_config(page_title="J.A.R.V.I.S - Lois Edition", page_icon="🔵", layout="centered")
 
 AI_MODEL = "openai/gpt-oss-120b" 
 
@@ -61,6 +61,7 @@ class JarvisCore:
             params = {"client": "chromium", "lang": "id-ID", "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"}
             headers = {"Content-Type": "audio/l16; rate=16000"}
             response = requests.post(url, params=params, headers=headers, data=audio_bytes, timeout=15)
+            
             for line in response.text.split("\n"):
                 if not line.strip(): continue
                 try:
@@ -81,6 +82,7 @@ class JarvisCore:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             messages.extend(chat_history)
             messages.append({"role": "user", "content": user_message})
+
             response = self.client.chat.completions.create(
                 model=AI_MODEL, messages=messages, temperature=0.5, max_tokens=800, stream=True 
             )
@@ -120,123 +122,183 @@ class JarvisCore:
             return None
 
 # ============================================================
-# UI & VISUAL EFFECTS (FUTURISTIC)
+# UI: BOLA INTERAKTIF & AUTO-RECORD
 # ============================================================
-def inject_custom_css():
-    st.markdown("""
+def render_orb_ui():
+    """HTML/JS untuk Bola yang membesar mengecil sesuai suara."""
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
     <style>
-        .stApp { background: radial-gradient(circle at 50% 10%, #001a22 0%, #000000 100%); color: #e0f7fa; font-family: 'Courier New', monospace; }
-        .orb { width: 100px; height: 100px; background: radial-gradient(circle, #00ffff 0%, #005b66 70%, transparent 100%); border-radius: 50%; margin: 0 auto 20px auto; box-shadow: 0 0 30px #00ffff, 0 0 60px #00ffff inset; animation: pulse 2s infinite alternate; }
-        @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 20px #00ffff; } 100% { transform: scale(1.05); box-shadow: 0 0 50px #00ffff, 0 0 100px #00ffff inset; } }
+        body {
+            margin: 0; padding: 0;
+            background: transparent;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            height: 35vh; overflow: hidden;
+            font-family: 'Courier New', monospace;
+        }
         
-        /* Pop-up History */
-        .stExpander { background: rgba(0, 255, 255, 0.05); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; }
-        .stExpander > details > summary { color: #00ffff; font-weight: bold; font-size: 1.1em; }
+        /* Bola Utama */
+        .orb-core {
+            width: 100px; height: 100px;
+            background: radial-gradient(circle, #ffffff 0%, #00ffff 40%, #0055ff 100%);
+            border-radius: 50%;
+            box-shadow: 0 0 40px #00ffff, 0 0 80px #0055ff;
+            transition: transform 0.05s ease-out, box-shadow 0.05s ease-out;
+            display: flex; justify-content: center; align-items: center;
+            cursor: pointer;
+        }
         
-        /* Chat Bubble */
-        [data-testid="stChatMessage"] { background: rgba(0, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; box-shadow: 0 4px 15px rgba(0, 255, 255, 0.1); animation: fadeIn 0.5s ease-in-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        /* Cincin Berputar */
+        .ring {
+            position: absolute; width: 140px; height: 140px;
+            border: 1px dashed #00ffff; border-radius: 50%;
+            animation: spin 10s linear infinite; opacity: 0.3;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
         
-        h1 { text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff; letter-spacing: 2px; }
-        [data-testid="stAudioInput"] { filter: drop-shadow(0 0 15px #00ffff); margin-bottom: 20px; }
+        /* Status Teks */
+        .status {
+            margin-top: 25px; color: #00ffff; font-size: 12px;
+            text-transform: uppercase; letter-spacing: 2px;
+            text-shadow: 0 0 10px #00ffff;
+        }
     </style>
-    """, unsafe_allow_html=True)
+    </head>
+    <body>
+        <div class="ring"></div>
+        <div class="orb-core" id="orb"></div>
+        <div class="status" id="status">Klik Bola Untuk Mulai</div>
 
-# FUNGSI UNTUK AUDIO: HTML Murni + Base64 (Autoplay Paling Stabil)
-def play_audio_html(audio_bytes):
+        <script>
+            const orb = document.getElementById('orb');
+            const status = document.getElementById('status');
+            let audioContext, analyser, microphone, dataArray;
+            let isListening = false;
+
+            // Fungsi ini dipicu saat user klik bola
+            orb.addEventListener('click', async () => {
+                if (isListening) return;
+                isListening = true;
+                
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: { echoCancellation: true, noiseSuppression: true } 
+                    });
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    analyser = audioContext.createAnalyser();
+                    microphone = audioContext.createMediaStreamSource(stream);
+                    analyser.fftSize = 256;
+                    microphone.connect(analyser);
+                    dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    
+                    status.innerText = "Mendengarkan...";
+                    animate();
+                } catch (e) {
+                    status.innerText = "Izin Mikrofon Ditolak";
+                }
+            });
+
+            function animate() {
+                analyser.getByteFrequencyData(dataArray);
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+                let avg = sum / dataArray.length;
+
+                // Sesuaikan pembesaran (Maksimal 1.4x agar tidak terlalu besar)
+                if (avg > 5) {
+                    status.innerText = "Mendengar Suara...";
+                    let scale = 1 + (avg / 200); 
+                    if (scale > 1.4) scale = 1.4; 
+                    orb.style.transform = `scale(${scale})`;
+                    orb.style.boxShadow = `0 0 ${40 + avg}px #00ffff, 0 0 ${80 + avg}px #0055ff`;
+                } else {
+                    status.innerText = "Mendengarkan...";
+                    orb.style.transform = `scale(1)`;
+                    orb.style.boxShadow = `0 0 40px #00ffff, 0 0 80px #0055ff`;
+                }
+                requestAnimationFrame(animate);
+            }
+        </script>
+    </body>
+    </html>
+    """
+    components.html(html, height=350)
+
+def play_audio_auto(audio_bytes):
     if not audio_bytes: return
     b64 = base64.b64encode(audio_bytes).decode()
-    audio_html = f"""
-        <audio autoplay="true" id="jarvis-audio">
-            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-        </audio>
-        <script>
-            var audio = document.getElementById("jarvis-audio");
-            audio.play().catch(function(e) {{
-                console.log("Autoplay diblokir. Menunggu interaksi user...");
-                // Trik: Jika diblokir, pasang listener agar bunyi begitu user klik di mana saja
-                document.body.addEventListener('click', function() {{
-                    audio.play();
-                }}, {{ once: true }});
-            }});
-        </script>
-    """
-    # Render audio player dan script pemaksanya
-    components.html(audio_html, height=40)
-    
-    # Trik kedua: Paksa tombol play bawaan Streamlit (jika ada) untuk diklik otomatis
-    st.markdown("""
+    html = f"""
+    <audio id="jarvis-audio" autoplay>
+        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+    </audio>
     <script>
-        setTimeout(function() {
-            var audios = window.parent.document.querySelectorAll('audio');
-            if (audios.length > 0) {
-                var lastAudio = audios[audios.length - 1];
-                lastAudio.play().catch(function(e){});
-            }
-        }, 800);
+        var audio = document.getElementById("jarvis-audio");
+        audio.play().catch(function(e) {{
+            document.body.addEventListener('click', function() {{ audio.play(); }}, {{ once: true }});
+        }});
     </script>
-    """, unsafe_allow_html=True)
+    """
+    components.html(html, height=0)
 
 # ============================================================
 # MAIN APP
 # ============================================================
 def main():
-    inject_custom_css()
+    # CSS untuk menyembunyikan tombol rekam Streamlit yang jelek
+    st.markdown("""
+    <style>
+        /* Sembunyikan tombol rekam Streamlit asli secara visual */
+        [data-testid="stAudioInput"] {
+            opacity: 0;
+            height: 0;
+            position: absolute;
+            pointer-events: none;
+        }
+        .stApp { background: radial-gradient(circle at 50% 10%, #001a22 0%, #000000 100%); color: #e0f7fa; }
+        .stExpander { background: rgba(0, 255, 255, 0.05); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; }
+        h1 { text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff; }
+    </style>
+    """, unsafe_allow_html=True)
     
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
-    if "last_audio_bytes" not in st.session_state: st.session_state.last_audio_bytes = None
 
-    # --- SIDEBAR ---
+    # SIDEBAR
     with st.sidebar:
         st.header("⚙️ Sistem Kontrol")
         api_key_input = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
         if api_key_input: st.session_state.groq_api_key = api_key_input
-        
         api_key = st.session_state.get("groq_api_key", os.environ.get("GROQ_API_KEY", ""))
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Tuan Lois.")
-        
-        st.divider()
-        st.success("Core: GPT-OSS 120B (Canggih)")
-        st.info("Mode: Streaming (Real-time)")
-        st.info("Voice: Neural Clean")
-        st.info("LaTeX Engine: Active")
         
         if st.button("🗑️ Reset Memori", use_container_width=True):
             st.session_state.messages = []
             st.session_state.last_audio_id = None
-            st.session_state.last_audio_bytes = None
             st.rerun()
 
-    # --- HEADER ---
-    st.markdown('<div class="orb"></div>', unsafe_allow_html=True)
+    # HEADER
     st.markdown("<h1>J A R V I S</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
     st.divider()
 
-    if not api_key:
-        st.info("👈 Silakan isi Groq API Key di panel kiri.")
+    # RENDER BOLA (Menggantikan Tombol Mikrofon)
+    render_orb_ui()
 
-    # --- RIWAYAT CHAT (POP-UP) ---
+    # TOMBOL REKAM ASLI STREAMLIT (Disembunyikan via CSS di atas)
+    # Tetap diletakkan di sini agar logikanya jalan saat dipicu
+    audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
+
+    # RIWAYAT CHAT POP-UP
     if st.session_state.messages:
-        with st.expander("💬 Lihat Riwayat Obrolan (Klik untuk membuka)", expanded=False):
+        with st.expander("💬 Lihat Riwayat Obrolan", expanded=False):
             for msg in st.session_state.messages:
                 with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
                     st.markdown(msg["content"])
-        st.divider()
 
-    # --- TAMPILKAN AUDIO JIKA ADA (Auto-Play) ---
-    if st.session_state.last_audio_bytes:
-        play_audio_html(st.session_state.last_audio_bytes)
-        st.divider()
-
-    # --- MIKROFON ---
-    st.markdown("<h3 style='text-align: center;'>🎤 Perintah Suara</h3>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
-
-    # --- LOGIKA UTAMA ---
+    # LOGIKA UTAMA
     if audio_value is not None and api_key:
         current_id = getattr(audio_value, "file_id", None) or id(audio_value)
 
@@ -258,8 +320,7 @@ def main():
             with st.chat_message("assistant", avatar="🤖"):
                 message_placeholder = st.empty()
                 full_response = ""
-                
-                with st.spinner("🧠 Menganalisis hukum alam semesta..."):
+                with st.spinner("🧠 Menganalisis..."):
                     for chunk in jarvis.generate_stream(user_text, st.session_state.messages[:-1]):
                         full_response += chunk
                         message_placeholder.markdown(full_response + "▌")
@@ -272,9 +333,8 @@ def main():
             with st.spinner("🔊 Menyiapkan respon suara..."):
                 audio_reply = jarvis.text_to_speech(clean_response)
                 if audio_reply:
-                    st.session_state.last_audio_bytes = audio_reply
+                    play_audio_auto(audio_reply)
             
-            # Rerun agar audio diputar di atas (dalam bentuk autoplay HTML)
             st.rerun()
 
 if __name__ == "__main__":
