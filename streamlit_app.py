@@ -1,6 +1,6 @@
 """
 ==============================================================
-🤖 JARVIS WEB AI - Versi Groq (100% Gratis) - Fixed Model
+🤖 JARVIS WEB AI - Versi Groq + Suara Interaktif
 ==============================================================
 """
 
@@ -24,8 +24,7 @@ st.set_page_config(
 
 STT_LANGUAGE = "id-ID"
 TTS_LANGUAGE = "id"
-# Model Groq terbaru yang gratis dan masih aktif
-AI_MODEL = "openai/gpt-oss-20b"
+AI_MODEL = "openai/gpt-oss-20b"  # Model Groq yang aktif
 AI_MAX_TOKENS = 200
 AI_TEMPERATURE = 0.7
 
@@ -107,11 +106,14 @@ def get_ai_response(user_message, chat_history, api_key):
         return f"Error AI: {err_msg}", "error"
 
 # ============================================================
-# TTS (Text-to-Speech)
+# TTS (Text-to-Speech) + Fitur Suara
 # ============================================================
-def text_to_speech(text):
+def text_to_speech(text, speed="normal"):
     try:
-        tts = gTTS(text=text, lang=TTS_LANGUAGE, slow=False)
+        # Atur kecepatan bicara (slow=True untuk lambat, False untuk normal)
+        is_slow = True if speed == "lambat" else False
+        tts = gTTS(text=text, lang=TTS_LANGUAGE, slow=is_slow)
+        
         audio_buffer = io.BytesIO()
         tts.write_to_fp(audio_buffer)
         audio_buffer.seek(0)
@@ -121,11 +123,26 @@ def text_to_speech(text):
         return None
 
 def autoplay_audio(audio_bytes):
+    """Memutar audio secara otomatis di background."""
     if not audio_bytes:
         return
     try:
         b64 = base64.b64encode(audio_bytes).decode()
-        md = f'<audio autoplay="true" style="display:none;"><source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>'
+        # Menggunakan autoplay dan loop=False
+        md = f'''
+        <audio autoplay="true" id="jarvis-audio">
+            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+        </audio>
+        <script>
+            // Script untuk memastikan audio diputar
+            var audio = document.getElementById("jarvis-audio");
+            if (audio) {{
+                audio.play().catch(function(error) {{
+                    console.log("Autoplay diblokir browser, butuh interaksi user.");
+                }});
+            }}
+        </script>
+        '''
         st.markdown(md, unsafe_allow_html=True)
     except Exception:
         pass
@@ -138,10 +155,24 @@ def main():
         st.session_state.messages = []
     if "last_audio_id" not in st.session_state:
         st.session_state.last_audio_id = None
+    if "last_tts_audio" not in st.session_state:
+        st.session_state.last_tts_audio = None
 
+    # --- SIDEBAR ---
     with st.sidebar:
-        st.header("⚙️ Pengaturan")
-        st.markdown("Dapatkan API Key gratis di [console.groq.com](https://console.groq.com)")
+        st.header("⚙️ Pengaturan Suara")
+        
+        # Fitur Tambahan: Pengaturan Kecepatan Suara
+        tts_speed = st.radio(
+            "Kecepatan Bicara Jarvis:",
+            ["normal", "lambat"],
+            horizontal=True
+        )
+
+        st.divider()
+        
+        st.header("🔑 API Key Groq")
+        st.markdown("Dapatkan gratis di [console.groq.com](https://console.groq.com)")
         
         api_key_input = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
         if api_key_input:
@@ -151,28 +182,34 @@ def main():
         if not api_key:
             st.warning("⚠️ API Key Groq wajib diisi!")
             
+        st.divider()
         if st.button("🗑️ Hapus Riwayat Chat", use_container_width=True):
             st.session_state.messages = []
             st.session_state.last_audio_id = None
+            st.session_state.last_tts_audio = None
             st.rerun()
 
+    # --- HEADER ---
     st.title("🤖 Jarvis: Asisten Suara AI")
     st.caption("Bicara langsung dengan Jarvis. Jarvis akan otomatis merespon setelah Anda selesai bicara.")
 
     if not api_key:
         st.info("👈 Silakan isi Groq API Key di sidebar kiri terlebih dahulu.")
 
+    # --- RIWAYAT CHAT ---
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"], avatar="🧑" if msg["role"] == "user" else "🤖"):
             st.markdown(msg["content"])
 
     st.divider()
 
+    # --- INDIKATOR MIKROFON ---
     st.markdown("### 🎤 Rekam Suara Anda")
-    st.caption("Klik mikrofon, bicara, lalu **klik ⏹️ (Stop)**. Jarvis akan langsung memprosesnya.")
+    st.caption("Klik mikrofon, bicara, lalu **klik ⏹️ (Stop)**. Jarvis akan langsung merespon dengan suara.")
     
     audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
+    # --- LOGIKA PROSES AUDIO OTOMATIS ---
     if audio_value is not None and api_key:
         current_id = getattr(audio_value, "file_id", None) or getattr(audio_value, "name", None) or id(audio_value)
 
@@ -181,6 +218,7 @@ def main():
             
             audio_bytes = audio_value.read()
             
+            # 1. PROSES STT
             with st.spinner("👂 Mendengarkan dan memproses suara..."):
                 user_text, stt_status = transcribe_audio(audio_bytes)
                 
@@ -188,10 +226,12 @@ def main():
                 st.warning(user_text)
                 return
 
+            # Tampilkan Pesan User
             with st.chat_message("user", avatar="🧑"):
                 st.markdown(user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
             
+            # 2. PROSES AI
             with st.spinner("🧠 Jarvis sedang berpikir..."):
                 history_for_ai = st.session_state.messages[:-1]
                 ai_text, ai_status = get_ai_response(user_text, history_for_ai, api_key)
@@ -200,16 +240,35 @@ def main():
                 st.error(ai_text)
                 return
 
+            # Tampilkan Pesan AI
             with st.chat_message("assistant", avatar="🤖"):
                 st.markdown(ai_text)
             st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
-            with st.spinner("🔊 Menyiapkan suara Jarvis..."):
-                audio_reply = text_to_speech(ai_text)
+            # 3. PROSES TTS & AUTOPLAY
+            with st.spinner("🔊 Jarvis sedang berbicara..."):
+                # Gunakan pengaturan kecepatan dari sidebar
+                audio_reply = text_to_speech(ai_text, speed=tts_speed)
                 if audio_reply:
+                    st.session_state.last_tts_audio = audio_reply
                     autoplay_audio(audio_reply)
             
             st.rerun()
+
+    # --- FITUR TOMBOL ULANGI SUARA ---
+    if st.session_state.last_tts_audio:
+        st.divider()
+        st.markdown("#### 🔊 Kontrol Suara Jarvis")
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            # Tombol untuk memutar ulang jika autoplay diblokir browser
+            if st.button("▶️ Putar Ulang Suara", use_container_width=True):
+                st.audio(st.session_state.last_tts_audio, format="audio/mp3", autoplay=True)
+                
+        with col2:
+            # Menampilkan player manual sebagai cadangan
+            st.audio(st.session_state.last_tts_audio, format="audio/mp3")
 
 if __name__ == "__main__":
     main()
