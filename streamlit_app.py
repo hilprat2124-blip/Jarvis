@@ -1,12 +1,10 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import io
 import os
 import json
 import base64
-import asyncio
 import requests
-import edge_tts
+from gtts import gTTS
 from openai import OpenAI
 
 # ============================================================
@@ -19,18 +17,17 @@ st.set_page_config(
 )
 
 STT_LANGUAGE = "id-ID"
-VOICE_MODEL = "id-ID-ArdiNeural" # Suara Pria Indonesia
-VOICE_RATE = "+5%"
+TTS_LANGUAGE = "id"
 AI_MODEL = "openai/gpt-oss-20b"  
 
 SYSTEM_PROMPT = (
-    "Anda adalah Jarvis, asisten AI yang cerdas, efisien, ramah, dan sedikit formal. "
+    "Anda adalah Jarvis, asisten AI pria yang cerdas, efisien, dan formal. "
     "Anda menjawab dalam Bahasa Indonesia dengan gaya ringkas, jelas, dan profesional. "
     "Batasi jawaban maksimal 3-4 kalimat agar cocok untuk diucapkan."
 )
 
 # ============================================================
-# API KEY MANAGEMENT
+# API KEY & STT
 # ============================================================
 def get_api_key():
     if "groq_api_key" in st.session_state and st.session_state.groq_api_key:
@@ -42,17 +39,10 @@ def get_api_key():
         pass
     return os.environ.get("GROQ_API_KEY", "")
 
-# ============================================================
-# STT (Speech-to-Text)
-# ============================================================
 def transcribe_audio(audio_bytes):
     try:
         url = "http://www.google.com/speech-api/v2/recognize"
-        params = {
-            "client": "chromium",
-            "lang": STT_LANGUAGE,
-            "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw", 
-        }
+        params = {"client": "chromium", "lang": STT_LANGUAGE, "key": "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"}
         headers = {"Content-Type": "audio/l16; rate=16000"}
         response = requests.post(url, params=params, headers=headers, data=audio_bytes, timeout=15)
         
@@ -69,7 +59,7 @@ def transcribe_audio(audio_bytes):
         return f"Error STT: {e}", "error"
 
 # ============================================================
-# AI (Groq API)
+# AI (Groq)
 # ============================================================
 def get_ai_response(user_message, chat_history, api_key):
     if not api_key:
@@ -81,78 +71,60 @@ def get_ai_response(user_message, chat_history, api_key):
         messages.append({"role": "user", "content": user_message})
 
         response = client.chat.completions.create(
-            model=AI_MODEL,
-            messages=messages,
-            temperature=0.7,
-            max_tokens=200,
+            model=AI_MODEL, messages=messages, temperature=0.7, max_tokens=200,
         )
         return response.choices[0].message.content.strip(), "ok"
     except Exception as e:
         return f"Error AI: {e}", "error"
 
 # ============================================================
-# TTS (Text-to-Speech) - EDGE TTS
+# TTS (gTTS - Paling Stabil)
 # ============================================================
 def text_to_speech(text):
     try:
-        async def _generate_audio():
-            communicate = edge_tts.Communicate(text, VOICE_MODEL, rate=VOICE_RATE)
-            audio_data = b""
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_data += chunk["data"]
-            return audio_data
-
-        # Jalankan async loop dengan aman
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-            
-        if loop and loop.is_running():
-            # Jika loop sudah jalan (jarang terjadi di Streamlit), buat task baru
-            import nest_asyncio
-            nest_asyncio.apply()
-            
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        audio_bytes = loop.run_until_complete(_generate_audio())
-        loop.close()
-        return audio_bytes
+        # Menggunakan gTTS yang paling stabil di Streamlit Cloud
+        tts = gTTS(text=text, lang=TTS_LANGUAGE, slow=False)
+        audio_buffer = io.BytesIO()
+        tts.write_to_fp(audio_buffer)
+        audio_buffer.seek(0)
+        return audio_buffer.read()
     except Exception as e:
         st.error(f"Error TTS: {e}")
         return None
 
 # ============================================================
-# AUTOPLAY AUDIO (TRIK AMPUH STREAMLIT)
+# 🔥 TRIK AUTOPLAY: AUTO-CLICK TOMBOL PLAY STREAMLIT
 # ============================================================
 def play_audio_auto(audio_bytes):
-    """Memaksa browser memutar audio via komponen HTML murni."""
-    if not audio_bytes:
-        return
+    """Menampilkan player Streamlit dan memaksanya untuk auto-play."""
+    if not audio_bytes: return
     
-    # Encode base64
-    b64 = base64.b64encode(audio_bytes).decode()
+    # Tampilkan audio player bawaan Streamlit
+    st.audio(audio_bytes, format="audio/mp3")
     
-    # HTML + JS yang memaksa autoplay
-    html_code = f"""
+    # Suntikkan JavaScript untuk mengklik tombol play secara otomatis
+    js = """
     <script>
-        // Trik membangunkan audio context browser
-        var audio = new Audio("data:audio/mp3;base64,{b64}");
-        audio.play().catch(function(error) {{
-            console.log("Autoplay dicegah browser. Menunggu interaksi user...");
-            // Jika dicegah, pasang listener agar begitu user klik layar, suara langsung bunyi
-            document.body.addEventListener('click', function() {{
-                audio.play();
-            }}, {{ once: true }});
-        }});
+        // Fungsi untuk mencari tombol play dan mengkliknya
+        function autoPlayAudio() {
+            var audios = window.parent.document.querySelectorAll('audio');
+            if (audios.length > 0) {
+                // Ambil audio player yang paling terakhir muncul
+                var lastAudio = audios[audios.length - 1];
+                lastAudio.play().catch(function(e) {
+                    console.log("Autoplay diblokir, menunggu interaksi user.");
+                });
+            }
+        }
+        // Jalankan setelah jeda sedikit agar komponen selesai render
+        setTimeout(autoPlayAudio, 500);
+        setTimeout(autoPlayAudio, 1500);
     </script>
     """
-    # Render komponen dengan tinggi 0 agar tidak merusak UI
-    components.html(html_code, height=0)
+    st.components.v1.html(js, height=0)
 
 # ============================================================
-# MAIN UI & LOGIC
+# MAIN UI
 # ============================================================
 def main():
     if "messages" not in st.session_state:
@@ -164,11 +136,9 @@ def main():
     with st.sidebar:
         st.header("⚙️ Pengaturan")
         api_key_input = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
-        if api_key_input:
-            st.session_state.groq_api_key = api_key_input
+        if api_key_input: st.session_state.groq_api_key = api_key_input
         api_key = get_api_key()
-        if not api_key:
-            st.warning("⚠️ API Key Groq wajib diisi!")
+        if not api_key: st.warning("⚠️ API Key Groq wajib diisi!")
             
         if st.button("🗑️ Hapus Riwayat Chat", use_container_width=True):
             st.session_state.messages = []
@@ -192,8 +162,6 @@ def main():
     # MIKROFON
     st.markdown("### 🎤 Rekam Suara Anda")
     st.caption("Klik mikrofon, bicara, lalu **klik ⏹️ (Stop)** untuk mengirim.")
-    
-    # Widget audio
     audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
     # LOGIKA
@@ -229,18 +197,14 @@ def main():
                 st.markdown(ai_text)
             st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
-            # 3. TTS & AUTOPLAY
+            # 3. TTS & AUTO-PLAY
             with st.spinner("🔊 Jarvis menjawab..."):
                 audio_reply = text_to_speech(ai_text)
                 if audio_reply:
                     play_audio_auto(audio_reply)
             
-            # Tampilkan tombol cadangan jika user ingin mendengar ulang
-            if audio_reply:
-                with st.expander("🔈 Suara tidak otomatis keluar? Klik di sini"):
-                    st.audio(audio_reply, format="audio/mp3")
-            
-            st.rerun()
+            # Jangan langsung rerun agar audio tidak terpotong
+            # st.rerun() dihilangkan khusus untuk audio
 
 if __name__ == "__main__":
     main()
