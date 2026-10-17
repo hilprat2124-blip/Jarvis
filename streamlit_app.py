@@ -120,7 +120,7 @@ class Hand3DProcessor(VideoProcessorBase):
             cv2.line(img, start, end, (80, 80, 80), 1, cv2.LINE_AA)
         for lm in landmarks:
             px = self._to_pixel(lm, w, h)
-            cv2.circle(img, px, 2, (120, 120, 120), -1, cv2.LINE_AA)
+            cv2.circle(img, px, 1, (120, 120, 120), -1, cv2.LINE_AA)
 
     def _draw_3d_cube(self, img, cx, cy):
         cos_x, sin_x = np.cos(self.rx), np.sin(self.rx)
@@ -133,8 +133,8 @@ class Hand3DProcessor(VideoProcessorBase):
         
         pts_2d = []
         fov = 4.0
-        # --- UKURAN KUBUS DIPERKECIL (dari 150 menjadi 110) ---
-        cube_size = 110 
+        # --- UKURAN KUBUS DISESUAIKAN DENGAN FRAME KECIL (90) ---
+        cube_size = 90 
         for v in transformed:
             v_scaled = v * self.scale
             z = v_scaled[2] + fov
@@ -150,14 +150,14 @@ class Hand3DProcessor(VideoProcessorBase):
             intensity = np.clip(1.0 - (depth_avg / 2.0), 0.2, 1.0)
             color = (int(255 * intensity), int(255 * intensity), 0)
             
-            cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), color, 5, cv2.LINE_AA) # Garis sedikit lebih tipis
+            cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), color, 4, cv2.LINE_AA)
             cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), (255, 255, 255), 1, cv2.LINE_AA)
 
         for p in pts_2d:
-            cv2.circle(img, (p[0], p[1]), 3, (0, 0, 255), -1, cv2.LINE_AA)
+            cv2.circle(img, (p[0], p[1]), 2, (0, 0, 255), -1, cv2.LINE_AA)
 
     def _draw_progress_ring(self, img, center, progress, color):
-        cv2.ellipse(img, center, (25, 25), -90, 0, int(360 * min(progress, 1.0)), color, 4, cv2.LINE_AA)
+        cv2.ellipse(img, center, (20, 20), -90, 0, int(360 * min(progress, 1.0)), color, 3, cv2.LINE_AA)
 
     def _smooth(self, new_val, old_val, alpha=SMOOTHING_FACTOR):
         if old_val is None:
@@ -363,19 +363,19 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.zoom_base_index = None
                     self.zoom_base_middle = None
 
-            cv2.circle(img, thumb, 5, color_text, -1)
-            cv2.circle(img, index, 5, color_text, -1)
-            cv2.circle(img, middle, 5, color_text, -1)
+            cv2.circle(img, thumb, 4, color_text, -1)
+            cv2.circle(img, index, 4, color_text, -1)
+            cv2.circle(img, middle, 4, color_text, -1)
             if is_5_fingers:
-                cv2.circle(img, palm_center, 10, (0, 255, 255), -1)
+                cv2.circle(img, palm_center, 8, (0, 255, 255), -1)
 
         # --- RENDER 3D ---
         cx, cy = w // 2, h // 2
         self._draw_3d_cube(img, cx, cy)
 
-        # --- UI INDIKATOR ---
-        cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
-        cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        # --- UI INDIKATOR (Teks sedikit dikecilkan) ---
+        cv2.putText(img, mode_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_text, 1, cv2.LINE_AA)
+        cv2.putText(img, f"Skala: {self.scale:.2f}x", (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -390,7 +390,7 @@ webrtc_streamer(
     key="hand-3d-tracker",
     video_processor_factory=Hand3DProcessor,
     rtc_configuration=RTC_CONFIGURATION,
-    # --- UKURAN FRAME KAMERA DIPERKECIL (dari 640x480 menjadi 480x360) ---
-    media_stream_constraints={"video": {"width": 480, "height": 360}, "audio": False},
+    # --- UKURAN FRAME KAMERA MINI (400x300) ---
+    media_stream_constraints={"video": {"width": 400, "height": 300}, "audio": False},
     async_processing=True,
 )
