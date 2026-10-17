@@ -11,14 +11,16 @@ import edge_tts
 from openai import OpenAI
 
 # ============================================================
-# KONFIGURASI UTAMA
+# KONFIGURASI UTAMA & STATE MANAGEMENT
 # ============================================================
 st.set_page_config(page_title="J.A.R.V.I.S - Lois Edition", page_icon="🔵", layout="wide")
 
-# Model AI paling stabil & pintar
-AI_MODEL = "llama-3.3-70b-versatile" 
-VOICE_EN = "en-GB-RyanNeural"    
-VOICE_ID = "id-ID-ArdiNeural"    
+# Model AI Paling Canggih & Cerdas (Sesuai daftar Groq Lois)
+AI_MODEL = "openai/gpt-oss-120b" 
+
+# Konfigurasi Suara (Edge TTS)
+VOICE_EN = "en-GB-RyanNeural"    # Suara Pria British
+VOICE_ID = "id-ID-ArdiNeural"    # Suara Pria Indonesia
 VOICE_RATE = "+0%"    
 VOICE_PITCH = "-4Hz"  
 
@@ -67,11 +69,12 @@ def sanitize_latex(text):
     return text.strip()
 
 # ============================================================
-# ENGINE KOMUNIKASI
+# ENGINE KOMUNIKASI (STT, LLM, TTS)
 # ============================================================
 class JarvisCore:
     def __init__(self, api_key):
         self.api_key = api_key
+        # Timeout tinggi agar AI tidak terputus saat menghitung rumus kompleks
         self.client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1", timeout=60.0) if api_key else None
 
     def transcribe(self, audio_bytes):
@@ -108,12 +111,12 @@ class JarvisCore:
                 model=AI_MODEL, 
                 messages=messages, 
                 temperature=0.5, 
-                max_tokens=600, 
-                stream=True # AKTIFKAN STREAMING
+                max_tokens=800, # Token dinaikkan untuk penjelasan mendalam
+                stream=True 
             )
             
             for chunk in response:
-                if chunk.choices[0].delta.content:
+                if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
                     
         except Exception as e:
@@ -126,6 +129,7 @@ class JarvisCore:
             clean_text = re.sub(r'\$.*?\$', ' rumus matematika ', clean_text)
             clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
             
+            # Deteksi Bahasa
             en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
             id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu"]
             en_count = sum(1 for word in re.findall(r'\b\w+\b', clean_text.lower()) if word in en_words)
@@ -146,7 +150,7 @@ class JarvisCore:
             audio_bytes = loop.run_until_complete(_generate_audio())
             loop.close()
             return audio_bytes
-        except Exception:
+        except Exception as e:
             return None
 
 # ============================================================
@@ -200,7 +204,8 @@ def main():
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Tuan Lois.")
         
         st.divider()
-        st.success("Core: Llama 3.3 70B (Streaming)")
+        st.success("Core: GPT-OSS 120B (Canggih)")
+        st.info("Mode: Streaming (Real-time)")
         st.info("Voice: Neural Clean")
         st.info("LaTeX Engine: Active")
         
@@ -209,10 +214,11 @@ def main():
             st.session_state.last_audio_id = None
             st.rerun()
 
-    # --- HEADER ---
+    # --- HEADER DENGAN ORB ANIMASI ---
     st.markdown('<div class="orb"></div>', unsafe_allow_html=True)
     st.markdown("<h1>J A R V I S</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
+    
     st.divider()
 
     if not api_key:
@@ -258,7 +264,7 @@ def main():
                 full_response = ""
                 
                 # Memulai streaming dari AI
-                with st.spinner("🧠 Memproses data..."):
+                with st.spinner("🧠 Menganalisis hukum alam semesta..."):
                     for chunk in jarvis.generate_stream(user_text, st.session_state.messages[:-1]):
                         full_response += chunk
                         # Tampilkan kata per kata
