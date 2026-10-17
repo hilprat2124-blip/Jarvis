@@ -10,28 +10,23 @@ import os
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
-# Konfigurasi Halaman
+# ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="Hand Tracking Drawing", layout="wide")
-st.title("✌️ Hand Tracking - Visualisasi Garis Antar Jari")
+st.title("✌️ Hand Tracking - Futuristic Drawing")
+st.write("Lakukan *pinch* (jempol + telunjuk) untuk memunculkan garis neon. Lakukan *pinch* lagi untuk menghilangkannya.")
 
-# Konfigurasi WebRTC
+# ============ Konfigurasi WebRTC ============
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
-# Konstanta
-TOUCH_THRESHOLD = 45      
-MAX_LINE_DIST = 300       
-MIN_THICKNESS = 2
-MAX_THICKNESS = 8
+# ============ Konstanta ============
+PINCH_THRESHOLD = 40      # Jarak (px) untuk mendeteksi pinch
+MIN_THICKNESS = 1         # Garis lebih tipis
+MAX_THICKNESS = 4         # Garis lebih tipis
 
 THUMB_TIP = 4
-FINGER_TIPS = {
-    "Telunjuk":    (8,  (0, 255, 255)),   
-    "Jari Tengah": (12, (255, 0, 255)),   
-    "Jari Manis":  (16, (255, 255, 0)),   
-    "Kelingking":  (20, (0, 255, 0)),     
-}
+INDEX_TIP = 8
 
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4),        
@@ -42,13 +37,14 @@ HAND_CONNECTIONS = [
     (0, 17)                                
 ]
 
-# Download Model Otomatis
+# ============ Fungsi Download Model Otomatis ============
 MODEL_PATH = "hand_landmarker.task"
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 
 if not os.path.exists(MODEL_PATH):
     with st.spinner("Mengunduh model AI..."):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+
 
 class HandInteractionProcessor(VideoProcessorBase):
     def __init__(self):
@@ -63,18 +59,24 @@ class HandInteractionProcessor(VideoProcessorBase):
         )
         self.detector = vision.HandLandmarker.create_from_options(options)
         self.frame_timestamp = 0
+        
+        # State untuk logika toggle (pinch pertama nyala, pinch kedua mati)
+        self.is_drawing = False
+        self.prev_pinching = False
 
     def _to_pixel(self, landmark, w, h):
         return int(landmark.x * w), int(landmark.y * h)
 
     def _draw_landmarks(self, img, landmarks, w, h):
+        # Menggambar skeleton dengan warna redup (abu-abu gelap) agar futuristik
         for connection in HAND_CONNECTIONS:
             start = self._to_pixel(landmarks[connection[0]], w, h)
             end = self._to_pixel(landmarks[connection[1]], w, h)
-            cv2.line(img, start, end, (240, 240, 240), 1)
+            cv2.line(img, start, end, (100, 100, 100), 1, cv2.LINE_AA)
+        
         for lm in landmarks:
             px = self._to_pixel(lm, w, h)
-            cv2.circle(img, px, 2, (200, 200, 200), -1)
+            cv2.circle(img, px, 2, (150, 150, 150), -1, cv2.LINE_AA)
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
@@ -90,25 +92,54 @@ class HandInteractionProcessor(VideoProcessorBase):
         if results.hand_landmarks:
             for hand_landmarks in results.hand_landmarks:
                 self._draw_landmarks(img, hand_landmarks, w, h)
+
                 thumb = self._to_pixel(hand_landmarks[THUMB_TIP], w, h)
-                cv2.circle(img, thumb, 8, (0, 0, 255), -1)
+                index = self._to_pixel(hand_landmarks[INDEX_TIP], w, h)
 
-                for name, (idx, color) in FINGER_TIPS.items():
-                    tip = self._to_pixel(hand_landmarks[idx], w, h)
-                    cv2.circle(img, tip, 8, color, -1)
-                    dist = float(np.hypot(thumb[0] - tip[0], thumb[1] - tip[1]))
+                # Deteksi jarak jempol dan telunjuk
+                dist = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
+                is_currently_pinching = dist < PINCH_THRESHOLD
 
-                    if dist < MAX_LINE_DIST:
-                        thickness = int(np.interp(dist, [0, MAX_LINE_DIST], [MAX_THICKNESS, MIN_THICKNESS]))
-                        thickness = max(MIN_THICKNESS, thickness)
-                        cv2.line(img, thumb, tip, color, thickness)
-                        mid = ((thumb[0] + tip[0]) // 2, (thumb[1] + tip[1]) // 2)
+                # === LOGIKA TOGGLE PINCH ===
+                # Jika baru saja melakukan pinch (dari tidak pinch -> pinch)
+                if is_currently_pinching and not self.prev_pinching:
+                    self.is_drawing = not self.is_drawing  # Toggle status gambar
 
-                        if dist < TOUCH_THRESHOLD:
-                            cv2.circle(img, mid, 12, (0, 255, 0), -1)
-                            cv2.putText(img, f"Pinch! ({name})", (mid[0] - 40, mid[1] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
-                        else:
-                            cv2.putText(img, f"{int(dist)}px", (mid[0] - 15, mid[1] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                self.prev_pinching = is_currently_pinching
+
+                # Jika mode gambar sedang AKTIF, tarik garis futuristik
+                if self.is_drawing:
+                    # Warna Neon Cyan (B, G, R) -> (255, 255, 0)
+                    color_neon = (255, 255, 0) 
+                    
+                    # Efek Glow (Garis bayangan lebih tebal & transparan di belakang)
+                    overlay = img.copy()
+                    cv2.line(overlay, thumb, index, color_neon, 10, cv2.LINE_AA)
+                    cv2.addWeighted(overlay, 0.3, img, 0.7, 0, img)
+                    
+                    # Garis Utama (Tipis dan tajam)
+                    cv2.line(img, thumb, index, color_neon, 2, cv2.LINE_AA)
+
+                    # Titik ujung jari futuristik (Lingkaran kecil)
+                    cv2.circle(img, thumb, 5, (255, 255, 255), -1, cv2.LINE_AA)
+                    cv2.circle(img, index, 5, (255, 255, 255), -1, cv2.LINE_AA)
+
+                    # Teks indikator mode ON
+                    cv2.putText(img, "DRAWING MODE: ON", (20, 50), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_neon, 2, cv2.LINE_AA)
+                else:
+                    # Teks indikator mode OFF
+                    cv2.putText(img, "DRAWING MODE: OFF", (20, 50), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 100), 2, cv2.LINE_AA)
+
+                # Indikator lingkaran pinch (hanya visual saat mendekat)
+                if is_currently_pinching:
+                    mid = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
+                    cv2.circle(img, mid, 15, (0, 0, 255), 2, cv2.LINE_AA)
+
+        else:
+            # Jika tangan hilang dari frame, reset state pinch
+            self.prev_pinching = False
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -118,6 +149,7 @@ class HandInteractionProcessor(VideoProcessorBase):
         except:
             pass
 
+# ============ Streamlit WebRTC ============
 webrtc_streamer(
     key="hand-gesture-tracker",
     video_processor_factory=HandInteractionProcessor,
