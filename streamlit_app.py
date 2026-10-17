@@ -1,5 +1,6 @@
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit_mic_recorder import mic_recorder
 import io
 import os
 import json
@@ -11,7 +12,7 @@ import edge_tts
 from openai import OpenAI
 
 # ============================================================
-# KONFIGURASI UTAMA & STATE MANAGEMENT
+# KONFIGURASI UTAMA
 # ============================================================
 st.set_page_config(page_title="J.A.R.V.I.S", page_icon="🔵", layout="centered")
 
@@ -35,6 +36,9 @@ KEPRIBADIAN:
 - Jika ditanya Lois tinggal di mana, jawab: "Tuan Lois tinggal di Banten."
 """
 
+# ============================================================
+# FUNGSI PEMBERSIH LATEX & AUDIO
+# ============================================================
 def sanitize_latex(text):
     if not text: return text
     text = re.sub(r'\[\s*(.*?)\s*\]', r'\1', text, flags=re.DOTALL)
@@ -42,6 +46,22 @@ def sanitize_latex(text):
     text = re.sub(r'([a-zA-Z0-9])\$', r'\1 $', text)
     text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
     return text.strip()
+
+def play_audio_auto(audio_bytes):
+    if not audio_bytes: return
+    b64 = base64.b64encode(audio_bytes).decode()
+    html = f"""
+    <audio id="jarvis-audio" autoplay>
+        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+    </audio>
+    <script>
+        var audio = document.getElementById("jarvis-audio");
+        audio.play().catch(function(e) {{
+            document.body.addEventListener('click', function() {{ audio.play(); }}, {{ once: true }});
+        }});
+    </script>
+    """
+    components.html(html, height=0)
 
 class JarvisCore:
     def __init__(self, api_key):
@@ -112,30 +132,17 @@ class JarvisCore:
             return None
 
 # ============================================================
-# UI: BOLA & ANIMASI (DIRECT DOM INJECTION)
+# UI: REAL-TIME ORB
 # ============================================================
-def inject_orb_design():
-    """Menyuntikkan desain Bola melayang langsung ke DOM Streamlit"""
+def inject_custom_css():
     st.markdown("""
     <style>
-        /* Latar belakang gelap */
-        .stApp {
-            background: radial-gradient(circle at 50% 50%, #001a22 0%, #000000 100%);
-        }
-
-        /* Desain Bola Utama */
-        .jarvis-orb-container {
-            position: relative;
-            width: 200px;
-            height: 200px;
-            margin: 0 auto;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
+        .stApp { background: radial-gradient(circle at 50% 10%, #001a22 0%, #000000 100%); color: #e0f7fa; font-family: 'Courier New', monospace; }
+        
+        /* Desain Bola */
+        .jarvis-orb-container { position: relative; width: 200px; height: 200px; margin: 20px auto; display: flex; justify-content: center; align-items: center; }
         .jarvis-orb {
-            width: 120px;
-            height: 120px;
+            width: 120px; height: 120px;
             background: radial-gradient(circle, #00ffff 0%, #0055ff 80%, #000 100%);
             border-radius: 50%;
             box-shadow: 0 0 40px #00ffff, 0 0 80px #0055ff;
@@ -143,73 +150,36 @@ def inject_orb_design():
             transition: transform 0.1s ease-out;
         }
         .jarvis-ring {
-            position: absolute;
-            width: 160px;
-            height: 160px;
-            border: 1px dashed #00ffff;
-            border-radius: 50%;
-            animation: spin 10s linear infinite;
-            opacity: 0.4;
+            position: absolute; width: 160px; height: 160px;
+            border: 1px dashed #00ffff; border-radius: 50%;
+            animation: spin 10s linear infinite; opacity: 0.4;
         }
-        @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 30px #00ffff; }
-            100% { transform: scale(1.05); box-shadow: 0 0 60px #00ffff, 0 0 100px #0055ff; }
-        }
+        @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 30px #00ffff; } 100% { transform: scale(1.05); box-shadow: 0 0 60px #00ffff, 0 0 100px #0055ff; } }
         @keyframes spin { 100% { transform: rotate(360deg); } }
-
-        /* Sembunyikan Tombol Streamlit Asli & Taruh di atas bola */
-        [data-testid="stAudioInput"] {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 120px;
-            height: 120px;
-            opacity: 0; /* Dibuat transparan */
-            z-index: 9999; /* Pastikan bisa diklik */
-            cursor: pointer;
-        }
-        /* Supaya tombol play/stop dari Streamlit tidak muncul jelek di bawah */
-        [data-testid="stAudioInput"] div {
-            display: none !important;
-        }
+        
+        /* Tombol Rekam Streamlit (Disembunyikan) */
+        [data-testid="stAudioInput"] { display: none; }
+        
+        /* Desain Expander */
+        .stExpander { background: rgba(0, 255, 255, 0.05); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; }
     </style>
 
     <div class="jarvis-orb-container">
         <div class="jarvis-ring"></div>
-        <div class="jarvis-orb"></div>
+        <div class="jarvis-orb" id="orb"></div>
     </div>
-    <p style='text-align: center; color: #00ffff; font-size: 0.9em; margin-top: 10px; letter-spacing: 2px;'>
-        KLIK BOLA UNTUK MULAI
-    </p>
     """, unsafe_allow_html=True)
-
-def play_audio_auto(audio_bytes):
-    if not audio_bytes: return
-    b64 = base64.b64encode(audio_bytes).decode()
-    html = f"""
-    <audio id="jarvis-audio" autoplay>
-        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-    </audio>
-    <script>
-        var audio = document.getElementById("jarvis-audio");
-        audio.play().catch(function(e) {{
-            document.body.addEventListener('click', function() {{ audio.play(); }}, {{ once: true }});
-        }});
-    </script>
-    """
-    components.html(html, height=0)
 
 # ============================================================
 # MAIN APP
 # ============================================================
 def main():
-    inject_orb_design()
+    inject_custom_css()
     
     if "messages" not in st.session_state: st.session_state.messages = []
-    if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
+    if "last_audio" not in st.session_state: st.session_state.last_audio = None
 
-    # --- SIDEBAR ---
+    # SIDEBAR
     with st.sidebar:
         st.header("⚙️ Sistem Kontrol")
         api_key_input = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
@@ -219,30 +189,39 @@ def main():
         
         if st.button("🗑️ Reset Memori", use_container_width=True):
             st.session_state.messages = []
-            st.session_state.last_audio_id = None
+            st.session_state.last_audio = None
             st.rerun()
 
-    # --- TOMBOL REKAM (Disembunyikan via CSS, ditaruh di atas bola) ---
-    audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
+    # HEADER
+    st.markdown("<h1 style='text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff;'>J A R V I S</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
 
-    # --- RIWAYAT CHAT POP-UP ---
+    # REKAM SUARA (Menggunakan streamlit-mic-recorder)
+    # Komponen ini memunculkan tombol Start/Stop yang jauh lebih stabil
+    audio_info = mic_recorder(
+        start_prompt="Klik Untuk Berbicara",
+        stop_prompt="Klik Untuk Selesai",
+        just_once=True,
+        use_container_width=True,
+        key='recorder'
+    )
+
+    # RIWAYAT CHAT
     if st.session_state.messages:
         with st.expander("💬 Lihat Riwayat Obrolan", expanded=False):
             for msg in st.session_state.messages:
                 with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
                     st.markdown(msg["content"])
 
-    # --- LOGIKA UTAMA ---
-    if audio_value is not None and api_key:
-        current_id = getattr(audio_value, "file_id", None) or id(audio_value)
-
-        if current_id != st.session_state.last_audio_id:
-            st.session_state.last_audio_id = current_id
-            audio_bytes = audio_value.read()
-            
+    # LOGIKA UTAMA
+    if audio_info and api_key:
+        audio_bytes = audio_info['bytes']
+        
+        if st.session_state.last_audio != audio_bytes:
+            st.session_state.last_audio = audio_bytes
             jarvis = JarvisCore(api_key)
             
-            with st.spinner("👂 Memproses..."):
+            with st.spinner("👂 Menganalisis gelombang suara..."):
                 user_text, stt_status = jarvis.transcribe(audio_bytes)
                 
             if stt_status != "ok":
