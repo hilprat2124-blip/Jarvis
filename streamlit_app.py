@@ -447,12 +447,17 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         return f"❌ Error Jarvis: {str(e)}"
 
 def generate_tts_edge(text: str) -> bytes or None:
-    """Generate audio dari teks menggunakan Edge-TTS."""
+    """Generate audio dari teks menggunakan Edge-TTS (Optimized)."""
     if not TTS_AVAILABLE: 
         return None
     
+    # 🔥 OPTIMASI 1: Potong teks agar TTS tidak kelamaan (ambil 200 karakter pertama)
+    # Ini sangat mempercepat loading karena server hanya memproses teks pendek.
+    text_to_speak = text[:200] + ("..." if len(text) > 200 else "")
+
     async def _generate():
-        communicate = edge_tts.Communicate(text, JARVIS_TTS_VOICE)
+        communicate = edge_tts.Communicate(text_to_speak, JARVIS_TTS_VOICE, rate="+10%") 
+        # rate +10% bikin suara agak cepat, terasa lebih responsif
         audio_data = b""
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
@@ -460,11 +465,8 @@ def generate_tts_edge(text: str) -> bytes or None:
         return audio_data
 
     try:
-        # Jalankan asyncio event loop di dalam thread Streamlit
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        audio_bytes = loop.run_until_complete(_generate())
-        loop.close()
+        # 🔥 OPTIMASI 2: Gunakan asyncio.run yang lebih ringan ketimbang manual loop
+        audio_bytes = asyncio.run(_generate())
         return audio_bytes
     except Exception as e:
         st.error(f"Gagal generate suara Edge-TTS: {e}")
@@ -510,7 +512,6 @@ with col2:
 # ============================================================
 st.markdown("---")
 st.header("💬 Ngobrol dengan Jarvis (dengan Suara)")
-
 st.caption("Ketik pertanyaanmu. Jarvis akan melihat kamera dan **menjawab dengan suara otomatis**.")
 
 for msg in st.session_state.jarvis_messages:
@@ -560,26 +561,26 @@ if user_q:
             api_messages.append(user_api_msg)
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
-            st.markdown(answer)
+            
+        # 🔥 TAMPILKAN TEKS DULU agar user bisa langsung baca
+        st.markdown(answer)
+        
+        # 🔥 PROSES SUARA SETELAH TEKS MUNCUL (dengan efek loading kecil)
+        if answer and not answer.startswith("❌"):
+            with st.spinner("🎤 Menyiapkan suara..."):
+                audio_bytes = generate_tts_edge(answer)
+                
+                if audio_bytes:
+                    b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
+                    
+                    audio_html = f"""
+                        <audio autoplay="true" style="display:none;">
+                            <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
+                        </audio>
+                    """
+                    st.markdown(audio_html, unsafe_allow_html=True)
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
-
-    # ===============================================
-    # 🔥 PUTAR SUARA OTOMATIS DENGAN EDGE-TTS
-    # ===============================================
-    if answer and not answer.startswith("❌"):
-        with st.spinner("Menyiapkan suara Jarvis..."):
-            audio_bytes = generate_tts_edge(answer)
-            
-            if audio_bytes:
-                b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
-                
-                audio_html = f"""
-                    <audio autoplay="true" style="display:none;">
-                        <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
-                    </audio>
-                """
-                st.markdown(audio_html, unsafe_allow_html=True)
 
 # ============================================================
 # SIDEBAR
