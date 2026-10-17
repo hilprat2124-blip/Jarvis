@@ -15,8 +15,9 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 st.set_page_config(page_title="Interactive 3D Hand Tracking", layout="wide")
 st.title("🧊 3D Free View - Hand Tracking")
 st.write("""
-**Panduan Gestur (Tahan 1 Detik untuk Verifikasi):**
-- ☝️ **Telunjuk Berdiri:** Tahan 1 Detik -> Putar objek (Rotasi).
+**Panduan Gestur:**
+- ✋ **Swipe 5 Jari:** Gerakkan tangan cepat ke kiri/kanan untuk memutar objek sekilas.
+- ☝️ **Telunjuk Berdiri:** Tahan 1 Detik -> Putar objek secara perlahan (Rotasi).
 - 👆 **Jempol + Telunjuk Pinch:** Tahan 1 Detik -> Geser objek (Pan).
 - 🤏 **Pinch 3 Jari (Jempol+Telunjuk+Tengah):** Tahan 1 Detik -> **ZOOM AKTIF**.
   - Jauhkan **hanya Telunjuk** untuk **ZOOM IN**.
@@ -38,6 +39,7 @@ MAX_ZOOM_STEP = 0.03
 THUMB_TIP = 4
 INDEX_TIP = 8
 MIDDLE_TIP = 12
+PINKY_TIP = 20
 
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4),        
@@ -82,9 +84,12 @@ class Hand3DProcessor(VideoProcessorBase):
         
         # State Verifikasi (Hold)
         self.active_mode = None    # "ZOOM", "PAN", "ROTASI"
-        self.zoom_submode = None   # "IN" atau "OUT"
         self.candidate_mode = None 
         self.hold_start_time = 0.0
+
+        # State Swipe 5 Jari
+        self.prev_palm_pos = None
+        self.swipe_velocity = 0
 
         # Vertex Kubus 3D
         self.vertices = np.array([
@@ -167,58 +172,86 @@ class Hand3DProcessor(VideoProcessorBase):
             thumb = self._to_pixel(hand_landmarks[THUMB_TIP], w, h)
             index = self._to_pixel(hand_landmarks[INDEX_TIP], w, h)
             middle = self._to_pixel(hand_landmarks[MIDDLE_TIP], w, h)
+            pinky = self._to_pixel(hand_landmarks[PINKY_TIP], w, h)
+            
+            # Palm center (titik tengah telapak tangan)
+            wrist = self._to_pixel(hand_landmarks[0], w, h)
+            palm_center = ((wrist[0] + middle[0]) // 2, (wrist[1] + middle[1]) // 2)
 
             dist_index = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
             dist_middle = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
             dist_mid_index = float(np.hypot(middle[0] - index[0], middle[1] - index[1]))
 
             # ==========================================
-            # 1. DETEKSI KANDIDAT GESTUR
+            # DETEKSI 5 JARI TERBUKA (SWIPE)
+            # ==========================================
+            # Cek apakah kelima jari berdiri (koordinat Y lebih kecil dari telapak)
+            index_up = index[1] < wrist[1]
+            middle_up = middle[1] < wrist[1]
+            pinky_up = pinky[1] < wrist[1]
+            thumb_up = thumb[1] < wrist[1] - 20
+            
+            is_5_fingers = index_up and middle_up and pinky_up and thumb_up and (dist_index > 60) and (dist_middle > 60)
+            
+            if is_5_fingers:
+                if self.prev_palm_pos is not None:
+                    dx = palm_center[0] - self.prev_palm_pos[0]
+                    
+                    # Deteksi Swipe Cepat (threshold kecepatan)
+                    if abs(dx) > 15:  # Jika bergerak lebih dari 15px per frame
+                        self.ry += dx * 0.05  # Putar kubus secara instan
+                        mode_text = "SWIPE ROTASI!"
+                        color_text = (0, 255, 255)
+                        
+                self.prev_palm_pos = palm_center
+                # Matikan mode hold lain jika sedang swipe
+                self.candidate_mode = None
+                self.active_mode = None
+            else:
+                self.prev_palm_pos = None
+
+            # ==========================================
+            # DETEKSI GESTUR UNTUK VERIFIKASI (HOLD)
             # ==========================================
             detected_gesture = None
             
-            # Pinch 3 jari (Zoom)
-            if dist_index < PINCH_THRESHOLD and dist_middle < PINCH_THRESHOLD and dist_mid_index < PINCH_THRESHOLD + 20:
-                detected_gesture = "ZOOM"
-            # Pinch 2 jari (Pan)
-            elif dist_index < PINCH_THRESHOLD and dist_middle > PINCH_THRESHOLD + 20:
-                detected_gesture = "PAN"
-            # Telunjuk berdiri (Rotasi)
-            elif index[1] < thumb[1] and middle[1] > thumb[1] and dist_index > PINCH_THRESHOLD:
-                detected_gesture = "ROTASI"
+            # Jika bukan swipe 5 jari, cek mode hold
+            if not is_5_fingers:
+                if dist_index < PINCH_THRESHOLD and dist_middle < PINCH_THRESHOLD and dist_mid_index < PINCH_THRESHOLD + 20:
+                    detected_gesture = "ZOOM"
+                elif dist_index < PINCH_THRESHOLD and dist_middle > PINCH_THRESHOLD + 20:
+                    detected_gesture = "PAN"
+                elif index[1] < thumb[1] and middle[1] > thumb[1] and dist_index > PINCH_THRESHOLD:
+                    detected_gesture = "ROTASI"
 
             # ==========================================
-            # 2. VERIFIKASI TAHAN 1 DETIK
+            # VERIFIKASI TAHAN 1 DETIK
             # ==========================================
-            if self.active_mode is None:
-                if detected_gesture:
-                    if self.candidate_mode != detected_gesture:
-                        self.candidate_mode = detected_gesture
-                        self.hold_start_time = current_time
-                    
-                    progress = (current_time - self.hold_start_time) / HOLD_THRESHOLD
-                    
-                    if progress >= 1.0:
-                        # Lolos Verifikasi!
-                        self.active_mode = detected_gesture
-                        
-                        if self.active_mode == "ZOOM":
-                            self.zoom_base_index = dist_index
-                            self.zoom_base_middle = dist_middle
-                            
-                        self.prev_index_pos = None
-                    else:
-                        mid_pinch = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
-                        ring_color = (255, 165, 0) if detected_gesture == "ZOOM" else ((0, 0, 255) if detected_gesture == "PAN" else (0, 255, 0))
-                        self._draw_progress_ring(img, mid_pinch, progress, ring_color)
-                        mode_text = f"VERIFIKASI: {detected_gesture}"
-                        color_text = ring_color
+            if self.active_mode is None and detected_gesture:
+                if self.candidate_mode != detected_gesture:
+                    self.candidate_mode = detected_gesture
+                    self.hold_start_time = current_time
+                
+                progress = (current_time - self.hold_start_time) / HOLD_THRESHOLD
+                
+                if progress >= 1.0:
+                    self.active_mode = detected_gesture
+                    if self.active_mode == "ZOOM":
+                        self.zoom_base_index = dist_index
+                        self.zoom_base_middle = dist_middle
+                    self.prev_index_pos = None
                 else:
-                    self.candidate_mode = None
-                    self.hold_start_time = 0.0
+                    mid_pinch = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
+                    ring_color = (255, 165, 0) if detected_gesture == "ZOOM" else ((0, 0, 255) if detected_gesture == "PAN" else (0, 255, 0))
+                    self._draw_progress_ring(img, mid_pinch, progress, ring_color)
+                    mode_text = f"VERIFIKASI: {detected_gesture}"
+                    color_text = ring_color
+            elif self.active_mode is None and not detected_gesture and not is_5_fingers:
+                self.candidate_mode = None
+                self.hold_start_time = 0.0
 
             # ==========================================
-            # 3. EKSEKUSI MODE
+            # EKSEKUSI MODE
             # ==========================================
             if self.active_mode == "ROTASI":
                 mode_text = "MODE: ROTASI"
@@ -250,15 +283,12 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.active_mode = None
 
             elif self.active_mode == "ZOOM":
-                # Logika Decoupled (Terpisah)
                 if dist_index < PINCH_THRESHOLD and dist_middle < PINCH_THRESHOLD:
-                    # Jika keduanya menempel di jempol, jangan zoom dulu (fase persiapan)
                     self.zoom_base_index = dist_index
                     self.zoom_base_middle = dist_middle
                     mode_text = "ZOOM: PILIH JARI"
                     color_text = (255, 165, 0)
                 else:
-                    # Telunjuk menjauh, Tengah nempel -> ZOOM IN
                     if dist_index > PINCH_THRESHOLD + 15 and dist_middle < PINCH_THRESHOLD:
                         mode_text = "ZOOM IN (Telunjuk Jauh)"
                         color_text = (0, 255, 255)
@@ -269,7 +299,6 @@ class Hand3DProcessor(VideoProcessorBase):
                                 self.scale = np.clip(self.scale + scale_change, MIN_SCALE, MAX_SCALE)
                                 self.zoom_base_index = dist_index
                     
-                    # Jari tengah menjauh, Telunjuk nempel -> ZOOM OUT
                     elif dist_middle > PINCH_THRESHOLD + 15 and dist_index < PINCH_THRESHOLD:
                         mode_text = "ZOOM OUT (Jari Tengah Jauh)"
                         color_text = (255, 0, 255)
@@ -280,7 +309,6 @@ class Hand3DProcessor(VideoProcessorBase):
                                 self.scale = np.clip(self.scale - scale_change, MIN_SCALE, MAX_SCALE)
                                 self.zoom_base_middle = dist_middle
 
-                # Keluar dari mode Zoom jika semua jari terbuka lebar (bukan pinch lagi)
                 if dist_index > PINCH_THRESHOLD + 30 and dist_middle > PINCH_THRESHOLD + 30:
                     self.active_mode = None
                     self.zoom_base_index = None
@@ -290,6 +318,8 @@ class Hand3DProcessor(VideoProcessorBase):
             cv2.circle(img, thumb, 5, color_text, -1)
             cv2.circle(img, index, 5, color_text, -1)
             cv2.circle(img, middle, 5, color_text, -1)
+            if is_5_fingers:
+                cv2.circle(img, palm_center, 10, (0, 255, 255), -1)
 
         # --- RENDER 3D ---
         cx, cy = w // 2, h // 2
