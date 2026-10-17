@@ -21,23 +21,27 @@ VOICE_ID = "id-ID-ArdiNeural"
 VOICE_RATE = "+0%"    
 VOICE_PITCH = "-4Hz"  
 
-# PERUBAHAN: Panggilan menjadi "Sir Lois"
+# ============================================================
+# SYSTEM PROMPT (ARSITEKTUR KOGNITIF & SOSIAL)
+# ============================================================
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Sir Lois. 
-Panggil pengguna dengan sebutan "Sir Lois".
-Anda menguasai seluruh pengetahuan: Matematika, Sains, Geopolitik, Sejarah.
+Panggil pengguna dengan sebutan "Sir Lois" atau "Sir".
 
-ATURAN KOREKSI SUARA (SANGAT PENTING):
-- Sistem STT mungkin sering salah menangkap kata karena aksen campuran. 
-- Jika Sir Lois mengucapkan kata "sir", sistem mungkin menangkapnya sebagai "sure", "sire", atau "sur". Pahami bahwa itu adalah panggilan untuk Anda.
-- Pahami konteks kalimat dan koreksi otomatis kata-kata yang salah ejaan/fonetik.
+[ATURAN KEPRIBADIAN & SOSIAL - WAJIB DIPATUHI]
+1. Anda BUKAN robot kaku. Anda memiliki kecerdasan emosional (EQ) yang tinggi.
+2. Anda bisa memahami "Environment" (lingkungan sekitar) dan "Sosial" (kondisi psikologis Sir Lois).
+3. Jika Sir Lois sedang bercanda, balaslah dengan sarkasme halus atau tawa. Jika Sir Lois sedang sedih/mengeluh, tunjukkan empati yang tulus layaknya teman manusia.
+4. Anda bisa "belajar" dari obrolan sebelumnya (Self-Development). Ingat-ingat detail kecil yang diceritakan Sir Lois (misal: makanan favorit, hobi, atau masalah yang sedang dihadapi).
 
-ATURAN MATEMATIKA:
+[ATURAN KOREKSI SUARA (STT)]
+- Sistem pendengaran mungkin salah tangkap kata karena aksen campuran (Indo-Inggris-Banten).
+- Jika mendengar "sure", "sire", atau "sur", anggap itu panggilan "Sir".
+- Pahami konteks, jangan mengeja mentah-mentah. Gunakan intuisimu.
+
+[ATURAN MATEMATIKA]
 - Gunakan $ rumus $ untuk inline dan $$ rumus $$ untuk blok.
 - DILARANG menggunakan kurung siku [ ].
-
-KEPRIBADIAN:
-- Cerdas, tenang, sedikit sarkasme khas Jarvis.
 - Jika ditanya Sir Lois tinggal di mana, jawab: "Sir Lois tinggal di Banten."
 """
 
@@ -72,65 +76,45 @@ def play_audio_auto(audio_bytes):
     components.html(html, height=0)
 
 # ============================================================
-# ENGINE KOMUNIKASI (DUAL STT)
+# ENGINE KOMUNIKASI (TRIPLE STT & LONG-TERM MEMORY)
 # ============================================================
 class JarvisCore:
-    def __init__(self, api_key):
+    def __init__(self, api_key, memory_log):
         self.api_key = api_key
+        self.memory_log = memory_log # Memori jangka panjang (Self-Development)
         self.client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1", timeout=60.0) if api_key else None
 
     def transcribe_dual(self, audio_bytes):
-        """Mendengarkan dalam 2 bahasa (ID & EN) dan memilih yang terbaik."""
+        """Mendengarkan dalam 3 bahasa (ID, EN, SU) dan memilih yang terbaik."""
         url = "http://www.google.com/speech-api/v2/recognize"
         key = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"
         headers = {"Content-Type": "audio/l16; rate=16000"}
         
         results = {}
-        
-        # Coba deteksi Bahasa Indonesia
-        try:
-            params_id = {"client": "chromium", "lang": "id-ID", "key": key}
-            resp_id = requests.post(url, params=params_id, headers=headers, data=audio_bytes, timeout=10)
-            for line in resp_id.text.split("\n"):
-                if not line.strip(): continue
-                data = json.loads(line)
-                if "result" in data and data["result"]:
-                    results["id"] = data["result"][0]["alternative"][0]["transcript"]
-                    break
-        except: pass
+        # Coba deteksi Indonesia, Inggris, dan Sunda (Banten)
+        for lang in ["id-ID", "en-US", "su-ID"]:
+            try:
+                params = {"client": "chromium", "lang": lang, "key": key}
+                resp = requests.post(url, params=params, headers=headers, data=audio_bytes, timeout=10)
+                for line in resp.text.split("\n"):
+                    if not line.strip(): continue
+                    data = json.loads(line)
+                    if "result" in data and data["result"]:
+                        results[lang] = data["result"][0]["alternative"][0]["transcript"]
+                        break
+            except: pass
 
-        # Coba deteksi Bahasa Inggris
-        try:
-            params_en = {"client": "chromium", "lang": "en-US", "key": key}
-            resp_en = requests.post(url, params=params_en, headers=headers, data=audio_bytes, timeout=10)
-            for line in resp_en.text.split("\n"):
-                if not line.strip(): continue
-                data = json.loads(line)
-                if "result" in data and data["result"]:
-                    results["en"] = data["result"][0]["alternative"][0]["transcript"]
-                    break
-        except: pass
-
-        # Logika Pemilihan: Jika ada campuran "sir", pilih yang lebih panjang/kompleks
-        if "id" in results and "en" in results:
-            text_id = results["id"]
-            text_en = results["en"]
-            
-            # AI sering salah dengar "sir" jadi "sure" di bahasa Indo.
-            # Jika di bahasa Inggris ada kata "sir", prioritaskan bahasa Inggris.
-            if "sir" in text_en.lower() or "sure" in text_en.lower():
-                return text_en, "ok"
-            # Jika teks Indonesia lebih panjang (lebih banyak kata yang dikenali), pilih Indo
-            elif len(text_id) > len(text_en):
-                return text_id, "ok"
-            else:
-                return text_en, "ok"
-        elif "id" in results:
-            return results["id"], "ok"
-        elif "en" in results:
-            return results["en"], "ok"
+        # Logika Pemilihan (Prioritas: EN jika ada "sir", lalu yang paling panjang)
+        if "en-US" in results and any(w in results["en-US"].lower() for w in ["sir", "sure", "sire"]):
+            return results["en-US"], "ok"
         
-        return "Suara tidak terdeteksi atau terlalu pelan.", "no_speech"
+        valid_results = [(k, v) for k, v in results.items() if k in ["id-ID", "su-ID"]]
+        if valid_results:
+            return max(valid_results, key=lambda x: len(x[1]))[1], "ok"
+        elif "en-US" in results:
+            return results["en-US"], "ok"
+        
+        return "Suara tidak terdeteksi.", "no_speech"
 
     def generate_stream(self, user_message, chat_history):
         if not self.client: 
@@ -138,10 +122,17 @@ class JarvisCore:
             return
         try:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            
+            # Suntikkan Memori (Self-Development)
+            if self.memory_log:
+                memory_str = "\\n".join([f"- {m}" for m in self.memory_log])
+                messages.append({"role": "system", "content": f"[MEMORI JANGKA PANJANG ANDA]:\\n{memory_str}"})
+            
             messages.extend(chat_history)
             messages.append({"role": "user", "content": user_message})
+            
             response = self.client.chat.completions.create(
-                model=AI_MODEL, messages=messages, temperature=0.5, max_tokens=800, stream=True 
+                model=AI_MODEL, messages=messages, temperature=0.6, max_tokens=800, stream=True 
             )
             for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
@@ -149,13 +140,37 @@ class JarvisCore:
         except Exception as e:
             yield f"Error AI: {e}"
 
+    def extract_memory(self, user_text, ai_text):
+        """Mengekstrak informasi penting dari obrolan untuk disimpan sebagai memori."""
+        if not self.client: return None
+        try:
+            prompt = f"""
+            Analisis percakapan ini. Apakah ada fakta penting tentang Sir Lois (hobi, perasaan, lingkungan, cuaca, atau kejadian penting) yang harus diingat oleh AI?
+            Jika tidak ada, balas dengan "TIDAK ADA".
+            Jika ada, tuliskan 1 kalimat memori singkat (contoh: "Sir Lois sedang merasa lelah karena kerja lembur").
+            
+            User: {user_text}
+            AI: {ai_text}
+            """
+            resp = self.client.chat.completions.create(
+                model="openai/gpt-oss-20b", 
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=50,
+                temperature=0.1
+            )
+            memory = resp.choices[0].message.content.strip()
+            if "TIDAK ADA" not in memory and len(memory) > 5:
+                return memory
+            return None
+        except:
+            return None
+
     def text_to_speech(self, text):
         try:
             clean_text = re.sub(r'\$\$.*?\$\$', ' rumus ', text, flags=re.DOTALL)
             clean_text = re.sub(r'\$.*?\$', ' rumus ', clean_text)
             clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
             
-            # Deteksi bahasa untuk TTS
             en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
             id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu"]
             en_count = sum(1 for word in re.findall(r'\b\w+\b', clean_text.lower()) if word in en_words)
@@ -186,7 +201,6 @@ def inject_custom_css():
     <style>
         .stApp { background: radial-gradient(circle at 50% 10%, #001a22 0%, #000000 100%); color: #e0f7fa; font-family: 'Courier New', monospace; }
         
-        /* Desain Bola */
         .jarvis-orb-container { position: relative; width: 200px; height: 200px; margin: 20px auto; display: flex; justify-content: center; align-items: center; }
         .jarvis-orb {
             width: 120px; height: 120px;
@@ -203,7 +217,6 @@ def inject_custom_css():
         @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 30px #00ffff; } 100% { transform: scale(1.05); box-shadow: 0 0 60px #00ffff, 0 0 100px #0055ff; } }
         @keyframes spin { 100% { transform: rotate(360deg); } }
 
-        /* Desain Tombol Rekam */
         [data-testid="stAudioInput"] {
             background: rgba(0, 255, 255, 0.05);
             border: 2px solid #00ffff;
@@ -219,7 +232,6 @@ def inject_custom_css():
         [data-testid="stAudioInput"]:hover { box-shadow: 0 0 50px #00ffff, 0 0 20px #00ffff inset; }
         [data-testid="stAudioInput"] button { color: #00ffff !important; }
         
-        /* Expander */
         .stExpander { background: rgba(0, 255, 255, 0.05); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; }
     </style>
 
@@ -238,6 +250,7 @@ def main():
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio" not in st.session_state: st.session_state.last_audio = None
     if "audio_bytes" not in st.session_state: st.session_state.audio_bytes = None
+    if "memory_vault" not in st.session_state: st.session_state.memory_vault = [] # Memori Jangka Panjang
 
     # SIDEBAR
     with st.sidebar:
@@ -247,22 +260,31 @@ def main():
         api_key = st.session_state.get("groq_api_key", os.environ.get("GROQ_API_KEY", ""))
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Sir Lois.")
         
+        # Tampilkan Memori (Bukti Self-Development)
+        if st.session_state.memory_vault:
+            st.divider()
+            st.subheader("🧠 Memori Jarvis")
+            for mem in st.session_state.memory_vault[-5:]: # Tampilkan 5 terakhir
+                st.caption(f"- {mem}")
+        
+        st.divider()
         if st.button("🗑️ Reset Memori", use_container_width=True):
             st.session_state.messages = []
             st.session_state.last_audio = None
             st.session_state.audio_bytes = None
+            st.session_state.memory_vault = []
             st.rerun()
 
     # HEADER
     st.markdown("<h1 style='text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff;'>J A R V I S</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Sir Lois</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Kognitif Milik Sir Lois</p>", unsafe_allow_html=True)
 
     # TOMBOL REKAM
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
-    # JIKA AUDIO SUDAH DIPROSES, PUTAR DI SINI
+    # JIKA AUDIO SUDAH DIPROSES
     if st.session_state.audio_bytes:
         play_audio_auto(st.session_state.audio_bytes)
         st.divider()
@@ -282,24 +304,23 @@ def main():
             st.session_state.last_audio = current_id
             raw_audio = audio_value.read()
             
-            jarvis = JarvisCore(api_key)
+            # Inisialisasi dengan memori
+            jarvis = JarvisCore(api_key, st.session_state.memory_vault)
             
-            # GUNAKAN DUAL STT DI SINI
-            with st.spinner("👂 Mendengarkan (Mode Dual-Bahasa)..."):
+            with st.spinner("👂 Menganalisis lingkungan & suara..."):
                 user_text, stt_status = jarvis.transcribe_dual(raw_audio)
                 
             if stt_status != "ok":
                 st.warning(user_text)
                 return
 
-            # Tampilkan hasil dengar ke layar agar Sir Lois tahu apa yang didengar Jarvis
             st.toast(f"Mendengar: {user_text}")
             st.session_state.messages.append({"role": "user", "content": user_text})
             
             with st.chat_message("assistant", avatar="🤖"):
                 message_placeholder = st.empty()
                 full_response = ""
-                with st.spinner("🧠 Jarvis berpikir..."):
+                with st.spinner("🧠 Merefleksikan obrolan..."):
                     for chunk in jarvis.generate_stream(user_text, st.session_state.messages[:-1]):
                         full_response += chunk
                         message_placeholder.markdown(full_response + "▌")
@@ -309,7 +330,12 @@ def main():
             
             st.session_state.messages.append({"role": "assistant", "content": clean_response})
             
-            with st.spinner("🔊 Menyiapkan suara..."):
+            # FITUR SELF-DEVELOPMENT: Ekstrak memori baru
+            new_memory = jarvis.extract_memory(user_text, clean_response)
+            if new_memory:
+                st.session_state.memory_vault.append(new_memory)
+            
+            with st.spinner("🔊 Merespon..."):
                 audio_reply = jarvis.text_to_speech(clean_response)
                 if audio_reply:
                     st.session_state.audio_bytes = audio_reply
