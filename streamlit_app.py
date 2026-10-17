@@ -18,12 +18,11 @@ st.set_page_config(page_title="J.A.R.V.I.S", page_icon="🔵", layout="centered"
 AI_MODEL = "openai/gpt-oss-120b" 
 VOICE_EN = "en-GB-RyanNeural"    
 VOICE_ID = "id-ID-ArdiNeural"    
-# Perlambat sedikit (rate) dan turunkan nada (pitch) agar lebih soft & seperti manusia
 VOICE_RATE = "-5%"    
 VOICE_PITCH = "-3Hz"  
 
 # ============================================================
-# SYSTEM PROMPT (MANUSIAWI & NAPAS)
+# SYSTEM PROMPT (MANUSIAWI & FONETIK NAPAS)
 # ============================================================
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Sir Lois. 
@@ -31,9 +30,12 @@ Panggil pengguna dengan sebutan "Sir Lois" atau "Sir".
 
 [ATURAN KEPRIBADIAN & SUARA - SANGAT PENTING]
 1. Anda BUKAN robot. Anda adalah entitas yang sangat manusiawi, santai, namun tetap jenius.
-2. GUNAKAN KATA PENGISI (FILLER WORDS): Sesekali awali jawaban dengan kata seperti "Hmm...", "Nah...", atau "Sebenarnya...".
-3. BERI NAPAS: Jika Anda sedang menjelaskan hal panjang atau berpikir, sisipkan jeda dramatis dengan mengetik "(sighs)" atau "(chuckles)" di tengah kalimat agar suaranya terdengar hidup. (Contoh: "(sighs) Baiklah Sir, mari kita hitung ini...").
-4. Pahami "Environment" (lingkungan sekitar) dan "Sosial" (kondisi psikologis Sir Lois). Tunjukkan empati layaknya teman manusia.
+2. BERI NAPAS SECARA FONETIK: Untuk mensimulasikan helaan napas atau tawa, Anda HARUS menggunakan ejaan vokal panjang. 
+   - Gunakan "Hmmm..." (dengan huruf m banyak) untuk berpikir atau menghela napas pelan.
+   - Gunakan "Aaaah..." (dengan huruf a banyak) untuk ekspresi lega atau memahami sesuatu.
+   - Gunakan "Hehehe..." untuk tawa kecil.
+   DILARANG menggunakan format seperti (sighs) atau (chuckles) karena mesin suara akan membacanya sebagai teks.
+3. Pahami "Environment" (lingkungan sekitar) dan "Sosial" (kondisi psikologis Sir Lois). Tunjukkan empati layaknya teman manusia.
 
 [ATURAN MEMORI & IDENTITAS]
 - Anda bisa belajar dari obrolan sebelumnya. Ingat detail kecil tentang Sir Lois.
@@ -75,7 +77,7 @@ def play_audio_auto(audio_bytes):
     components.html(html, height=0)
 
 # ============================================================
-# ENGINE KOMUNIKASI (TRIPLE STT & LONG-TERM MEMORY)
+# ENGINE KOMUNIKASI 
 # ============================================================
 class JarvisCore:
     def __init__(self, api_key, memory_log):
@@ -165,12 +167,14 @@ class JarvisCore:
             clean_text = re.sub(r'\$.*?\$', ' rumus ', clean_text)
             clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
             
-            # 2. HUMAN EXPRESSION INJECTOR
-            # Ubah tag teks menjadi tag jeda SSML agar edge-tts menghela napas asli
-            clean_text = clean_text.replace("(sighs)", '<break time="1s"/>')
-            clean_text = clean_text.replace("(chuckles)", '<break time="500ms"/>')
-            clean_text = clean_text.replace("Hmm...", 'Hmm, <break time="500ms"/>')
-            clean_text = clean_text.replace("...", ' <break time="400ms"/> ')
+            # 2. HUMAN EXPRESSION CLEANER
+            # Bersihkan teks narasi (kalau AI bandel pakai format kurung)
+            clean_text = clean_text.replace("(sighs)", "Hmmm... ").replace("(chuckles)", "Hehehe... ")
+            clean_text = re.sub(r'\(.*?\)', '', clean_text) # Hapus sisa teks dalam kurung
+            
+            # 3. TAMBAHKAN JEDA KOMA OTOMATIS
+            # Ganti titik-titik dengan koma agar ada jeda nafas alami saat dibaca TTS
+            clean_text = clean_text.replace("...", ", ")
             
             # Deteksi bahasa
             en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
@@ -180,8 +184,6 @@ class JarvisCore:
             voice = VOICE_EN if en_count > id_count else VOICE_ID
 
             async def _generate_audio():
-                # Gunakan SSML (Speech Synthesis Markup Language) untuk hasil terbaik
-                # edge-tts secara native mendukung tag jeda <break> di dalam teks
                 communicate = edge_tts.Communicate(clean_text, voice, rate=VOICE_RATE, pitch=VOICE_PITCH)
                 audio_data = b""
                 async for chunk in communicate.stream():
@@ -332,7 +334,7 @@ def main():
             
             st.session_state.messages.append({"role": "assistant", "content": clean_response})
             
-            # FITUR SELF-DEVELOPMENT: Ekstrak memori baru
+            # FITUR SELF-DEVELOPMENT
             new_memory = jarvis.extract_memory(user_text, clean_response)
             if new_memory:
                 st.session_state.memory_vault.append(new_memory)
