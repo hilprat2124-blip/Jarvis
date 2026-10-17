@@ -10,6 +10,7 @@ import os
 import time
 import io
 import base64
+import asyncio
 from PIL import Image
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
@@ -21,15 +22,24 @@ try:
 except ImportError:
     GROQ_AVAILABLE = False
 
+# ============ AI: Edge-TTS (Suara Natural) ============
+try:
+    import edge_tts
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+
 try:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 except Exception:
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
+# Model Groq untuk mata & otak Jarvis
 JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
-JARVIS_TTS_MODEL = "playai-tts"
-JARVIS_TTS_VOICE = "Fritz-PlayAI"
+
+# Konfigurasi Suara Edge-TTS (Bahasa Indonesia)
+JARVIS_TTS_VOICE = "id-ID-ArdiNeural"  # Pria Indonesia. Bisa ganti: "id-ID-GadisNeural" untuk Wanita
 
 # ============ Konfigurasi Halaman ============
 st.set_page_config(
@@ -40,7 +50,7 @@ st.set_page_config(
 
 st.title("🧊 3D Hand Tracking + 🤖 Jarvis (Live Eyes + Voice)")
 st.markdown("""
-**Fitur Spesial:** Jarvis punya **"Mata Live"** dan **"Suara"**. 
+**Fitur Spesial:** Jarvis punya **"Mata Live"** dan **"Suara Indonesia Natural"**. 
 Ketik chat (misal: *"Apa yang kamu lihat?"*), Jarvis akan melihat kamera dan **menjawab dengan suara otomatis**.
 """)
 
@@ -86,7 +96,7 @@ if not os.path.exists(MODEL_PATH):
     st.success("✅ Model siap!")
 
 # ============================================================
-# 🔒 KELAS KAMERA — TIDAK DIUBAH
+# 🔒 KELAS KAMERA — TIDAK DIUBAH SAMA SEKALI
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
     def __init__(self):
@@ -414,7 +424,7 @@ class Hand3DProcessor(VideoProcessorBase):
         except: pass
 
 # ============================================================
-# 🤖 HELPER JARVIS (Vision + TTS)
+# 🤖 HELPER JARVIS (Vision + Edge-TTS)
 # ============================================================
 def image_to_base64(pil_img: Image.Image, max_size=1024, quality=85) -> str:
     img = pil_img.copy()
@@ -436,20 +446,28 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     except Exception as e:
         return f"❌ Error Jarvis: {str(e)}"
 
-def generate_tts_audio(text: str) -> bytes or None:
-    """Generate audio dari teks menggunakan Groq TTS."""
-    if not GROQ_AVAILABLE: return None
+def generate_tts_edge(text: str) -> bytes or None:
+    """Generate audio dari teks menggunakan Edge-TTS."""
+    if not TTS_AVAILABLE: 
+        return None
+    
+    async def _generate():
+        communicate = edge_tts.Communicate(text, JARVIS_TTS_VOICE)
+        audio_data = b""
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_data += chunk["data"]
+        return audio_data
+
     try:
-        client = Groq(api_key=GROQ_API_KEY)
-        response = client.audio.speech.create(
-            model=JARVIS_TTS_MODEL,
-            voice=JARVIS_TTS_VOICE,
-            input=text,
-            response_format="wav",
-        )
-        return response.read() # Mengembalikan data binary audio
+        # Jalankan asyncio event loop di dalam thread Streamlit
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        audio_bytes = loop.run_until_complete(_generate())
+        loop.close()
+        return audio_bytes
     except Exception as e:
-        st.error(f"Gagal generate suara: {e}")
+        st.error(f"Gagal generate suara Edge-TTS: {e}")
         return None
 
 # ============================================================
@@ -547,20 +565,18 @@ if user_q:
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
 
     # ===============================================
-    # 🔥 TAMBAHAN: PUTAR SUARA OTOMATIS (HTML5 AUDIO)
+    # 🔥 PUTAR SUARA OTOMATIS DENGAN EDGE-TTS
     # ===============================================
     if answer and not answer.startswith("❌"):
         with st.spinner("Menyiapkan suara Jarvis..."):
-            audio_bytes = generate_tts_audio(answer)
+            audio_bytes = generate_tts_edge(answer)
             
             if audio_bytes:
-                # Encode audio ke base64
                 b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
                 
-                # HTML5 Audio dengan autoplay (paling stabil di Streamlit)
                 audio_html = f"""
                     <audio autoplay="true" style="display:none;">
-                        <source src="data:audio/wav;base64,{b64_audio}" type="audio/wav">
+                        <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
                     </audio>
                 """
                 st.markdown(audio_html, unsafe_allow_html=True)
@@ -584,9 +600,13 @@ with st.sidebar:
     elif not GROQ_API_KEY: st.warning("⚠️ GROQ_API_KEY belum diset.")
     else: st.success("✅ Jarvis siap!")
 
+    if not TTS_AVAILABLE:
+        st.warning("⚠️ `edge-tts` belum terinstall. Suara nonaktif.")
+        st.code("pip install edge-tts")
+
     st.markdown("---")
     st.caption(f"Vision: `{JARVIS_VISION_MODEL}`")
-    st.caption(f"TTS: `{JARVIS_TTS_MODEL}` • Voice: `{JARVIS_TTS_VOICE}`")
+    st.caption(f"TTS: `Edge-TTS` • Voice: `{JARVIS_TTS_VOICE}`")
 
 st.markdown("---")
-st.caption("💡 Jika suara tidak muncul, pastikan tab browser tidak dalam keadaan *mute* dan kamu sudah berinteraksi dengan halaman (klik di mana saja) agar browser mengizinkan autoplay.")
+st.caption("💡 Jika suara tidak muncul, pastikan tab browser tidak di-mute dan kamu sudah berinteraksi dengan halaman.")
