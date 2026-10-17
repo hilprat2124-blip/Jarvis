@@ -2,4 +2,3 @@ streamlit
 openai
 gTTS
 requests
-streamlit-js-eval
