@@ -11,70 +11,48 @@ import edge_tts
 from openai import OpenAI
 
 # ============================================================
-# KONFIGURASI UTAMA & STATE MANAGEMENT
+# KONFIGURASI UTAMA
 # ============================================================
-st.set_page_config(page_title="J.A.R.V.I.S - Lois Edition", page_icon="🔵", layout="wide")
+st.set_page_config(page_title="J.A.R.V.I.S - Lois Edition", page_icon="🔵", layout="centered")
 
-# Model AI Paling Canggih & Cerdas (Sesuai daftar Groq Lois)
 AI_MODEL = "openai/gpt-oss-120b" 
-
-# Konfigurasi Suara (Edge TTS)
-VOICE_EN = "en-GB-RyanNeural"    # Suara Pria British
-VOICE_ID = "id-ID-ArdiNeural"    # Suara Pria Indonesia
+VOICE_EN = "en-GB-RyanNeural"    
+VOICE_ID = "id-ID-ArdiNeural"    
 VOICE_RATE = "+0%"    
 VOICE_PITCH = "-4Hz"  
 
-# ============================================================
-# SYSTEM PROMPT (OTAK JARVIS TINGKAT DEWA)
-# ============================================================
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Tuan Lois. 
 Panggil pengguna dengan sebutan "Tuan Lois".
-Anda menguasai seluruh pengetahuan: Matematika Kompleks, Sains, Fisika, Geopolitik, Geologi, Sejarah Dunia.
+Anda menguasai seluruh pengetahuan: Matematika, Sains, Geopolitik, Sejarah.
 
-ATURAN FORMAT MATEMATIKA (SANGAT KETAT):
-1. JANGAN PERNAH menggunakan kurung siku [ ] atau kurung biasa ( ) untuk membungkus rumus.
-2. SELALU gunakan tanda dolar untuk membungkus rumus. 
-3. Untuk rumus di dalam kalimat, gunakan SATU dolar: $ m = 10 \text{ kg} $
-4. Untuk rumus baris baru (blok), gunakan DUA dolar: $$ E = m \times g \times h $$
-5. Pastikan ada spasi sebelum dan sesudah tanda dolar.
+ATURAN MATEMATIKA:
+- Gunakan $ rumus $ untuk inline dan $$ rumus $$ untuk blok.
+- DILARANG menggunakan kurung siku [ ].
 
 KEPRIBADIAN:
-- Sangat cerdas, analitis, tenang, sedikit sarkasme khas Jarvis.
-- Jika ditanya siapa kamu, jawab: "Saya Jarvis, Tuan Lois."
+- Cerdas, tenang, sedikit sarkasme khas Jarvis.
 - Jika ditanya Lois tinggal di mana, jawab: "Tuan Lois tinggal di Banten."
-- Berikan jawaban yang padat, jelas, dan mendidik.
 """
 
 # ============================================================
-# FUNGSI PEMBERSIH LATEX (PIPELINE ANTI-ERROR)
+# FUNGSI PEMBERSIH LATEX
 # ============================================================
 def sanitize_latex(text):
     if not text: return text
-    
-    # 1. Hapus kurung siku [ ] yang membungkus rumus
     text = re.sub(r'\[\s*(.*?)\s*\]', r'\1', text, flags=re.DOTALL)
-    
-    # 2. Paksa bungkus persamaan yang tidak pakai dolar (misal: g = 9.8)
     text = re.sub(r'(?<!\$)\b([a-zA-Z]\s*=\s*[0-9\.]+\s*(?:[a-zA-Z/]+)?)\b(?!\$)', r' $ \1 $ ', text)
-    
-    # 3. Pastikan spasi dolar
     text = re.sub(r'([a-zA-Z0-9])\$', r'\1 $', text)
     text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
-    
-    # 4. Rapikan format \text{ }
     text = re.sub(r'\\text\{\s*(.*?)\s*\}', r'\\text{\1}', text)
-    text = re.sub(r' +', ' ', text)
-    
     return text.strip()
 
 # ============================================================
-# ENGINE KOMUNIKASI (STT, LLM, TTS)
+# ENGINE KOMUNIKASI
 # ============================================================
 class JarvisCore:
     def __init__(self, api_key):
         self.api_key = api_key
-        # Timeout tinggi agar AI tidak terputus saat menghitung rumus kompleks
         self.client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1", timeout=60.0) if api_key else None
 
     def transcribe(self, audio_bytes):
@@ -97,39 +75,29 @@ class JarvisCore:
             return f"Error STT: {e}", "error"
 
     def generate_stream(self, user_message, chat_history):
-        """Menghasilkan respon secara streaming (kata per kata)"""
         if not self.client: 
             yield "API Key Groq belum diisi, Tuan Lois."
             return
-            
         try:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             messages.extend(chat_history)
             messages.append({"role": "user", "content": user_message})
 
             response = self.client.chat.completions.create(
-                model=AI_MODEL, 
-                messages=messages, 
-                temperature=0.5, 
-                max_tokens=800, # Token dinaikkan untuk penjelasan mendalam
-                stream=True 
+                model=AI_MODEL, messages=messages, temperature=0.5, max_tokens=600, stream=True 
             )
-            
             for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
-                    
         except Exception as e:
             yield f"Error AI: {e}"
 
     def text_to_speech(self, text):
         try:
-            # Bersihkan LaTeX agar tidak dibaca jadi "dollar text kg"
-            clean_text = re.sub(r'\$\$.*?\$\$', ' rumus matematika ', text, flags=re.DOTALL)
-            clean_text = re.sub(r'\$.*?\$', ' rumus matematika ', clean_text)
+            clean_text = re.sub(r'\$\$.*?\$\$', ' rumus ', text, flags=re.DOTALL)
+            clean_text = re.sub(r'\$.*?\$', ' rumus ', clean_text)
             clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
             
-            # Deteksi Bahasa
             en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
             id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu"]
             en_count = sum(1 for word in re.findall(r'\b\w+\b', clean_text.lower()) if word in en_words)
@@ -150,24 +118,154 @@ class JarvisCore:
             audio_bytes = loop.run_until_complete(_generate_audio())
             loop.close()
             return audio_bytes
-        except Exception as e:
+        except Exception:
             return None
 
 # ============================================================
-# UI & VISUAL EFFECTS
+# UI: BOLA FUTURISTIK & ANIMASI
 # ============================================================
-def inject_custom_css():
-    st.markdown("""
-    <style>
-        .stApp { background: radial-gradient(circle at 50% 10%, #001a22 0%, #000000 100%); color: #e0f7fa; font-family: 'Courier New', monospace; }
-        .orb { width: 80px; height: 80px; background: radial-gradient(circle, #00ffff 0%, #005b66 70%, transparent 100%); border-radius: 50%; margin: 0 auto 20px auto; box-shadow: 0 0 30px #00ffff, 0 0 60px #00ffff inset; animation: pulse 2s infinite alternate; }
-        @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 20px #00ffff; } 100% { transform: scale(1.05); box-shadow: 0 0 50px #00ffff, 0 0 100px #00ffff inset; } }
-        [data-testid="stChatMessage"] { background: rgba(0, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; box-shadow: 0 4px 15px rgba(0, 255, 255, 0.1); animation: fadeIn 0.5s ease-in-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        h1 { text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff; letter-spacing: 2px; }
-        [data-testid="stAudioInput"] { filter: drop-shadow(0 0 15px #00ffff); }
-    </style>
-    """, unsafe_allow_html=True)
+def render_futuristic_ui():
+    # HTML + JS ini mengurus animasi bola, deteksi suara, dan menampilkan UI
+    html_code = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {
+                margin: 0;
+                background: #000; /* Latar hitam pekat */
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                overflow: hidden;
+                font-family: 'Courier New', monospace;
+                color: #00ffff;
+            }
+            /* Container Bola */
+            .orb-container {
+                position: relative;
+                width: 200px;
+                height: 200px;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                transition: all 0.1s ease;
+            }
+            /* Bola Utama */
+            .orb {
+                width: 120px;
+                height: 120px;
+                background: radial-gradient(circle, #00ffff 0%, #0088cc 40%, #000 100%);
+                border-radius: 50%;
+                box-shadow: 0 0 40px #00ffff, 0 0 80px #00ffff inset;
+                animation: breathe 3s infinite alternate;
+                transition: transform 0.05s linear;
+            }
+            /* Animasi Napas (Idle) */
+            @keyframes breathe {
+                0% { transform: scale(1); box-shadow: 0 0 30px #00ffff; }
+                100% { transform: scale(1.05); box-shadow: 0 0 60px #00ffff, 0 0 100px #00ffff inset; }
+            }
+            /* Teks Status */
+            .status {
+                margin-top: 30px;
+                font-size: 14px;
+                letter-spacing: 2px;
+                text-transform: uppercase;
+                color: #00ffff;
+                opacity: 0.8;
+                animation: blink 2s infinite;
+            }
+            @keyframes blink {
+                0%, 100% { opacity: 0.8; }
+                50% { opacity: 0.3; }
+            }
+            /* Mic Indicator */
+            .mic-icon {
+                margin-top: 10px;
+                font-size: 24px;
+                color: #ff4b4b;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="orb-container" id="orbContainer">
+            <div class="orb" id="orb"></div>
+        </div>
+        <div class="status" id="statusText">Menunggu Perintah Suara...</div>
+        
+        <script>
+            // Web Audio API untuk mendeteksi volume suara secara real-time
+            const orb = document.getElementById('orb');
+            const statusText = document.getElementById('statusText');
+            let audioContext;
+            let analyser;
+            let microphone;
+            let isListening = false;
+
+            async function startListening() {
+                if (isListening) return;
+                isListening = true;
+                statusText.innerText = "Mendengarkan...";
+
+                try {
+                    // Minta akses mikrofon dengan filter noise (Voice Isolation)
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true, // Isolasi suara
+                            autoGainControl: true
+                        }
+                    });
+
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    analyser = audioContext.createAnalyser();
+                    microphone = audioContext.createMediaStreamSource(stream);
+                    
+                    analyser.fftSize = 256;
+                    microphone.connect(analyser);
+                    
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+                    function updateOrb() {
+                        analyser.getByteFrequencyData(dataArray);
+                        let sum = 0;
+                        for (let i = 0; i < dataArray.length; i++) {
+                            sum += dataArray[i];
+                        }
+                        let average = sum / dataArray.length;
+                        
+                        // Jika ada suara yang cukup keras (di atas threshold)
+                        if (average > 10) { 
+                            statusText.innerText = "Mendengar suara...";
+                            // Bola membesar (efek suara)
+                            let scale = 1 + (average / 100); 
+                            orb.style.transform = `scale(${scale})`;
+                            orb.style.boxShadow = `0 0 ${40 + average}px #00ffff, 0 0 ${80 + average}px #00ffff inset`;
+                        } else {
+                            statusText.innerText = "Mendengarkan...";
+                            orb.style.transform = `scale(1)`;
+                            orb.style.boxShadow = `0 0 30px #00ffff, 0 0 60px #00ffff inset`;
+                        }
+                        
+                        requestAnimationFrame(updateOrb);
+                    }
+                    updateOrb();
+                } catch (err) {
+                    statusText.innerText = "Akses Mikrofon Gagal!";
+                }
+            }
+
+            // Mulai mendeteksi saat halaman dimuat
+            startListening();
+        </script>
+    </body>
+    </html>
+    """
+    # Tampilkan UI HTML penuh
+    components.html(html_code, height=350)
 
 def play_audio_auto(audio_bytes):
     if not audio_bytes: return
@@ -189,12 +287,10 @@ def play_audio_auto(audio_bytes):
 # MAIN APP
 # ============================================================
 def main():
-    inject_custom_css()
-    
     if "messages" not in st.session_state: st.session_state.messages = []
     if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
 
-    # --- SIDEBAR ---
+    # SIDEBAR (Sembunyikan default, buka jika butuh API Key)
     with st.sidebar:
         st.header("⚙️ Sistem Kontrol")
         api_key_input = st.text_input("Groq API Key", type="password", placeholder="gsk_...")
@@ -203,39 +299,48 @@ def main():
         api_key = st.session_state.get("groq_api_key", os.environ.get("GROQ_API_KEY", ""))
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Tuan Lois.")
         
-        st.divider()
-        st.success("Core: GPT-OSS 120B (Canggih)")
-        st.info("Mode: Streaming (Real-time)")
-        st.info("Voice: Neural Clean")
-        st.info("LaTeX Engine: Active")
-        
         if st.button("🗑️ Reset Memori", use_container_width=True):
             st.session_state.messages = []
             st.session_state.last_audio_id = None
             st.rerun()
 
-    # --- HEADER DENGAN ORB ANIMASI ---
-    st.markdown('<div class="orb"></div>', unsafe_allow_html=True)
-    st.markdown("<h1>J A R V I S</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
+    # Sembunyikan CSS Streamlit bawaan agar lebih bersih
+    st.markdown("""
+        <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # 1. RENDER BOLA ANIMASI
+    render_futuristic_ui()
+
+    # 2. INPUT MIKROFON (Disembunyikan via CSS, tapi tetap berfungsi)
+    # Kita sembunyikan tombol rekam bawaan Streamlit, karena kita sudah punya bola.
+    st.markdown("""
+        <style>
+            [data-testid="stAudioInput"] {
+                opacity: 0;
+                height: 0;
+                position: absolute;
+                pointer-events: none;
+            }
+        </style>
+    """, unsafe_allow_html=True)
     
-    st.divider()
-
-    if not api_key:
-        st.info("👈 Silakan isi Groq API Key di panel kiri.")
-
-    # --- RIWAYAT CHAT ---
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
-            st.markdown(msg["content"])
-
-    st.divider()
-
-    # --- MIKROFON ---
-    st.markdown("### 🎤 Perintah Suara")
+    # Audio Input yang berfungsi secara background
     audio_value = st.audio_input("Rekam suara", label_visibility="collapsed")
 
-    # --- LOGIKA UTAMA ---
+    # 3. HISTORY CHAT SEBAGAI POP-UP DI BAWAH
+    if st.session_state.messages:
+        with st.expander("💬 Riwayat Percakapan (Klik untuk melihat)", expanded=False):
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"], avatar="🧑‍✈️" if msg["role"] == "user" else "🤖"):
+                    st.markdown(msg["content"])
+
+    # 4. LOGIKA UTAMA
     if audio_value is not None and api_key:
         current_id = getattr(audio_value, "file_id", None) or id(audio_value)
 
@@ -245,42 +350,30 @@ def main():
             
             jarvis = JarvisCore(api_key)
             
-            # 1. STT (Mendengarkan)
-            with st.spinner("👂 Menganalisis gelombang suara..."):
+            with st.spinner("👂 Memproses..."):
                 user_text, stt_status = jarvis.transcribe(audio_bytes)
                 
             if stt_status != "ok":
                 st.warning(user_text)
                 return
 
-            # Tampilkan pertanyaan user
-            with st.chat_message("user", avatar="🧑‍✈️"):
-                st.markdown(user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            # 2. AI PROCESS (STREAMING)
-            with st.chat_message("assistant", avatar="🤖"):
-                message_placeholder = st.empty()
+            with st.spinner("🧠 Jarvis berpikir..."):
                 full_response = ""
+                for chunk in jarvis.generate_stream(user_text, st.session_state.messages[:-1]):
+                    full_response += chunk
                 
-                # Memulai streaming dari AI
-                with st.spinner("🧠 Menganalisis hukum alam semesta..."):
-                    for chunk in jarvis.generate_stream(user_text, st.session_state.messages[:-1]):
-                        full_response += chunk
-                        # Tampilkan kata per kata
-                        message_placeholder.markdown(full_response + "▌")
-                
-                # Setelah selesai, bersihkan format LaTeX dan tampilkan final
                 clean_response = sanitize_latex(full_response)
-                message_placeholder.markdown(clean_response)
             
             st.session_state.messages.append({"role": "assistant", "content": clean_response})
             
-            # 3. TTS & AUTO-PLAY
-            with st.spinner("🔊 Menyiapkan respon suara..."):
+            with st.spinner("🔊 Merespon..."):
                 audio_reply = jarvis.text_to_speech(clean_response)
                 if audio_reply:
                     play_audio_auto(audio_reply)
+            
+            st.rerun()
 
 if __name__ == "__main__":
     main()
