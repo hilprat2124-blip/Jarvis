@@ -16,7 +16,7 @@ st.title("🧊 3D Free View - Hand Tracking")
 st.write("""
 **Panduan Gestur (Pilih Mode):**
 - ☝️ **Tunjuk (1 Jari):** Putar objek (Free View).
-- ✌️ **Peace (2 Jari):** Zoom In (Jauhkan jari) / Zoom Out (Dekatkan jari).
+- ✌️ **Peace (2 Jari):** Zoom In (Jauhkan jari) / Zoom Out (Dekatkan jari). Gerakkan perlahan untuk hasil mulus.
 - 🤏 **Pinch (Cubit):** Geser objek (Pan).
 """)
 
@@ -28,6 +28,8 @@ RTC_CONFIGURATION = RTCConfiguration(
 # ============ Konstanta ============
 PINCH_THRESHOLD = 40      
 MIN_SCALE, MAX_SCALE = 0.5, 3.0
+ZOOM_SENSITIVITY = 0.01
+MAX_ZOOM_STEP = 0.03 # Batas maksimal perubahan skala per frame
 
 THUMB_TIP = 4
 INDEX_TIP = 8
@@ -151,8 +153,7 @@ class Hand3DProcessor(VideoProcessorBase):
             index = self._to_pixel(hand_landmarks[INDEX_TIP], w, h)
             middle = self._to_pixel(hand_landmarks[MIDDLE_TIP], w, h)
 
-            # Deteksi apakah jari berdiri atau menekuk (berdasarkan koordinat Y)
-            # (Semakin kecil Y, semakin ke atas)
+            # Deteksi jari berdiri
             index_up = index[1] < thumb[1]
             middle_up = middle[1] < thumb[1]
 
@@ -166,7 +167,7 @@ class Hand3DProcessor(VideoProcessorBase):
             # 1. MODE ROTASI (Hanya Telunjuk Berdiri)
             if index_up and not middle_up and dist_pinch > PINCH_THRESHOLD:
                 mode_text = "MODE: ROTASI"
-                color_text = (0, 255, 0) # Hijau
+                color_text = (0, 255, 0)
                 
                 if self.prev_index_pos is not None:
                     dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20)
@@ -179,19 +180,24 @@ class Hand3DProcessor(VideoProcessorBase):
             # 2. MODE ZOOM (Telunjuk & Tengah Berdiri)
             elif index_up and middle_up:
                 mode_text = "MODE: ZOOM"
-                color_text = (0, 255, 255) # Kuning
+                color_text = (0, 255, 255)
                 
                 if self.prev_peace_dist is not None:
                     delta = dist_peace - self.prev_peace_dist
-                    # Zoom In jika jarak membesar, Zoom Out jika jarak mengecil
-                    self.scale = np.clip(self.scale + delta * 0.01, MIN_SCALE, MAX_SCALE)
+                    
+                    # Perubahan skala halus (dibatasi per frame)
+                    scale_change = delta * ZOOM_SENSITIVITY
+                    scale_change = np.clip(scale_change, -MAX_ZOOM_STEP, MAX_ZOOM_STEP)
+                    
+                    self.scale = np.clip(self.scale + scale_change, MIN_SCALE, MAX_SCALE)
+                    
                 self.prev_peace_dist = dist_peace
                 self.prev_index_pos = None
 
             # 3. MODE PAN / GESER (Pinch / Cubit)
             elif dist_pinch < PINCH_THRESHOLD:
                 mode_text = "MODE: GESER"
-                color_text = (0, 0, 255) # Merah
+                color_text = (0, 0, 255)
                 
                 mid = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
                 if self.prev_index_pos is not None:
@@ -206,9 +212,11 @@ class Hand3DProcessor(VideoProcessorBase):
                 self.prev_index_pos = None
                 self.prev_peace_dist = None
 
-            # Indikator lingkaran di ujung jari
+            # Indikator titik di ujung jari
             cv2.circle(img, thumb, 5, color_text, -1)
             cv2.circle(img, index, 5, color_text, -1)
+            if index_up and middle_up:
+                cv2.circle(img, middle, 5, color_text, -1)
 
         # --- RENDER 3D ---
         cx, cy = w // 2, h // 2
