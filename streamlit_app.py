@@ -16,25 +16,25 @@ from openai import OpenAI
 st.set_page_config(page_title="J.A.R.V.I.S", page_icon="🔵", layout="centered")
 
 AI_MODEL = "openai/gpt-oss-120b" 
-VOICE_EN = "en-GB-RyanNeural"    
-VOICE_ID = "id-ID-ArdiNeural"    
-VOICE_RATE = "-5%"    
+VOICE_EN = "en-GB-RyanNeural"     
+VOICE_ID = "id-ID-ArdiNeural"     
+VOICE_RATE = "-5%"     
 VOICE_PITCH = "-3Hz"  
 
 # ============================================================
-# SYSTEM PROMPT (MANUSIAWI & FONETIK NAPAS)
+# SYSTEM PROMPT (MANUSIAWI & EKSPRESIF)
 # ============================================================
 SYSTEM_PROMPT = """
 Anda adalah Jarvis, asisten AI super canggih milik Sir Lois. 
 Panggil pengguna dengan sebutan "Sir Lois" atau "Sir".
 
-[ATURAN KEPRIBADIAN & SUARA - SANGAT PENTING]
+[ATURAN KEPRIBADIAN & EKSPRESI SUARA]
 1. Anda BUKAN robot. Anda adalah entitas yang sangat manusiawi, santai, namun tetap jenius.
-2. BERI NAPAS SECARA FONETIK: Untuk mensimulasikan helaan napas atau tawa, Anda HARUS menggunakan ejaan vokal panjang. 
-   - Gunakan "Hmmm..." (dengan huruf m banyak) untuk berpikir atau menghela napas pelan.
-   - Gunakan "Aaaah..." (dengan huruf a banyak) untuk ekspresi lega atau memahami sesuatu.
-   - Gunakan "Hehehe..." untuk tawa kecil.
-   DILARANG menggunakan format seperti (sighs) atau (chuckles) karena mesin suara akan membacanya sebagai teks.
+2. Anda boleh menggunakan penanda ekspresi berikut untuk mensimulasikan emosi manusiawi:
+   - Gunakan (sigh) atau (sighs) untuk menghela napas.
+   - Gunakan (chuckles) atau (hehe) untuk tawa kecil.
+   - Gunakan Hmmm... untuk jeda berpikir.
+   - Gunakan Aaaah... untuk kesadaran/kelegaian.
 3. Pahami "Environment" (lingkungan sekitar) dan "Sosial" (kondisi psikologis Sir Lois). Tunjukkan empati layaknya teman manusia.
 
 [ATURAN MEMORI & IDENTITAS]
@@ -122,8 +122,8 @@ class JarvisCore:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             
             if self.memory_log:
-                memory_str = "\\n".join([f"- {m}" for m in self.memory_log])
-                messages.append({"role": "system", "content": f"[MEMORI JANGKA PANJANG ANDA]:\\n{memory_str}"})
+                memory_str = "\n".join([f"- {m}" for m in self.memory_log])
+                messages.append({"role": "system", "content": f"[MEMORI JANGKA PANJANG ANDA]:\n{memory_str}"})
             
             messages.extend(chat_history)
             messages.append({"role": "user", "content": user_message})
@@ -160,31 +160,73 @@ class JarvisCore:
         except:
             return None
 
+    def format_speech_expression(self, text):
+        """
+        Mengonversi tanda nada ekspresi teks menjadi SSML 
+        sehingga mesin TTS memperagakannya alih-alih membacanya.
+        """
+        # Hapus format markdown & LaTeX
+        clean_text = re.sub(r'\$\$.*?\$\$', ' rumus ', text, flags=re.DOTALL)
+        clean_text = re.sub(r'\$.*?\$', ' rumus ', clean_text)
+        clean_text = re.sub(r'[*#_`]', '', clean_text)
+
+        # Peragaan Helaan Napas / Sigh -> Jeda agak panjang dengan pitch sedikit turun
+        clean_text = re.sub(
+            r'\((sighs?|menghela napas)\)', 
+            r'<break time="600ms"/><prosody pitch="-8Hz" rate="-15%">...</prosody><break time="300ms"/>', 
+            clean_text, flags=re.IGNORECASE
+        )
+
+        # Peragaan Tawa Kecil / Chuckle -> Jeda singkat dengan pitch agak tinggi
+        clean_text = re.sub(
+            r'\((chuckles?|hehe)\)|hehehe+', 
+            r'<break time="200ms"/><prosody pitch="+5Hz" rate="+10%">he he</prosody><break time="200ms"/>', 
+            clean_text, flags=re.IGNORECASE
+        )
+
+        # Peragaan Berpikir (Hmmm...) -> Jeda berpikir fonetik
+        clean_text = re.sub(
+            r'\b[Hh]+[Mm]{2,}\b|\.\.\.', 
+            r'<break time="500ms"/>', 
+            clean_text
+        )
+
+        # Peragaan Legi / Paham (Aaaah...) -> Efek pemahaman melandai
+        clean_text = re.sub(
+            r'\b[Aa]+[Hh]+\b', 
+            r'<prosody pitch="-3Hz" rate="-20%">ah</prosody><break time="300ms"/>', 
+            clean_text
+        )
+
+        # Hapus sisa teks narasi dalam kurung yang belum terjangkau
+        clean_text = re.sub(r'\(.*?\)', '', clean_text)
+
+        return clean_text.strip()
+
     def text_to_speech(self, text):
         try:
-            # 1. Bersihkan LaTeX
-            clean_text = re.sub(r'\$\$.*?\$\$', ' rumus ', text, flags=re.DOTALL)
-            clean_text = re.sub(r'\$.*?\$', ' rumus ', clean_text)
-            clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
-            
-            # 2. HUMAN EXPRESSION CLEANER
-            # Bersihkan teks narasi (kalau AI bandel pakai format kurung)
-            clean_text = clean_text.replace("(sighs)", "Hmmm... ").replace("(chuckles)", "Hehehe... ")
-            clean_text = re.sub(r'\(.*?\)', '', clean_text) # Hapus sisa teks dalam kurung
-            
-            # 3. TAMBAHKAN JEDA KOMA OTOMATIS
-            # Ganti titik-titik dengan koma agar ada jeda nafas alami saat dibaca TTS
-            clean_text = clean_text.replace("...", ", ")
-            
-            # Deteksi bahasa
+            # 1. Konversi teks ke intonasi ekspresi SSML
+            ssml_text = self.format_speech_expression(text)
+
+            # 2. Deteksi bahasa
             en_words = ["the", "and", "is", "to", "in", "you", "that", "it", "for", "on"]
             id_words = ["yang", "dan", "di", "itu", "ini", "dengan", "untuk", "saya", "kamu"]
-            en_count = sum(1 for word in re.findall(r'\b\w+\b', clean_text.lower()) if word in en_words)
-            id_count = sum(1 for word in re.findall(r'\b\w+\b', clean_text.lower()) if word in id_words)
+            en_count = sum(1 for word in re.findall(r'\b\w+\b', text.lower()) if word in en_words)
+            id_count = sum(1 for word in re.findall(r'\b\w+\b', text.lower()) if word in id_words)
             voice = VOICE_EN if en_count > id_count else VOICE_ID
 
+            # 3. Bungkus menjadi payload SSML lengkap
+            ssml_payload = f"""<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='id-ID'>
+                <voice name='{voice}'>
+                    <prosody pitch='{VOICE_PITCH}' rate='{VOICE_RATE}'>
+                        {ssml_text}
+                    </prosody>
+                </voice>
+            </speak>"""
+
             async def _generate_audio():
-                communicate = edge_tts.Communicate(clean_text, voice, rate=VOICE_RATE, pitch=VOICE_PITCH)
+                communicate = edge_tts.Communicate(ssml_payload, voice, raw_response=True)
+                # Menggunakan mode SSML langsung di Edge-TTS
                 audio_data = b""
                 async for chunk in communicate.stream():
                     if chunk["type"] == "audio":
@@ -196,7 +238,8 @@ class JarvisCore:
             audio_bytes = loop.run_until_complete(_generate_audio())
             loop.close()
             return audio_bytes
-        except Exception:
+        except Exception as e:
+            st.error(f"TTS Error: {e}")
             return None
 
 # ============================================================
