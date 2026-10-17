@@ -11,14 +11,14 @@ import edge_tts
 from openai import OpenAI
 
 # ============================================================
-# KONFIGURASI UTAMA & STATE MANAGEMENT
+# KONFIGURASI UTAMA
 # ============================================================
 st.set_page_config(page_title="J.A.R.V.I.S - Lois Edition", page_icon="🔵", layout="wide")
 
-# Model AI paling cerdas & stabil di Groq saat ini
+# Model AI paling stabil & pintar
 AI_MODEL = "llama-3.3-70b-versatile" 
-VOICE_EN = "en-GB-RyanNeural"    # Suara Pria British
-VOICE_ID = "id-ID-ArdiNeural"    # Suara Pria Indonesia
+VOICE_EN = "en-GB-RyanNeural"    
+VOICE_ID = "id-ID-ArdiNeural"    
 VOICE_RATE = "+0%"    
 VOICE_PITCH = "-4Hz"  
 
@@ -67,12 +67,11 @@ def sanitize_latex(text):
     return text.strip()
 
 # ============================================================
-# ENGINE KOMUNIKASI (STT, LLM, TTS)
+# ENGINE KOMUNIKASI
 # ============================================================
 class JarvisCore:
     def __init__(self, api_key):
         self.api_key = api_key
-        # Timeout tinggi agar AI tidak terputus saat menghitung rumus kompleks
         self.client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1", timeout=60.0) if api_key else None
 
     def transcribe(self, audio_bytes):
@@ -94,8 +93,12 @@ class JarvisCore:
         except Exception as e:
             return f"Error STT: {e}", "error"
 
-    def generate_response(self, user_message, chat_history):
-        if not self.client: return "API Key Groq belum diisi, Tuan Lois.", "error"
+    def generate_stream(self, user_message, chat_history):
+        """Menghasilkan respon secara streaming (kata per kata)"""
+        if not self.client: 
+            yield "API Key Groq belum diisi, Tuan Lois."
+            return
+            
         try:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             messages.extend(chat_history)
@@ -105,12 +108,16 @@ class JarvisCore:
                 model=AI_MODEL, 
                 messages=messages, 
                 temperature=0.5, 
-                max_tokens=600, # Dinaikkan agar penjelasan sains lebih detail
+                max_tokens=600, 
+                stream=True # AKTIFKAN STREAMING
             )
-            raw_text = response.choices[0].message.content.strip()
-            return sanitize_latex(raw_text), "ok"
+            
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                    
         except Exception as e:
-            return f"Error AI: {e}", "error"
+            yield f"Error AI: {e}"
 
     def text_to_speech(self, text):
         try:
@@ -139,30 +146,21 @@ class JarvisCore:
             audio_bytes = loop.run_until_complete(_generate_audio())
             loop.close()
             return audio_bytes
-        except Exception as e:
+        except Exception:
             return None
 
 # ============================================================
-# UI & VISUAL EFFECTS (FUTURISTIC THEME)
+# UI & VISUAL EFFECTS
 # ============================================================
 def inject_custom_css():
     st.markdown("""
     <style>
-        /* Latar Belakang Gelap & Futuristik */
         .stApp { background: radial-gradient(circle at 50% 10%, #001a22 0%, #000000 100%); color: #e0f7fa; font-family: 'Courier New', monospace; }
-        
-        /* Glowing Orb */
         .orb { width: 80px; height: 80px; background: radial-gradient(circle, #00ffff 0%, #005b66 70%, transparent 100%); border-radius: 50%; margin: 0 auto 20px auto; box-shadow: 0 0 30px #00ffff, 0 0 60px #00ffff inset; animation: pulse 2s infinite alternate; }
         @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 20px #00ffff; } 100% { transform: scale(1.05); box-shadow: 0 0 50px #00ffff, 0 0 100px #00ffff inset; } }
-        
-        /* Chat Bubbles */
         [data-testid="stChatMessage"] { background: rgba(0, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 15px; box-shadow: 0 4px 15px rgba(0, 255, 255, 0.1); animation: fadeIn 0.5s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        
-        /* Judul */
         h1 { text-align: center; color: #00ffff; text-shadow: 0 0 15px #00ffff; letter-spacing: 2px; }
-        
-        /* Mic Input */
         [data-testid="stAudioInput"] { filter: drop-shadow(0 0 15px #00ffff); }
     </style>
     """, unsafe_allow_html=True)
@@ -202,7 +200,7 @@ def main():
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Tuan Lois.")
         
         st.divider()
-        st.success("Core: Llama 3.3 70B")
+        st.success("Core: Llama 3.3 70B (Streaming)")
         st.info("Voice: Neural Clean")
         st.info("LaTeX Engine: Active")
         
@@ -211,11 +209,10 @@ def main():
             st.session_state.last_audio_id = None
             st.rerun()
 
-    # --- HEADER DENGAN ORB ANIMASI ---
+    # --- HEADER ---
     st.markdown('<div class="orb"></div>', unsafe_allow_html=True)
     st.markdown("<h1>J A R V I S</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #aaaaaa; font-size: 0.9em;'>Sistem Cerdas Milik Tuan Lois</p>", unsafe_allow_html=True)
-    
     st.divider()
 
     if not api_key:
@@ -242,7 +239,7 @@ def main():
             
             jarvis = JarvisCore(api_key)
             
-            # 1. STT
+            # 1. STT (Mendengarkan)
             with st.spinner("👂 Menganalisis gelombang suara..."):
                 user_text, stt_status = jarvis.transcribe(audio_bytes)
                 
@@ -255,24 +252,27 @@ def main():
                 st.markdown(user_text)
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            # 2. AI PROCESS
+            # 2. AI PROCESS (STREAMING)
             with st.chat_message("assistant", avatar="🤖"):
-                with st.spinner("🧠 Menganalisis hukum alam semesta..."):
-                    history_for_ai = st.session_state.messages[:-1]
-                    ai_text, ai_status = jarvis.generate_response(user_text, history_for_ai)
-                    
-                    if ai_status != "ok":
-                        st.error(ai_text)
-                        return
-                    
-                    # Tampilkan jawaban yang sudah bersih formatnya
-                    st.markdown(ai_text)
+                message_placeholder = st.empty()
+                full_response = ""
+                
+                # Memulai streaming dari AI
+                with st.spinner("🧠 Memproses data..."):
+                    for chunk in jarvis.generate_stream(user_text, st.session_state.messages[:-1]):
+                        full_response += chunk
+                        # Tampilkan kata per kata
+                        message_placeholder.markdown(full_response + "▌")
+                
+                # Setelah selesai, bersihkan format LaTeX dan tampilkan final
+                clean_response = sanitize_latex(full_response)
+                message_placeholder.markdown(clean_response)
             
-            st.session_state.messages.append({"role": "assistant", "content": ai_text})
+            st.session_state.messages.append({"role": "assistant", "content": clean_response})
             
-            # 3. TTS
-            with st.spinner("🔊 Merespon..."):
-                audio_reply = jarvis.text_to_speech(ai_text)
+            # 3. TTS & AUTO-PLAY
+            with st.spinner("🔊 Menyiapkan respon suara..."):
+                audio_reply = jarvis.text_to_speech(clean_response)
                 if audio_reply:
                     play_audio_auto(audio_reply)
 
