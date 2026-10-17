@@ -6,4 +6,3 @@ numpy>=1.24.0
 av>=10.0.0
 groq>=0.11.0
 pillow>=10.0.0
-streamlit-TTS>=0.2.0
