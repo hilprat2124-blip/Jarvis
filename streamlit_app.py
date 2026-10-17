@@ -12,51 +12,73 @@ import time
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="Interactive 3D Hand Tracking", layout="wide")
-st.title("🧊 3D Free View - Hand Tracking (Anti-Lag)")
-st.write("""
+st.set_page_config(
+    page_title="Interactive 3D Hand Tracking",
+    page_icon="🧊",
+    layout="wide"
+)
+
+st.title("🧊 3D Free View - Hand Tracking (Smooth Edition)")
+st.markdown("""
 **Panduan Gestur:**
-- ✋ **Swipe 5 Jari:** Putar objek dengan gaya *Inertia*.
-- ☝️ **Telunjuk Berdiri:** Tahan 1 Detik -> Rotasi.
-- 👆 **Jempol + Telunjuk Pinch:** Tahan 1 Detik -> Geser (Pan).
-- 🤏 **Pinch 3 Jari:** Tahan 1 Detik -> Zoom (Jauhkan Telunjuk/Tengah).
+- ✋ **Swipe 5 Jari** → Putar objek dengan *inertia*
+- ☝️ **Telunjuk Berdiri** (tahan 1 detik) → Mode **Rotasi**
+- 👆 **Jempol + Telunjuk Pinch** (tahan 1 detik) → Mode **Geser (Pan)**
+- 🤏 **Pinch 3 Jari** (tahan 1 detik) → Mode **Zoom**
+
+> 💡 **Tips:** Jaga tangan tetap dalam frame kamera. Pencahayaan cukup membantu akurasi.
 """)
 
 # ============ Konfigurasi WebRTC ============
 RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    {
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {"urls": ["stun:stun1.l.google.com:19302"]},
+        ]
+    }
 )
 
 # ============ Konstanta ============
-PINCH_ENTER = 40     
-PINCH_EXIT = 60      
-HOLD_THRESHOLD = 1.0 
+PINCH_ENTER = 40
+PINCH_EXIT = 60
+HOLD_THRESHOLD = 1.0
 MIN_SCALE, MAX_SCALE = 0.5, 3.0
 ZOOM_SENSITIVITY = 0.01
 MAX_ZOOM_STEP = 0.03
-SMOOTHING_FACTOR = 0.3
 
 THUMB_TIP = 4
 INDEX_TIP = 8
 MIDDLE_TIP = 12
 PINKY_TIP = 20
 
+# Tuning smoothness (ubah di sini jika perlu)
+POS_ALPHA = 0.45       # posisi tangan (kecil = lebih smooth, tapi lebih lag)
+ROT_ALPHA = 0.20       # rotasi display menyusul target
+SCALE_ALPHA = 0.25     # zoom display
+PAN_ALPHA = 0.25       # pan/geser display
+INERTIA_DECAY = 0.93   # makin dekat 1.0 = inertia makin panjang
+
 HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4),        
-    (0, 5), (5, 6), (6, 7), (7, 8),        
-    (5, 9), (9, 10), (10, 11), (11, 12),   
-    (9, 13), (13, 14), (14, 15), (15, 16), 
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
     (13, 17), (17, 18), (18, 19), (19, 20),
-    (0, 17)                                
+    (0, 17)
 ]
 
 # ============ Download Model ============
 MODEL_PATH = "hand_landmarker.task"
-MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/1/hand_landmarker.task"
+)
 
 if not os.path.exists(MODEL_PATH):
-    with st.spinner("Mengunduh model AI..."):
+    with st.spinner("📥 Mengunduh model AI (sekali saja)..."):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    st.success("✅ Model siap!")
 
 
 class Hand3DProcessor(VideoProcessorBase):
@@ -66,89 +88,99 @@ class Hand3DProcessor(VideoProcessorBase):
             base_options=base_options,
             running_mode=vision.RunningMode.VIDEO,
             num_hands=1,
-            # --- MENURUNKAN CONFIDENCE UNTUK GERAKAN CEPAT ---
-            min_hand_detection_confidence=0.3, 
+            min_hand_detection_confidence=0.3,
             min_hand_presence_confidence=0.3,
-            min_tracking_confidence=0.5         
+            min_tracking_confidence=0.5
         )
         self.detector = vision.HandLandmarker.create_from_options(options)
         self.frame_timestamp = 0
-        
-        # State 3D
+
+        # State 3D display
         self.rx, self.ry = 0.5, 0.5
         self.scale = 1.0
-        self.offset_x, self.offset_y = 0, 0
-        
-        # State Inertia
+        self.offset_x, self.offset_y = 0.0, 0.0
+
+        # State 3D target (untuk smoothing)
+        self.target_rx, self.target_ry = 0.5, 0.5
+        self.target_scale = 1.0
+        self.target_offset_x, self.target_offset_y = 0.0, 0.0
+
+        # Inertia
         self.vel_ry = 0.0
         self.vel_rx = 0.0
-        
+
+        # Smoothed positions
+        self.smooth_index = None
+        self.smooth_palm = None
+        self.smooth_mid_pinch = None
+
+        # Gesture state
         self.prev_index_pos = None
         self.zoom_base_index = None
         self.zoom_base_middle = None
-        
-        # State Verifikasi & Anti-Flicker
+
         self.active_mode = None
-        self.candidate_mode = None 
+        self.candidate_mode = None
         self.hold_start_time = 0.0
         self.last_seen_time = 0.0
+
         self.smoothed_dist_index = None
         self.smoothed_dist_middle = None
         self.smoothed_dist_mid_index = None
 
-        # State Swipe 5 Jari
+        # Swipe
         self.prev_palm_pos = None
+        self.swipe_vel_smooth = np.array([0.0, 0.0])
 
-        # Vertex Kubus 3D
+        # Kubus
         self.vertices = np.array([
-            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], 
-            [-1, -1,  1], [1, -1,  1], [1, 1,  1], [-1, 1,  1]  
+            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+            [-1, -1,  1], [1, -1,  1], [1, 1,  1], [-1, 1,  1]
         ], dtype=np.float32)
 
         self.edges = [
-            (0,1), (1,2), (2,3), (3,0), 
-            (4,5), (5,6), (6,7), (7,4), 
-            (0,4), (1,5), (2,6), (3,7)  
+            (0,1), (1,2), (2,3), (3,0),
+            (4,5), (5,6), (6,7), (7,4),
+            (0,4), (1,5), (2,6), (3,7)
         ]
 
+    # ---------- Utility ----------
     def _to_pixel(self, landmark, w, h):
         return int(landmark.x * w), int(landmark.y * h)
 
     def _draw_landmarks(self, img, landmarks, w, h):
-        for connection in HAND_CONNECTIONS:
-            start = self._to_pixel(landmarks[connection[0]], w, h)
-            end = self._to_pixel(landmarks[connection[1]], w, h)
-            cv2.line(img, start, end, (80, 80, 80), 1, cv2.LINE_AA)
+        for a, b in HAND_CONNECTIONS:
+            p1 = self._to_pixel(landmarks[a], w, h)
+            p2 = self._to_pixel(landmarks[b], w, h)
+            cv2.line(img, p1, p2, (80, 80, 80), 1, cv2.LINE_AA)
         for lm in landmarks:
-            px = self._to_pixel(lm, w, h)
-            cv2.circle(img, px, 2, (120, 120, 120), -1, cv2.LINE_AA)
+            cv2.circle(img, self._to_pixel(lm, w, h), 2, (120, 120, 120), -1, cv2.LINE_AA)
 
     def _draw_3d_cube(self, img, cx, cy):
         cos_x, sin_x = np.cos(self.rx), np.sin(self.rx)
         cos_y, sin_y = np.cos(self.ry), np.sin(self.ry)
-        
+
         rot_x = np.array([[1, 0, 0], [0, cos_x, -sin_x], [0, sin_x, cos_x]])
         rot_y = np.array([[cos_y, 0, sin_y], [0, 1, 0], [-sin_y, 0, cos_y]])
-        rot_matrix = np.dot(rot_y, rot_x)
-        transformed = np.dot(self.vertices, rot_matrix.T)
-        
+        rot_matrix = rot_y @ rot_x
+        transformed = self.vertices @ rot_matrix.T
+
         pts_2d = []
         fov = 4.0
         for v in transformed:
             v_scaled = v * self.scale
             z = v_scaled[2] + fov
-            if z <= 0.1: z = 0.1
-            
-            px = int((v_scaled[0] / z) * 150) + cx + self.offset_x
-            py = int((v_scaled[1] / z) * 150) + cy + self.offset_y
+            if z <= 0.1:
+                z = 0.1
+            px = int((v_scaled[0] / z) * 150) + cx + int(self.offset_x)
+            py = int((v_scaled[1] / z) * 150) + cy + int(self.offset_y)
             pts_2d.append((px, py, v_scaled[2]))
 
-        for edge in self.edges:
-            p1, p2 = pts_2d[edge[0]], pts_2d[edge[1]]
-            depth_avg = (p1[2] + p2[2]) / 2
-            intensity = np.clip(1.0 - (depth_avg / 2.0), 0.2, 1.0)
+        for a, b in self.edges:
+            p1, p2 = pts_2d[a], pts_2d[b]
+            depth = (p1[2] + p2[2]) / 2
+            intensity = float(np.clip(1.0 - depth / 2.0, 0.2, 1.0))
             color = (int(255 * intensity), int(255 * intensity), 0)
-            
             cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), color, 6, cv2.LINE_AA)
             cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), (255, 255, 255), 1, cv2.LINE_AA)
 
@@ -156,26 +188,45 @@ class Hand3DProcessor(VideoProcessorBase):
             cv2.circle(img, (p[0], p[1]), 3, (0, 0, 255), -1, cv2.LINE_AA)
 
     def _draw_progress_ring(self, img, center, progress, color):
-        cv2.ellipse(img, center, (25, 25), -90, 0, int(360 * min(progress, 1.0)), color, 4, cv2.LINE_AA)
+        cv2.ellipse(
+            img, center, (25, 25), -90, 0,
+            int(360 * min(progress, 1.0)), color, 4, cv2.LINE_AA
+        )
 
-    def _smooth(self, new_val, old_val, alpha=SMOOTHING_FACTOR):
+    @staticmethod
+    def _smooth(new_val, old_val, alpha):
         if old_val is None:
             return new_val
-        return (alpha * new_val) + ((1 - alpha) * old_val)
+        return alpha * new_val + (1 - alpha) * old_val
 
+    @staticmethod
+    def _smooth_pt(new_pt, old_pt, alpha):
+        if old_pt is None:
+            return new_pt
+        return (
+            int(alpha * new_pt[0] + (1 - alpha) * old_pt[0]),
+            int(alpha * new_pt[1] + (1 - alpha) * old_pt[1]),
+        )
+
+    @staticmethod
+    def _deadzone(delta, threshold):
+        if abs(delta) < threshold:
+            return 0.0
+        return delta - np.sign(delta) * threshold
+
+    # ---------- Frame loop ----------
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)  
+        img = cv2.flip(img, 1)
         h, w, _ = img.shape
 
-        # --- TRIK MOTION BLUR REDUCTION (SHARPENING) ---
-        # Menajamkan gambar agar AI lebih mudah melacak tangan yang blur
-        gaussian = cv2.GaussianBlur(img, (0, 0), 3.0)
-        img_sharp = cv2.addWeighted(img, 1.5, gaussian, -0.5, 0)
+        # Sharpening ringan
+        gaussian = cv2.GaussianBlur(img, (0, 0), 2.0)
+        img_sharp = cv2.addWeighted(img, 1.3, gaussian, -0.3, 0)
 
         img_rgb = cv2.cvtColor(img_sharp, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-        
+
         self.frame_timestamp += 1
         results = self.detector.detect_for_video(mp_image, self.frame_timestamp)
 
@@ -183,214 +234,279 @@ class Hand3DProcessor(VideoProcessorBase):
         color_text = (200, 200, 200)
         current_time = time.time()
 
-        # --- APPLY INERTIA ---
-        self.ry += self.vel_ry
-        self.rx += self.vel_rx
-        self.vel_ry *= 0.95
-        self.vel_rx *= 0.95
-        if abs(self.vel_ry) < 0.001: self.vel_ry = 0.0
-        if abs(self.vel_rx) < 0.001: self.vel_rx = 0.0
+        # ---- Inertia ke target ----
+        self.target_ry += self.vel_ry
+        self.target_rx += self.vel_rx
+        self.vel_ry *= INERTIA_DECAY
+        self.vel_rx *= INERTIA_DECAY
+        if abs(self.vel_ry) < 0.0015:
+            self.vel_ry = 0.0
+        if abs(self.vel_rx) < 0.0015:
+            self.vel_rx = 0.0
 
-        # --- TIMEOUT TOLERANSI (Mencegah hilang) ---
+        # ---- Smooth display ----
+        self.ry = self._smooth(self.target_ry, self.ry, ROT_ALPHA)
+        self.rx = self._smooth(self.target_rx, self.rx, ROT_ALPHA)
+        self.scale = self._smooth(self.target_scale, self.scale, SCALE_ALPHA)
+        self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_ALPHA)
+        self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_ALPHA)
+
+        # ---- Timeout reset ----
         hand_detected = False
         if results.hand_landmarks:
             hand_detected = True
             self.last_seen_time = current_time
         else:
-            if current_time - self.last_seen_time > 0.4: # Ditingkatkan jadi 0.4 detik
+            if current_time - self.last_seen_time > 0.4:
                 self.active_mode = None
                 self.candidate_mode = None
                 self.prev_palm_pos = None
                 self.prev_index_pos = None
+                self.smooth_palm = None
+                self.smooth_index = None
+                self.smooth_mid_pinch = None
                 self.smoothed_dist_index = None
                 self.smoothed_dist_middle = None
                 self.smoothed_dist_mid_index = None
+                self.zoom_base_index = None
+                self.zoom_base_middle = None
 
         if hand_detected:
-            hand_landmarks = results.hand_landmarks[0]
-            self._draw_landmarks(img, hand_landmarks, w, h)
+            lm = results.hand_landmarks[0]
+            self._draw_landmarks(img, lm, w, h)
 
-            thumb = self._to_pixel(hand_landmarks[THUMB_TIP], w, h)
-            index = self._to_pixel(hand_landmarks[INDEX_TIP], w, h)
-            middle = self._to_pixel(hand_landmarks[MIDDLE_TIP], w, h)
-            pinky = self._to_pixel(hand_landmarks[PINKY_TIP], w, h)
-            
-            wrist = self._to_pixel(hand_landmarks[0], w, h)
+            thumb = self._to_pixel(lm[THUMB_TIP], w, h)
+            index = self._to_pixel(lm[INDEX_TIP], w, h)
+            middle = self._to_pixel(lm[MIDDLE_TIP], w, h)
+            pinky = self._to_pixel(lm[PINKY_TIP], w, h)
+            wrist = self._to_pixel(lm[0], w, h)
             palm_center = ((wrist[0] + middle[0]) // 2, (wrist[1] + middle[1]) // 2)
 
-            raw_dist_index = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
-            raw_dist_middle = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
-            raw_dist_mid_index = float(np.hypot(middle[0] - index[0], middle[1] - index[1]))
+            # Smooth posisi
+            self.smooth_index = self._smooth_pt(index, self.smooth_index, POS_ALPHA)
+            self.smooth_palm = self._smooth_pt(palm_center, self.smooth_palm, POS_ALPHA)
+            index_s = self.smooth_index
+            palm_s = self.smooth_palm
 
-            self.smoothed_dist_index = self._smooth(raw_dist_index, self.smoothed_dist_index)
-            self.smoothed_dist_middle = self._smooth(raw_dist_middle, self.smoothed_dist_middle)
-            self.smoothed_dist_mid_index = self._smooth(raw_dist_mid_index, self.smoothed_dist_mid_index)
+            # Jarak antar ujung jari
+            raw_di = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
+            raw_dm = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
+            raw_dmi = float(np.hypot(middle[0] - index[0], middle[1] - index[1]))
 
-            dist_index = self.smoothed_dist_index
-            dist_middle = self.smoothed_dist_middle
-            dist_mid_index = self.smoothed_dist_mid_index
+            self.smoothed_dist_index = self._smooth(raw_di, self.smoothed_dist_index, 0.5)
+            self.smoothed_dist_middle = self._smooth(raw_dm, self.smoothed_dist_middle, 0.5)
+            self.smoothed_dist_mid_index = self._smooth(raw_dmi, self.smoothed_dist_mid_index, 0.5)
 
-            # ==========================================
-            # DETEKSI 5 JARI (SWIPE INERTIA)
-            # ==========================================
+            d_index = self.smoothed_dist_index
+            d_middle = self.smoothed_dist_middle
+            d_mid_index = self.smoothed_dist_mid_index
+
+            # ---- Deteksi 5 jari ----
             index_up = index[1] < wrist[1]
             middle_up = middle[1] < wrist[1]
             pinky_up = pinky[1] < wrist[1]
             thumb_up = thumb[1] < wrist[1] - 20
-            
-            is_5_fingers = index_up and middle_up and pinky_up and thumb_up and (dist_index > 60) and (dist_middle > 60)
-            
+            is_5_fingers = (
+                index_up and middle_up and pinky_up and thumb_up
+                and d_index > 60 and d_middle > 60
+            )
+
             if is_5_fingers:
                 if self.prev_palm_pos is not None:
-                    dx = palm_center[0] - self.prev_palm_pos[0]
-                    dy = palm_center[1] - self.prev_palm_pos[1]
-                    if abs(dx) > 10 or abs(dy) > 10:
-                        self.vel_ry += dx * 0.015
-                        self.vel_rx += dy * 0.015
+                    dx = self._deadzone(palm_s[0] - self.prev_palm_pos[0], 3.0)
+                    dy = self._deadzone(palm_s[1] - self.prev_palm_pos[1], 3.0)
+
+                    self.swipe_vel_smooth[0] = 0.7 * self.swipe_vel_smooth[0] + 0.3 * (dx * 0.012)
+                    self.swipe_vel_smooth[1] = 0.7 * self.swipe_vel_smooth[1] + 0.3 * (dy * 0.012)
+
+                    if abs(dx) > 3 or abs(dy) > 3:
+                        self.vel_ry += self.swipe_vel_smooth[0]
+                        self.vel_rx += self.swipe_vel_smooth[1]
                         mode_text = "SWIPE INERTIA!"
                         color_text = (0, 255, 255)
-                self.prev_palm_pos = palm_center
+
+                self.prev_palm_pos = palm_s
                 self.candidate_mode = None
                 self.active_mode = None
             else:
                 self.prev_palm_pos = None
 
-            # ==========================================
-            # DETEKSI GESTUR (HYSTERESIS)
-            # ==========================================
-            detected_gesture = None
-            
+            # ---- Deteksi gesture ----
+            detected = None
             if not is_5_fingers:
-                thresh_index = PINCH_EXIT if self.active_mode == "PAN" else PINCH_ENTER
-                thresh_zoom = PINCH_EXIT if self.active_mode == "ZOOM" else PINCH_ENTER
+                th_i = PINCH_EXIT if self.active_mode == "PAN" else PINCH_ENTER
+                th_z = PINCH_EXIT if self.active_mode == "ZOOM" else PINCH_ENTER
 
-                if dist_index < thresh_zoom and dist_middle < thresh_zoom and dist_mid_index < thresh_zoom + 20:
-                    detected_gesture = "ZOOM"
-                elif dist_index < thresh_index and dist_middle > thresh_index + 20:
-                    detected_gesture = "PAN"
-                elif index[1] < thumb[1] and middle[1] > thumb[1] and dist_index > thresh_index:
-                    detected_gesture = "ROTASI"
+                if d_index < th_z and d_middle < th_z and d_mid_index < th_z + 20:
+                    detected = "ZOOM"
+                elif d_index < th_i and d_middle > th_i + 20:
+                    detected = "PAN"
+                elif index[1] < thumb[1] and middle[1] > thumb[1] and d_index > th_i:
+                    detected = "ROTASI"
 
-            # ==========================================
-            # VERIFIKASI TAHAN 1 DETIK
-            # ==========================================
-            if self.active_mode is None and detected_gesture:
-                if self.candidate_mode != detected_gesture:
-                    self.candidate_mode = detected_gesture
+            # ---- Hold verification ----
+            if self.active_mode is None and detected:
+                if self.candidate_mode != detected:
+                    self.candidate_mode = detected
                     self.hold_start_time = current_time
-                
+
                 progress = (current_time - self.hold_start_time) / HOLD_THRESHOLD
-                
+
                 if progress >= 1.0:
-                    self.active_mode = detected_gesture
+                    self.active_mode = detected
                     self.vel_ry = 0.0
                     self.vel_rx = 0.0
+                    self.target_rx = self.rx
+                    self.target_ry = self.ry
                     if self.active_mode == "ZOOM":
-                        self.zoom_base_index = dist_index
-                        self.zoom_base_middle = dist_middle
+                        self.zoom_base_index = d_index
+                        self.zoom_base_middle = d_middle
                     self.prev_index_pos = None
+                    self.smooth_mid_pinch = None
                 else:
                     mid_pinch = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
-                    ring_color = (255, 165, 0) if detected_gesture == "ZOOM" else ((0, 0, 255) if detected_gesture == "PAN" else (0, 255, 0))
+                    ring_color = (
+                        (255, 165, 0) if detected == "ZOOM"
+                        else (0, 0, 255) if detected == "PAN"
+                        else (0, 255, 0)
+                    )
                     self._draw_progress_ring(img, mid_pinch, progress, ring_color)
-                    mode_text = f"VERIFIKASI: {detected_gesture}"
+                    mode_text = f"VERIFIKASI: {detected}"
                     color_text = ring_color
-            elif self.active_mode is None and not detected_gesture and not is_5_fingers:
+            elif self.active_mode is None and not detected and not is_5_fingers:
                 self.candidate_mode = None
                 self.hold_start_time = 0.0
 
-            # ==========================================
-            # EKSEKUSI MODE
-            # ==========================================
+            # ---- Eksekusi ----
             if self.active_mode == "ROTASI":
                 mode_text = "MODE: ROTASI"
                 color_text = (0, 255, 0)
-                
                 if self.prev_index_pos is not None:
-                    dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20)
-                    dy = np.clip(index[1] - self.prev_index_pos[1], -20, 20)
-                    self.ry += dx * 0.010
-                    self.rx += dy * 0.010
-                self.prev_index_pos = index
-                
-                if detected_gesture != "ROTASI":
+                    dx = self._deadzone(index_s[0] - self.prev_index_pos[0], 2.0)
+                    dy = self._deadzone(index_s[1] - self.prev_index_pos[1], 2.0)
+                    dx = np.clip(dx, -20, 20)
+                    dy = np.clip(dy, -20, 20)
+                    self.target_ry += dx * 0.010
+                    self.target_rx += dy * 0.010
+                self.prev_index_pos = index_s
+                if detected != "ROTASI":
                     self.active_mode = None
+                    self.prev_index_pos = None
 
             elif self.active_mode == "PAN":
                 mode_text = "MODE: GESER"
                 color_text = (0, 0, 255)
-                
                 mid = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
+                self.smooth_mid_pinch = self._smooth_pt(mid, self.smooth_mid_pinch, POS_ALPHA)
+                mid_s = self.smooth_mid_pinch
                 if self.prev_index_pos is not None:
-                    dx = np.clip(mid[0] - self.prev_index_pos[0], -20, 20)
-                    dy = np.clip(mid[1] - self.prev_index_pos[1], -20, 20)
-                    self.offset_x += dx
-                    self.offset_y += dy
-                self.prev_index_pos = mid
-                
-                if detected_gesture != "PAN":
+                    dx = self._deadzone(mid_s[0] - self.prev_index_pos[0], 1.5)
+                    dy = self._deadzone(mid_s[1] - self.prev_index_pos[1], 1.5)
+                    dx = np.clip(dx, -20, 20)
+                    dy = np.clip(dy, -20, 20)
+                    self.target_offset_x += dx
+                    self.target_offset_y += dy
+                self.prev_index_pos = mid_s
+                if detected != "PAN":
                     self.active_mode = None
+                    self.prev_index_pos = None
 
             elif self.active_mode == "ZOOM":
-                if dist_index < PINCH_EXIT and dist_middle < PINCH_EXIT:
-                    self.zoom_base_index = dist_index
-                    self.zoom_base_middle = dist_middle
+                if d_index < PINCH_EXIT and d_middle < PINCH_EXIT:
+                    self.zoom_base_index = d_index
+                    self.zoom_base_middle = d_middle
                     mode_text = "ZOOM: PILIH JARI"
                     color_text = (255, 165, 0)
                 else:
-                    if dist_index > PINCH_ENTER + 15 and dist_middle < PINCH_EXIT:
+                    if d_index > PINCH_ENTER + 15 and d_middle < PINCH_EXIT:
                         mode_text = "ZOOM IN (Telunjuk Jauh)"
                         color_text = (0, 255, 255)
                         if self.zoom_base_index is not None:
-                            delta = dist_index - self.zoom_base_index
+                            delta = d_index - self.zoom_base_index
                             if delta > 0:
-                                scale_change = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
-                                self.scale = np.clip(self.scale + scale_change, MIN_SCALE, MAX_SCALE)
-                                self.zoom_base_index = dist_index
-                    
-                    elif dist_middle > PINCH_ENTER + 15 and dist_index < PINCH_EXIT:
+                                sc = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
+                                self.target_scale = np.clip(self.target_scale + sc, MIN_SCALE, MAX_SCALE)
+                                self.zoom_base_index = d_index
+                    elif d_middle > PINCH_ENTER + 15 and d_index < PINCH_EXIT:
                         mode_text = "ZOOM OUT (Jari Tengah Jauh)"
                         color_text = (255, 0, 255)
                         if self.zoom_base_middle is not None:
-                            delta = dist_middle - self.zoom_base_middle
+                            delta = d_middle - self.zoom_base_middle
                             if delta > 0:
-                                scale_change = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
-                                self.scale = np.clip(self.scale - scale_change, MIN_SCALE, MAX_SCALE)
-                                self.zoom_base_middle = dist_middle
+                                sc = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
+                                self.target_scale = np.clip(self.target_scale - sc, MIN_SCALE, MAX_SCALE)
+                                self.zoom_base_middle = d_middle
 
-                if dist_index > PINCH_EXIT + 30 and dist_middle > PINCH_EXIT + 30:
+                if d_index > PINCH_EXIT + 30 and d_middle > PINCH_EXIT + 30:
                     self.active_mode = None
                     self.zoom_base_index = None
                     self.zoom_base_middle = None
 
             # Indikator titik
             cv2.circle(img, thumb, 5, color_text, -1)
-            cv2.circle(img, index, 5, color_text, -1)
+            cv2.circle(img, index_s, 5, color_text, -1)
             cv2.circle(img, middle, 5, color_text, -1)
             if is_5_fingers:
-                cv2.circle(img, palm_center, 10, (0, 255, 255), -1)
+                cv2.circle(img, palm_s, 10, (0, 255, 255), -1)
 
-        # --- RENDER 3D ---
+        # ---- Render 3D ----
         cx, cy = w // 2, h // 2
         self._draw_3d_cube(img, cx, cy)
 
-        # --- UI INDIKATOR ---
-        cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
-        cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(img, mode_text, (20, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
+        cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
     def __del__(self):
         try:
             self.detector.close()
-        except:
+        except Exception:
             pass
 
+
 # ============ Streamlit WebRTC ============
-webrtc_streamer(
-    key="hand-3d-tracker",
-    video_processor_factory=Hand3DProcessor,
-    rtc_configuration=RTC_CONFIGURATION,
-    media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
-    async_processing=True,
-)
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.subheader("📹 Kamera")
+    ctx = webrtc_streamer(
+        key="hand-3d-tracker-smooth",
+        video_processor_factory=Hand3DProcessor,
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints={
+            "video": {"width": 640, "height": 480},
+            "audio": False,
+        },
+        async_processing=True,
+    )
+
+with col2:
+    st.subheader("ℹ️ Status")
+    if ctx.state.playing:
+        st.success("🟢 Kamera aktif")
+    else:
+        st.info("⚪ Klik **START** untuk mulai")
+
+    st.markdown("---")
+    st.markdown("""
+    **Gesture Guide**
+
+    | Gesture | Fungsi |
+    |---|---|
+    | ✋ Swipe 5 jari | Rotasi + inertia |
+    | ☝️ Telunjuk tahan | Rotasi manual |
+    | 👆 Pinch jempol-telunjuk | Geser (pan) |
+    | 🤏 Pinch 3 jari | Zoom |
+
+    **Tuning smoothness:**
+    Edit konstanta `POS_ALPHA`, `ROT_ALPHA`, `INERTIA_DECAY` di bagian atas file.
+    - `POS_ALPHA` kecil → lebih smooth (lag)
+    - `ROT_ALPHA` kecil → transisi halus
+    - `INERTIA_DECAY` → 1.0 = inertia panjang
+    """)
+
+st.markdown("---")
+st.caption("💡 Gunakan Chrome/Edge/Firefox terbaru. Izinkan akses kamera saat diminta.")
