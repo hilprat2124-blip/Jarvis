@@ -7,6 +7,7 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import urllib.request
 import os
+import time
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
@@ -14,11 +15,10 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 st.set_page_config(page_title="Interactive 3D Hand Tracking", layout="wide")
 st.title("🧊 3D Free View - Hand Tracking")
 st.write("""
-**Panduan Gestur (Bebas Bentrok):**
-- ☝️ **Telunjuk Berdiri:** Putar objek (Free View).
-- 🤏 **Pinch (Jempol+Telunjuk) lalu Geser:** Geser objek (Pan).
-- 👆 **Jempol + Telunjuk:** Mulai dari Pinch, lalu jauhkan **Telunjuk** untuk **ZOOM IN**.
-- 🖕 **Jempol + Jari Tengah:** Mulai dari Pinch, lalu jauhkan **Jari Tengah** untuk **ZOOM OUT**.
+**Panduan Gestur (Tahan 1 Detik untuk Verifikasi):**
+- ☝️ **Telunjuk Berdiri:** Tahan 1 Detik -> Putar objek (Rotasi).
+- 👆 **Jempol + Telunjuk Pinch:** Tahan 1 Detik -> Geser objek (Pan).
+- 🤏 **Pinch 3 Jari (Jempol+Telunjuk+Tengah):** Tahan 1 Detik -> Jauhkan jari untuk **ZOOM IN / OUT**.
 """)
 
 # ============ Konfigurasi WebRTC ============
@@ -27,7 +27,8 @@ RTC_CONFIGURATION = RTCConfiguration(
 )
 
 # ============ Konstanta ============
-PINCH_THRESHOLD = 40      
+PINCH_THRESHOLD = 45      
+HOLD_THRESHOLD = 1.0      # Waktu tahan verifikasi (1 detik)
 MIN_SCALE, MAX_SCALE = 0.5, 3.0
 ZOOM_SENSITIVITY = 0.01
 MAX_ZOOM_STEP = 0.03
@@ -74,8 +75,12 @@ class Hand3DProcessor(VideoProcessorBase):
         self.offset_x, self.offset_y = 0, 0
         
         self.prev_index_pos = None
-        self.prev_zoom_dist = None
-        self.zoom_mode = None # "IN" atau "OUT"
+        self.zoom_base_dist = None
+        
+        # State Verifikasi (Hold)
+        self.active_mode = None    # "ZOOM_IN", "ZOOM_OUT", "PAN", "ROTASI"
+        self.candidate_mode = None 
+        self.hold_start_time = 0.0
 
         # Vertex Kubus 3D
         self.vertices = np.array([
@@ -133,6 +138,9 @@ class Hand3DProcessor(VideoProcessorBase):
         for p in pts_2d:
             cv2.circle(img, (p[0], p[1]), 3, (0, 0, 255), -1, cv2.LINE_AA)
 
+    def _draw_progress_ring(self, img, center, progress, color):
+        cv2.ellipse(img, center, (25, 25), -90, 0, int(360 * min(progress, 1.0)), color, 4, cv2.LINE_AA)
+
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)  
@@ -146,6 +154,7 @@ class Hand3DProcessor(VideoProcessorBase):
 
         mode_text = "MODE: SIAP"
         color_text = (200, 200, 200)
+        current_time = time.time()
 
         if results.hand_landmarks:
             hand_landmarks = results.hand_landmarks[0]
@@ -155,49 +164,64 @@ class Hand3DProcessor(VideoProcessorBase):
             index = self._to_pixel(hand_landmarks[INDEX_TIP], w, h)
             middle = self._to_pixel(hand_landmarks[MIDDLE_TIP], w, h)
 
-            # Deteksi jarak
-            dist_pinch_index = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
-            dist_pinch_middle = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
+            dist_index = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
+            dist_middle = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
+            dist_mid_index = float(np.hypot(middle[0] - index[0], middle[1] - index[1]))
 
             # ==========================================
-            # MODE SELECTION & LOGIKA
+            # 1. DETEKSI KANDIDAT GESTUR (Fase Verifikasi)
             # ==========================================
+            detected_gesture = None
+            
+            # Cek Pinch 3 Jari (Zoom)
+            if dist_index < PINCH_THRESHOLD and dist_middle < PINCH_THRESHOLD and dist_mid_index < PINCH_THRESHOLD + 20:
+                detected_gesture = "ZOOM"
+            # Cek Pinch 2 Jari (Pan)
+            elif dist_index < PINCH_THRESHOLD and dist_middle > PINCH_THRESHOLD + 20:
+                detected_gesture = "PAN"
+            # Cek Telunjuk Berdiri (Rotasi)
+            elif index[1] < thumb[1] and middle[1] > thumb[1] and dist_index > PINCH_THRESHOLD:
+                detected_gesture = "ROTASI"
 
-            # 1. MODE ZOOM IN (Jempol + Telunjuk mulai dari pinch, lalu menjauh)
-            if dist_pinch_index < PINCH_THRESHOLD and dist_pinch_middle > PINCH_THRESHOLD + 20:
-                self.zoom_mode = "IN"
-                
-            # 2. MODE ZOOM OUT (Jempol + Jari Tengah mulai dari pinch, lalu menjauh)
-            elif dist_pinch_middle < PINCH_THRESHOLD and dist_pinch_index > PINCH_THRESHOLD + 20:
-                self.zoom_mode = "OUT"
+            # ==========================================
+            # 2. LOGIKA VERIFIKASI TAHAN 1 DETIK
+            # ==========================================
+            if self.active_mode is None:
+                if detected_gesture:
+                    if self.candidate_mode != detected_gesture:
+                        self.candidate_mode = detected_gesture
+                        self.hold_start_time = current_time
+                    
+                    progress = (current_time - self.hold_start_time) / HOLD_THRESHOLD
+                    
+                    if progress >= 1.0:
+                        # Mode Terverifikasi! (Kunci aktif)
+                        if detected_gesture == "ZOOM":
+                            self.active_mode = "ZOOM_IN"  # Default zoom in
+                        else:
+                            self.active_mode = detected_gesture
+                        
+                        # Simpan jarak awal sebagai referensi
+                        if self.active_mode == "ZOOM_IN":
+                            self.zoom_base_dist = dist_index
+                        self.prev_index_pos = None
+                    else:
+                        # Loading Ring
+                        mid_pinch = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
+                        ring_color = (255, 165, 0) if detected_gesture == "ZOOM" else ((0, 0, 255) if detected_gesture == "PAN" else (0, 255, 0))
+                        self._draw_progress_ring(img, mid_pinch, progress, ring_color)
+                        mode_text = f"VERIFIKASI: {detected_gesture}"
+                        color_text = ring_color
+                else:
+                    self.candidate_mode = None
+                    self.hold_start_time = 0.0
 
-            # Eksekusi Zoom
-            if self.zoom_mode == "IN":
-                mode_text = "MODE: ZOOM IN"
-                color_text = (0, 255, 255)
-                if self.prev_zoom_dist is not None:
-                    delta = dist_pinch_index - self.prev_zoom_dist
-                    if delta > 0: # Menjauh
-                        scale_change = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
-                        self.scale = np.clip(self.scale + scale_change, MIN_SCALE, MAX_SCALE)
-                self.prev_zoom_dist = dist_pinch_index
-
-            elif self.zoom_mode == "OUT":
-                mode_text = "MODE: ZOOM OUT"
-                color_text = (255, 0, 255)
-                if self.prev_zoom_dist is not None:
-                    delta = dist_pinch_middle - self.prev_zoom_dist
-                    if delta > 0: # Menjauh
-                        scale_change = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
-                        self.scale = np.clip(self.scale - scale_change, MIN_SCALE, MAX_SCALE)
-                self.prev_zoom_dist = dist_pinch_middle
-
-            # 3. MODE ROTASI (Telunjuk berdiri sendiri, jari lain mengepal)
-            elif index[1] < thumb[1] and middle[1] > thumb[1] and dist_pinch_index > PINCH_THRESHOLD:
+            # ==========================================
+            # 3. EKSEKUSI MODE AKTIF
+            # ==========================================
+            if self.active_mode == "ROTASI":
                 mode_text = "MODE: ROTASI"
                 color_text = (0, 255, 0)
-                self.zoom_mode = None
-                self.prev_zoom_dist = None
                 
                 if self.prev_index_pos is not None:
                     dx = np.clip(index[0] - self.prev_index_pos[0], -20, 20)
@@ -205,13 +229,14 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.ry += dx * 0.015
                     self.rx += dy * 0.015
                 self.prev_index_pos = index
+                
+                # Keluar jika gestur tidak lagi rotasi
+                if detected_gesture != "ROTASI":
+                    self.active_mode = None
 
-            # 4. MODE PAN / GESER (Pinch stabil tanpa menjauh)
-            elif dist_pinch_index < PINCH_THRESHOLD:
+            elif self.active_mode == "PAN":
                 mode_text = "MODE: GESER"
                 color_text = (0, 0, 255)
-                self.zoom_mode = None
-                self.prev_zoom_dist = None
                 
                 mid = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
                 if self.prev_index_pos is not None:
@@ -220,12 +245,41 @@ class Hand3DProcessor(VideoProcessorBase):
                     self.offset_x += dx
                     self.offset_y += dy
                 self.prev_index_pos = mid
+                
+                if detected_gesture != "PAN":
+                    self.active_mode = None
 
-            else:
-                # Jika tidak ada gestur yang cocok, reset state
-                self.zoom_mode = None
-                self.prev_zoom_dist = None
-                self.prev_index_pos = None
+            elif self.active_mode in ["ZOOM_IN", "ZOOM_OUT"]:
+                mode_text = f"MODE: {self.active_mode}"
+                color_text = (255, 165, 0)
+                
+                if self.zoom_base_dist is not None:
+                    # Hitung selisih jarak
+                    delta = dist_index - self.zoom_base_dist
+                    
+                    # Jika jari menjauh (delta > 10)
+                    if delta > 10:
+                        scale_change = np.clip(delta * 0.005, 0, MAX_ZOOM_STEP)
+                        if self.active_mode == "ZOOM_IN":
+                            self.scale = np.clip(self.scale + scale_change, MIN_SCALE, MAX_SCALE)
+                        else:
+                            self.scale = np.clip(self.scale - scale_change, MIN_SCALE, MAX_SCALE)
+                        self.zoom_base_dist = dist_index # Update base agar kontinyu
+                    
+                    # Jika jari mengecil/mendekat secara signifikan (menutup jari), keluar mode
+                    if delta < -15:
+                        self.active_mode = None
+                        self.zoom_base_dist = None
+                
+                # Toggle Zoom In <-> Zoom Out dengan mengepal (kembali ke pinch 3 jari)
+                if detected_gesture == "ZOOM":
+                    # Jika pengguna kembali mengepal (pinch 3 jari), switch mode
+                    if self.active_mode == "ZOOM_IN":
+                        self.active_mode = "ZOOM_OUT"
+                    else:
+                        self.active_mode = "ZOOM_IN"
+                    self.zoom_base_dist = dist_index
+                    time.sleep(0.3) # Jeda kecil agar tidak nge-loop
 
             # Indikator titik
             cv2.circle(img, thumb, 5, color_text, -1)
