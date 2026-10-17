@@ -15,9 +15,8 @@ from openai import OpenAI
 # ============================================================
 st.set_page_config(page_title="Jarvis - Omniscient", page_icon="🧠", layout="wide")
 
-# Model AI Paling Pintar di Groq (Llama 3.3 70B atau DeepSeek R1)
-# Llama 3.3 70B sangat jenius untuk sejarah, geopolitik, dan sains.
-AI_MODEL = "llama-3.3-70b-versatile" 
+# Model Groq terbaru yang gratis dan masih aktif (pengganti llama-3.3-70b)
+AI_MODEL = "openai/gpt-oss-120b"
 
 VOICE_EN = "en-GB-RyanNeural"   
 VOICE_ID = "id-ID-ArdiNeural"   
@@ -89,7 +88,7 @@ def get_ai_response(user_message, chat_history, api_key):
         response = client.chat.completions.create(
             model=AI_MODEL, 
             messages=messages, 
-            temperature=0.5, # Rendah agar jawaban sangat akurat dan logis
+            temperature=0.5,
             max_tokens=500,
         )
         return response.choices[0].message.content.strip(), "ok"
@@ -97,7 +96,7 @@ def get_ai_response(user_message, chat_history, api_key):
         return f"Error AI: {e}", "error"
 
 # ============================================================
-# TTS ENGINE (Suara Halus & Clean)
+# TTS ENGINE
 # ============================================================
 def detect_language(text):
     text_lower = text.lower()
@@ -109,7 +108,6 @@ def detect_language(text):
 
 def text_to_speech(text):
     try:
-        # Bersihkan format LaTeX agar tidak dibaca jadi "dollar text kg dollar"
         clean_text = re.sub(r'\$\$.*?\$\$', ' rumus matematika ', text, flags=re.DOTALL)
         clean_text = re.sub(r'\$.*?\$', ' rumus matematika ', clean_text)
         clean_text = clean_text.replace('\\', '').replace('{', '').replace('}', '')
@@ -135,16 +133,14 @@ def text_to_speech(text):
         return None, "id"
 
 # ============================================================
-# 🔥 RENDERER MATEMATIKA (KATEX JS - ANTI ERROR)
+# RENDERER KATEX
 # ============================================================
 def render_chat_message(role, content):
-    """Merender chat bubble dengan KaTeX (jauh lebih kuat dari bawaan Streamlit)"""
     if role == "user":
         with st.chat_message("user", avatar="🧑‍✈️"):
             st.markdown(content)
     else:
         with st.chat_message("assistant", avatar="🧠"):
-            # Kita gunakan KaTeX dari CDN untuk merender teks
             html_content = f"""
             <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
             <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
@@ -185,7 +181,6 @@ def play_audio_auto(audio_bytes):
 # MAIN APP & FUTURISTIC UI
 # ============================================================
 def main():
-    # CSS Futuristik
     st.markdown("""
     <style>
         .stApp { background: radial-gradient(circle at 50% 0%, #001a22 0%, #000000 100%); color: #d1f4f9; font-family: 'Courier New', monospace; }
@@ -209,7 +204,7 @@ def main():
         if not api_key: st.warning("⚠️ API Key dibutuhkan, Tuan Lois.")
         
         st.divider()
-        st.success("Core: Omniscient (Llama 3.3)")
+        st.success("Core: Omniscient (GPT-OSS 120B)")
         st.caption("Render: KaTeX Anti-Error")
         st.caption("Voice: Neural Clean")
         
@@ -248,7 +243,6 @@ def main():
             st.session_state.last_audio_id = current_id
             audio_bytes = audio_value.read()
             
-            # 1. STT
             with st.spinner("👂 Menganalisis gelombang suara..."):
                 user_text, stt_status = transcribe_audio(audio_bytes)
                 
@@ -258,7 +252,6 @@ def main():
 
             st.session_state.messages.append({"role": "user", "content": user_text})
             
-            # 2. AI
             with st.spinner("🧠 Mengakses seluruh pengetahuan alam semesta..."):
                 history_for_ai = st.session_state.messages[:-1]
                 ai_text, ai_status = get_ai_response(user_text, history_for_ai, api_key)
@@ -269,13 +262,12 @@ def main():
 
             st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
-            # 3. TTS & AUTO-PLAY
             with st.spinner("🔊 Merespon..."):
                 audio_reply, _ = text_to_speech(ai_text)
                 if audio_reply:
                     play_audio_auto(audio_reply)
             
-            st.rerun() # Rerun agar bubble chat baru langsung dirender oleh KaTeX
+            st.rerun()
 
 if __name__ == "__main__":
     main()
