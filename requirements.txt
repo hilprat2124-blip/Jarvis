@@ -8,3 +8,4 @@ openai
 edge-tts
 requests
 numpy
+groq
