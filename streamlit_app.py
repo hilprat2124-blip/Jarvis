@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Controlled Clean Spread-Out Wave)
+# JARVIS QUANTUM DOTS (Exact Dual-Layer Wavy Rings)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -726,7 +726,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let targetEnvelopeScale = 1.0;
             
             const coreParticles = [];
-            for (let i = 0; i < 30; i++) {
+            for (let i = 0; i < 32; i++) {
                 const angle = Math.random() * Math.PI * 2;
                 const dist = Math.random() * 0.75;
                 coreParticles.push({
@@ -779,6 +779,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 ctx.shadowBlur = 12;
                 ctx.shadowColor = 'rgba(0, 255, 220, 0.5)';
                 
+                // Ring Outer Core
                 ctx.beginPath();
                 ctx.arc(cx, cy, rCore * 1.12, 0, Math.PI * 2);
                 ctx.strokeStyle = 'rgba(0, 230, 210, 0.35)';
@@ -832,13 +833,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     let sum = 0;
                     for (let i = 0; i < freqData.length; i++) sum += freqData[i];
                     const avg = sum / freqData.length / 255;
-                    targetIntensity = avg * 2.2; // Modulasi amplitudo presisi
+                    targetIntensity = avg * 2.5; 
                     targetEnvelopeScale = 1.05;
                 } else if (currentState === 'listening' || currentState === 'thinking') {
                     targetIntensity = 0.0;
-                    targetEnvelopeScale = 1.35;
+                    targetEnvelopeScale = 1.35; // Membesar ketika mendengarkan
                 } else {
-                    targetIntensity = 0.0;
+                    targetIntensity = 0.0; // Idle
                     targetEnvelopeScale = 1.0;
                 }
                 
@@ -847,9 +848,8 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 
                 drawCore(dpr);
                 
-                const baseR = Math.min(W, H) * 0.24 * envelopeScale;
-                const numLayers = 48; // Kerapatan partikel pita
-                const points = 240;  // Titik sampel kontur lingkaran tinggi untuk menghindari patah
+                const baseR = Math.min(W, H) * 0.25 * envelopeScale;
+                const points = 240; // High resolution continuous loop
                 
                 ctx.save();
                 ctx.globalCompositeOperation = 'lighter';
@@ -867,7 +867,8 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                             ctx.stroke();
                         }
                     } else {
-                        // LISTENING: Envelope mengembang mulus 3D
+                        // LISTENING: Envelope mengembang halus 3D
+                        const numLayers = 45;
                         for (let l = 0; l < numLayers; l++) {
                             const layerNorm = (l / numLayers) - 0.5;
                             const r = baseR + layerNorm * (24 * dpr);
@@ -893,46 +894,48 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         }
                     }
                 } else {
-                    // SPEAKING: Partikel menyebar bersih (clean spread out) tanpa terlalu besar & tanpa patah
-                    for (let l = 0; l < numLayers; l++) {
-                        const layerNorm = (l / numLayers) - 0.5;
-                        
-                        // Melebar secukupnya (spread out terkontrol)
-                        const spreadWidth = (22 + speakingIntensity * 18) * dpr;
-                        const r = baseR + layerNorm * spreadWidth;
-                        
-                        ctx.beginPath();
-                        for (let p = 0; p <= points; p++) {
-                            const angle = (p / points) * Math.PI * 2;
-                            
-                            let audioAmp = 0;
-                            if (freqData) {
-                                // Siklus keliling tertutup mulus (Smooth cyclic frequency indexing)
-                                const normP = p / points;
-                                const symP = Math.sin(normP * Math.PI); // Smooth envelope agar tidak ada patahan di titik awal/akhir
-                                const freqIdx = Math.floor(symP * (freqData.length * 0.5));
-                                audioAmp = (freqData[freqIdx] / 255) * speakingIntensity;
-                            }
+                    // SPEAKING: Dua Cincin Bergelombang Utama (Persis Gambar Referensi)
+                    const rings = [
+                        { radius: baseR * 1.0,  freqMult: 5, waveAmp: (18 * dpr), speed: 0.003, alpha: 0.85, layers: 12 },
+                        { radius: baseR * 0.82, freqMult: 4, waveAmp: (14 * dpr), speed: -0.002, alpha: 0.65, layers: 8 }
+                    ];
 
-                            // Gelombang harmonik kontinu melingkar (Fourier harmonics)
-                            const wave1 = Math.sin(angle * 4 + time * 0.003 + layerNorm * 1.2) * (16 * dpr);
-                            const wave2 = Math.cos(angle * 3 - time * 0.002) * (10 * dpr);
-                            const dynamicAudioWave = (wave1 + wave2) * (0.5 + audioAmp * 0.8);
-                            
-                            const currentR = r + dynamicAudioWave;
-                            const x = cx + Math.cos(angle) * currentR;
-                            const y = cy + Math.sin(angle) * currentR;
-                            
-                            if (p === 0) ctx.moveTo(x, y);
-                            else ctx.lineTo(x, y);
+                    rings.forEach((ringConfig, rIdx) => {
+                        for (let l = 0; l < ringConfig.layers; l++) {
+                            const layerOffset = (l - ringConfig.layers / 2) * (1.1 * dpr);
+                            const r = ringConfig.radius + layerOffset;
+
+                            ctx.beginPath();
+                            for (let p = 0; p <= points; p++) {
+                                const angle = (p / points) * Math.PI * 2;
+                                
+                                let audioMod = 0;
+                                if (freqData) {
+                                    const normP = p / points;
+                                    const symP = Math.sin(normP * Math.PI);
+                                    const freqIdx = Math.floor(symP * (freqData.length * 0.5));
+                                    audioMod = (freqData[freqIdx] / 255) * speakingIntensity;
+                                }
+
+                                // Kelengkungan gelombang teratur & kontinu melingkar (Smooth Sine Wave Ring)
+                                const wave = Math.sin(angle * ringConfig.freqMult + time * ringConfig.speed) 
+                                           * ringConfig.waveAmp 
+                                           * (0.6 + audioMod * 1.0);
+
+                                const x = cx + Math.cos(angle) * (r + wave);
+                                const y = cy + Math.sin(angle) * (r + wave);
+
+                                if (p === 0) ctx.moveTo(x, y);
+                                else ctx.lineTo(x, y);
+                            }
+                            ctx.closePath();
+
+                            const lineAlpha = ringConfig.alpha * (1.0 - Math.abs(l - ringConfig.layers / 2) / (ringConfig.layers / 2));
+                            ctx.strokeStyle = `rgba(0, 250, 220, ${Math.max(0.05, lineAlpha)})`;
+                            ctx.lineWidth = 1.0 * dpr;
+                            ctx.stroke();
                         }
-                        ctx.closePath();
-                        
-                        const alpha = (1.0 - Math.abs(layerNorm) * 2) * 0.32 + (speakingIntensity * 0.18);
-                        ctx.strokeStyle = `rgba(0, 250, 220, ${Math.min(0.85, Math.max(0.04, alpha))})`;
-                        ctx.lineWidth = 0.75 * dpr;
-                        ctx.stroke();
-                    }
+                    });
                 }
                 
                 ctx.restore();
