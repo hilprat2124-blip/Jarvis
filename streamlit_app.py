@@ -176,6 +176,55 @@ def is_camera_on_command(text: str) -> bool:
     return False
 
 # ============================================================
+# JS AUTO-CLICKER (MENEKAN TOMBOL START ASLI WEBRTC)
+# ============================================================
+def trigger_auto_click_start():
+    """Menyuntikkan Javascript untuk menekan tombol START merah di iframe WebRTC."""
+    html = """
+    <script>
+    (function() {
+        const pDoc = window.parent.document;
+        let clicked = false;
+        let attempts = 0;
+        
+        // Coba klik setiap 200ms hingga 15 kali (3 detik)
+        const interval = setInterval(() => {
+            attempts++;
+            // Cari semua iframe di halaman Streamlit
+            const iframes = pDoc.querySelectorAll('iframe');
+            
+            for (let iframe of iframes) {
+                try {
+                    const doc = iframe.contentDocument || iframe.contentWindow.document;
+                    if (!doc) continue;
+                    
+                    // Cari tombol dengan teks "START"
+                    const buttons = doc.querySelectorAll('button');
+                    for (let btn of buttons) {
+                        const text = (btn.innerText || btn.textContent || '').trim().toUpperCase();
+                        if (text === 'START' || text.startsWith('START')) {
+                            btn.click();
+                            clicked = true;
+                            console.log("[JARVIS] Auto-clicked WebRTC START button!");
+                            break;
+                        }
+                    }
+                } catch(e) {
+                    // Abaikan error cross-origin jika ada
+                }
+                if (clicked) break;
+            }
+            
+            if (clicked || attempts > 15) {
+                clearInterval(interval);
+            }
+        }, 200);
+    })();
+    </script>
+    """
+    components.html(html, height=0, width=0)
+
+# ============================================================
 # KELAS KAMERA
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
@@ -734,8 +783,6 @@ if "current_audio" not in st.session_state:
     st.session_state.current_audio = None
 if "conversation_mode" not in st.session_state:
     st.session_state.conversation_mode = False
-if "needs_cam_start" not in st.session_state:
-    st.session_state.needs_cam_start = False
 if "force_cam_on" not in st.session_state:
     st.session_state.force_cam_on = False
 
@@ -758,14 +805,12 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("📹 Kamera (Live)")
     
-    # --- TOMBOL KONTROL KAMERA MANUAL/AUTO ---
-    # Tombol ini merubah state force_cam_on yang akan memicu streamlit_webrtc
-    if not st.session_state.force_cam_on:
-        if st.button("🔴 START KAMERA (Voice: 'Nyalakan Kamera')", use_container_width=True):
-            st.session_state.force_cam_on = True
-            st.rerun()
+    # --- TOMBOL KONTROL KAMERA MANUAL ---
+    if st.button("🔴 KLIK DISINI JIKA KAMERA BELUM NYALA", use_container_width=True):
+        trigger_auto_click_start()
+        st.rerun()
             
-    # Render WebRTC dengan desired_playing_state
+    # Render WebRTC
     ctx = webrtc_streamer(
         key="hand-3d-tracker-smooth",
         video_processor_factory=Hand3DProcessor,
@@ -775,8 +820,9 @@ with col1:
         desired_playing_state=True if st.session_state.force_cam_on else None
     )
     
-    if not ctx.state.playing:
-        st.caption("Kamera belum aktif. Klik tombol merah di atas atau ucapkan 'Nyalakan kamera'.")
+    # Tempatkan script auto-clicker tepat di bawah WebRTC
+    if st.session_state.force_cam_on and not ctx.state.playing:
+        trigger_auto_click_start()
 
 with col2:
     st.subheader("ℹ️ Status Visual")
@@ -806,9 +852,9 @@ user_q = st.chat_input("Ask Jarvis...")
 if user_q:
     # === DETEKSI PERINTAH ON CAM ===
     if is_camera_on_command(user_q):
-        st.session_state.force_cam_on = True # <-- INI KUNCINYA
-        st.toast("🎥 Perintah nyalakan kamera terdeteksi — Menyalakan kamera...", icon="🔴")
-        time.sleep(1) # Beri waktu sebentar untuk UI update
+        st.session_state.force_cam_on = True
+        st.toast("🎥 Perintah nyalakan kamera terdeteksi — Menjalankan Auto-Clicker...", icon="🔴")
+        time.sleep(1)
         st.rerun()
 
     st.session_state.orb_state = "listening"
@@ -832,7 +878,7 @@ if user_q:
             has_img = True
     else:
         if is_camera_on_command(user_q):
-            st.warning("🎥 Menyalakan kamera... izinkan akses kamera di browser jika diminta.")
+            st.warning("🎥 Auto-Clicker sedang berjalan. Jika kamera belum nyala, klik tombol merah di atas.")
         else:
             st.warning("⚠️ Kamera belum menyala. Klik START di atas agar Jarvis bisa melihat!")
 
@@ -949,4 +995,4 @@ with st.sidebar:
     st.caption("• Voice Mode: Continuous Conversation")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
-    st.caption("• 🎥 Auto-Start Cam: Session State")
+    st.caption("• 🎥 Auto-Start Cam: JS Clicker")
