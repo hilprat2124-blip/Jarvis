@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS LIQUID ORB (Berdasarkan Referensi)
+# JARVIS LIQUID SPACE ORB (Bulat Saat Diam, Bergelombang Saat Bicara)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -693,21 +693,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             .orb-container { position: relative; width: 100%; height: 380px; display: flex; align-items: center; justify-content: center; }
             canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
             
-            /* Teks JARVIS di Tengah */
-            .jarvis-text {
-                position: absolute;
-                font-size: 42px;
-                font-weight: 900;
-                letter-spacing: 4px;
-                color: transparent;
-                -webkit-text-stroke: 1.5px rgba(0, 255, 200, 0.8);
-                text-shadow: 0 0 20px rgba(0, 255, 200, 0.6), inset 0 0 10px rgba(0, 255, 200, 0.5);
-                z-index: 10;
-                text-transform: uppercase;
-                opacity: 0.9;
-                user-select: none;
-            }
-
             .play-btn { display: none; position: absolute; bottom: 20px; padding: 12px 24px; border: 1px solid #37dfff; border-radius: 24px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; z-index: 20; font-family: 'Courier New', monospace; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; box-shadow: 0 0 20px rgba(0,200,255,0.5); transition: all 0.3s; }
             .play-btn:hover { background: rgba(0,100,150,0.9); box-shadow: 0 0 40px rgba(0,220,255,0.8); }
         </style>
@@ -715,7 +700,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     <body>
         <div class="orb-container">
             <canvas id="orbCanvas"></canvas>
-            <div class="jarvis-text">JARVIS</div>
             <button class="play-btn" id="playButton">▶ ACTIVATE VOICE</button>
         </div>
         <audio id="jarvisAudio" style="display:none;" preload="auto">
@@ -745,15 +729,14 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let radii = new Array(points).fill(0);
             let velocities = new Array(points).fill(0);
             
+            // Partikel luar
+            let particles = [];
+            
             function resize() {
                 const rect = canvas.getBoundingClientRect();
                 W = canvas.width = rect.width * window.devicePixelRatio;
                 H = canvas.height = rect.height * window.devicePixelRatio;
                 cx = W / 2; cy = H / 2;
-                
-                // Scale font size based on screen
-                const textEl = document.querySelector('.jarvis-text');
-                textEl.style.fontSize = Math.min(W * 0.1, 50) + 'px';
             }
             window.addEventListener('resize', resize);
             resize();
@@ -800,22 +783,22 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         targetIntensity = 0.2 + Math.sin(fakePulse) * 0.15;
                     }
                 } else if (currentState === 'listening') {
-                    targetIntensity = 0.2 + Math.sin(time * 2) * 0.1;
+                    targetIntensity = 0.1; // Sedikit bergelombang saat listening
                 } else {
-                    targetIntensity = 0.05;
+                    targetIntensity = 0.0; // Bulat sempurna saat idle
                 }
                 
-                speakingIntensity += (targetIntensity - speakingIntensity) * 0.15;
+                // Smooth transisi intensitas
+                speakingIntensity += (targetIntensity - speakingIntensity) * 0.1;
                 
                 const baseRadius = Math.min(W, H) * 0.22;
-                const waveRadius = baseRadius * (1 + speakingIntensity * 0.4);
+                const waveRadius = baseRadius * (1 + speakingIntensity * 0.2);
                 const t = time * 0.001;
                 
-                // Warna dasar
                 const c1 = '0, 255, 200'; // Cyan terang
                 const c2 = '0, 100, 150'; // Biru gelap
 
-                // 1. Gambar Inti (Core) di belakang teks
+                // 1. Gambar Inti (Core) di belakang
                 const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, waveRadius * 0.6);
                 grad.addColorStop(0, 'rgba(0, 255, 200, 0.4)');
                 grad.addColorStop(0.7, 'rgba(0, 150, 200, 0.1)');
@@ -825,30 +808,30 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 ctx.arc(cx, cy, waveRadius * 0.8, 0, Math.PI * 2);
                 ctx.fill();
 
-                // 2. Liquid Ring (Garis bergelombang)
-                // Update nilai radius tiap titik
+                // 2. Liquid Ring (Garis)
                 for (let i = 0; i < points; i++) {
                     const angle = (i / points) * Math.PI * 2;
                     
-                    // Base wave
                     let targetR = waveRadius;
                     
-                    // Audio reaction
-                    if (freqData && currentState === 'speaking') {
-                        const halfIdx = i < points/2 ? i : points - 1 - i;
-                        const freqIdx = Math.floor(halfIdx * freqData.length / (points / 2));
-                        const val = freqData[freqIdx] / 255;
-                        targetR += val * baseRadius * 0.5;
+                    // Hanya bergelombang jika ada suara (speaking)
+                    if (speakingIntensity > 0.05) {
+                        if (freqData && currentState === 'speaking') {
+                            const halfIdx = i < points/2 ? i : points - 1 - i;
+                            const freqIdx = Math.floor(halfIdx * freqData.length / (points / 2));
+                            const val = freqData[freqIdx] / 255;
+                            targetR += val * baseRadius * 0.5 * speakingIntensity;
+                        }
+                        
+                        // Noise / Liquid feel hanya aktif saat speaking
+                        targetR += Math.sin(angle * 6 + t * 3) * (baseRadius * 0.05) * speakingIntensity;
+                        targetR += Math.sin(angle * 12 - t * 2) * (baseRadius * 0.02) * speakingIntensity;
                     }
                     
-                    // Noise / Liquid feel
-                    targetR += Math.sin(angle * 6 + t * 3) * (baseRadius * 0.05);
-                    targetR += Math.sin(angle * 12 - t * 2) * (baseRadius * 0.02);
-                    
-                    // Spring physics untuk gerakan halus
+                    // Spring physics
                     const force = targetR - radii[i];
-                    velocities[i] += force * 0.05;
-                    velocities[i] *= 0.85; // Damping
+                    velocities[i] += force * 0.08;
+                    velocities[i] *= 0.8; // Damping
                     radii[i] += velocities[i];
                 }
                 
@@ -861,7 +844,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     const y = cy + Math.sin(angle) * r;
                     if (i === 0) ctx.moveTo(x, y);
                     else {
-                        // Gunakan quadratic curve untuk smoothing antar titik
                         const prevAngle = ((i - 1) % points / points) * Math.PI * 2;
                         const prevR = radii[(i - 1) % points];
                         const prevX = cx + Math.cos(prevAngle) * prevR;
@@ -874,21 +856,21 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 }
                 ctx.closePath();
                 
-                // Efek glow & fill
-                ctx.shadowBlur = 30 + speakingIntensity * 40;
+                // Efek glow
+                ctx.shadowBlur = 20 + speakingIntensity * 40;
                 ctx.shadowColor = 'rgba(' + c1 + ', 0.8)';
                 ctx.strokeStyle = 'rgba(' + c1 + ', 0.9)';
                 ctx.lineWidth = 2 * window.devicePixelRatio;
                 ctx.stroke();
                 
-                // Isi ring dengan warna transparan
+                // Fill dalam
                 const ringGrad = ctx.createRadialGradient(cx, cy, waveRadius * 0.5, cx, cy, waveRadius * 1.2);
                 ringGrad.addColorStop(0, 'rgba(' + c1 + ', 0)');
                 ringGrad.addColorStop(1, 'rgba(' + c1 + ', 0.15)');
                 ctx.fillStyle = ringGrad;
                 ctx.fill();
                 
-                // 3. Inner tech rings (Cincin dalem)
+                // 3. Inner tech rings
                 ctx.shadowBlur = 0;
                 for (let r = 1; r <= 3; r++) {
                     ctx.beginPath();
@@ -898,18 +880,42 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     ctx.stroke();
                 }
 
-                // 4. Partikel debu luar
-                for (let i = 0; i < 30; i++) {
-                    const angle = Math.random() * Math.PI * 2;
-                    const dist = waveRadius * (1.2 + Math.random() * 0.8);
-                    const px = cx + Math.cos(angle) * dist;
-                    const py = cy + Math.sin(angle) * dist;
-                    const size = (Math.random() * 2) * window.devicePixelRatio;
-                    
-                    ctx.fillStyle = 'rgba(' + c1 + ', ' + (Math.random() * 0.5) + ')';
-                    ctx.beginPath();
-                    ctx.arc(px, py, size, 0, Math.PI * 2);
-                    ctx.fill();
+                // 4. Partikel Debu Luar (Hanya muncul saat Speaking)
+                if (speakingIntensity > 0.1) {
+                    // Spawn partikel baru
+                    if (Math.random() < speakingIntensity * 0.8) {
+                        const angle = Math.random() * Math.PI * 2;
+                        const dist = waveRadius * (1.0 + Math.random() * 0.5);
+                        particles.push({
+                            x: cx + Math.cos(angle) * dist,
+                            y: cy + Math.sin(angle) * dist,
+                            vx: Math.cos(angle) * (Math.random() * 2 + 1),
+                            vy: Math.sin(angle) * (Math.random() * 2 + 1),
+                            life: 1.0,
+                            size: Math.random() * 2 + 1
+                        });
+                    }
+
+                    // Update dan gambar partikel
+                    for (let i = particles.length - 1; i >= 0; i--) {
+                        let p = particles[i];
+                        p.x += p.vx;
+                        p.y += p.vy;
+                        p.life -= 0.02;
+                        
+                        if (p.life <= 0) {
+                            particles.splice(i, 1);
+                            continue;
+                        }
+
+                        ctx.fillStyle = 'rgba(' + c1 + ', ' + p.life + ')';
+                        ctx.beginPath();
+                        ctx.arc(p.x, p.y, p.size * window.devicePixelRatio, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                } else {
+                    // Hapus partikel jika sudah diam
+                    particles = [];
                 }
 
                 time += 16;
@@ -1194,7 +1200,7 @@ with st.sidebar:
     if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
     
     st.caption("Technology:")
-    st.caption("• Orb: Liquid Metal / Iron Man Style")
+    st.caption("• Orb: Space Tech Liquid Reactor")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
     st.caption("• Vision Model: Qwen 3.8")
