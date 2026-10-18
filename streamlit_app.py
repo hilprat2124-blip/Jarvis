@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Ultra-Realistic Hyper-Smooth Cinematic Orb)
+# JARVIS QUANTUM DOTS (Persis Gambar - Wide Spreading Silk Ribbon)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -726,14 +726,14 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let targetEnvelopeScale = 1.0;
             
             const coreParticles = [];
-            for (let i = 0; i < 35; i++) {
+            for (let i = 0; i < 30; i++) {
                 const angle = Math.random() * Math.PI * 2;
-                const dist = Math.random() * 0.8;
+                const dist = Math.random() * 0.75;
                 coreParticles.push({
                     angle: angle,
                     dist: dist,
                     speed: (Math.random() - 0.5) * 0.012,
-                    size: Math.random() * 1.8 + 0.8
+                    size: Math.random() * 1.6 + 0.8
                 });
             }
 
@@ -753,8 +753,8 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     audioContext = new (window.AudioContext || window.webkitAudioContext)();
                     sourceNode = audioContext.createMediaElementSource(audio);
                     analyzer = audioContext.createAnalyser();
-                    analyzer.fftSize = 512;
-                    analyzer.smoothingTimeConstant = 0.88; // Super smooth transition
+                    analyzer.fftSize = 256;
+                    analyzer.smoothingTimeConstant = 0.85;
                     sourceNode.connect(analyzer);
                     analyzer.connect(audioContext.destination);
                     freqData = new Uint8Array(analyzer.frequencyBinCount);
@@ -776,44 +776,40 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 const rCore = Math.min(W, H) * 0.085;
                 
                 ctx.save();
-                ctx.shadowBlur = 15;
-                ctx.shadowColor = 'rgba(0, 255, 230, 0.6)';
+                ctx.shadowBlur = 12;
+                ctx.shadowColor = 'rgba(0, 255, 220, 0.5)';
                 
-                // Ring 1
+                // Ring Outer
                 ctx.beginPath();
                 ctx.arc(cx, cy, rCore * 1.12, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(0, 230, 210, 0.4)';
-                ctx.lineWidth = 1.2 * dpr;
+                ctx.strokeStyle = 'rgba(0, 230, 210, 0.35)';
+                ctx.lineWidth = 1.0 * dpr;
                 ctx.stroke();
 
-                // Ring 2
                 ctx.beginPath();
-                ctx.arc(cx, cy, rCore * 1.38, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(0, 200, 190, 0.22);';
-                ctx.lineWidth = 0.9 * dpr;
+                ctx.arc(cx, cy, rCore * 1.35, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(0, 200, 190, 0.2)';
+                ctx.lineWidth = 0.8 * dpr;
                 ctx.stroke();
 
-                // Core Sphere
                 ctx.beginPath();
                 ctx.arc(cx, cy, rCore, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(0, 255, 220, 0.9)';
-                ctx.lineWidth = 1.6 * dpr;
+                ctx.strokeStyle = 'rgba(0, 255, 220, 0.85)';
+                ctx.lineWidth = 1.5 * dpr;
                 ctx.stroke();
                 
-                // Wireframe Latitudes
-                const gridStep = 6;
+                const gridStep = 5;
                 for (let i = -gridStep + 1; i < gridStep; i++) {
                     const offset = (i / gridStep) * rCore;
                     const h = Math.sqrt(Math.max(0, rCore * rCore - offset * offset));
                     
                     ctx.beginPath();
                     ctx.ellipse(cx, cy + offset * 0.4, h, h * 0.35, 0, 0, Math.PI * 2);
-                    ctx.strokeStyle = 'rgba(0, 240, 220, 0.18)';
+                    ctx.strokeStyle = 'rgba(0, 240, 220, 0.15)';
                     ctx.lineWidth = 0.6 * dpr;
                     ctx.stroke();
                 }
 
-                // Core Dots
                 coreParticles.forEach(p => {
                     p.angle += p.speed;
                     const px = cx + Math.cos(p.angle) * (rCore * p.dist);
@@ -821,7 +817,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     
                     ctx.beginPath();
                     ctx.arc(px, py, p.size * dpr, 0, Math.PI * 2);
-                    ctx.fillStyle = 'rgba(200, 255, 250, 0.95)';
+                    ctx.fillStyle = 'rgba(180, 255, 245, 0.95)';
                     ctx.fill();
                 });
                 
@@ -837,52 +833,51 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     let sum = 0;
                     for (let i = 0; i < freqData.length; i++) sum += freqData[i];
                     const avg = sum / freqData.length / 255;
-                    targetIntensity = avg * 3.2;
-                    targetEnvelopeScale = 1.08;
+                    targetIntensity = avg * 2.8;
+                    targetEnvelopeScale = 1.1;
                 } else if (currentState === 'listening' || currentState === 'thinking') {
                     targetIntensity = 0.0;
-                    targetEnvelopeScale = 1.48; // Smooth large envelope when listening
+                    targetEnvelopeScale = 1.45; // Membesar halus ketika mendengar
                 } else {
-                    targetIntensity = 0.0; // Idle: Perfect smooth ring
+                    targetIntensity = 0.0; // Idle
                     targetEnvelopeScale = 1.0;
                 }
                 
-                // Exponential smoothing for fluid organic reaction (no choppy jumps)
                 speakingIntensity += (targetIntensity - speakingIntensity) * 0.08;
                 envelopeScale += (targetEnvelopeScale - envelopeScale) * 0.05;
                 
                 drawCore(dpr);
                 
                 const baseR = Math.min(W, H) * 0.25 * envelopeScale;
-                const numLayers = 45; 
-                const points = 240; // High resolution points for silky smooth curves
+                const numLayers = 55; // Kerapatan garis pita halus
+                const points = 200;
                 
                 ctx.save();
-                ctx.globalCompositeOperation = 'lighter'; // Glowing neon blend mode
+                ctx.globalCompositeOperation = 'lighter';
                 
                 if (speakingIntensity < 0.02 && (currentState === 'idle' || currentState === 'listening' || currentState === 'thinking')) {
                     if (currentState === 'idle') {
-                        // IDLE: Ultra-smooth flawless multi-layered cyan rings without any wave
-                        for (let l = 0; l < 16; l++) {
-                            const rOffset = (l - 8) * (1.0 * dpr);
+                        // IDLE: Cincin mulus bersih melingkar sempurna tanpa gelombang
+                        for (let l = 0; l < 14; l++) {
+                            const rOffset = (l - 7) * (1.1 * dpr);
                             ctx.beginPath();
                             ctx.arc(cx, cy, baseR + rOffset, 0, Math.PI * 2);
-                            const alpha = 0.85 - Math.abs(l - 8) * 0.09;
-                            ctx.strokeStyle = `rgba(0, 250, 220, ${Math.max(0.08, alpha)})`;
-                            ctx.lineWidth = 1.3 * dpr;
+                            const alpha = 0.8 - Math.abs(l - 7) * 0.1;
+                            ctx.strokeStyle = `rgba(0, 245, 215, ${Math.max(0.08, alpha)})`;
+                            ctx.lineWidth = 1.2 * dpr;
                             ctx.stroke();
                         }
                     } else {
-                        // LISTENING: Smooth hypnotic breathing envelope waves
+                        // LISTENING: Envelope mengembang halus 3D
                         for (let l = 0; l < numLayers; l++) {
                             const layerNorm = (l / numLayers) - 0.5;
-                            const r = baseR + layerNorm * (28 * dpr);
+                            const r = baseR + layerNorm * (26 * dpr);
                             
                             ctx.beginPath();
                             for (let p = 0; p <= points; p++) {
                                 const angle = (p / points) * Math.PI * 2;
-                                const envWave = Math.sin(angle * 4 + time * 0.0018 + layerNorm * 2) * (16 * dpr)
-                                              + Math.cos(angle * 3 - time * 0.0012) * (10 * dpr);
+                                const envWave = Math.sin(angle * 4 + time * 0.0018 + layerNorm * 2) * (15 * dpr)
+                                              + Math.cos(angle * 3 - time * 0.0012) * (8 * dpr);
                                 
                                 const x = cx + Math.cos(angle) * (r + envWave);
                                 const y = cy + Math.sin(angle) * (r + envWave);
@@ -893,32 +888,36 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                             ctx.closePath();
                             
                             const alpha = (1.0 - Math.abs(layerNorm) * 2) * 0.4;
-                            ctx.strokeStyle = `rgba(0, 240, 215, ${alpha})`;
-                            ctx.lineWidth = 0.8 * dpr;
+                            ctx.strokeStyle = `rgba(0, 240, 210, ${alpha})`;
+                            ctx.lineWidth = 0.7 * dpr;
                             ctx.stroke();
                         }
                     }
                 } else {
-                    // SPEAKING: Ultra-fluid realistic frequency spectrum waves
+                    // SPEAKING: Pita gelombang melebar & bertumpuk halus (Persis Gambar Konsep)
                     for (let l = 0; l < numLayers; l++) {
-                        const layerNorm = (l / numLayers) - 0.5;
-                        const r = baseR + layerNorm * (18 * dpr);
+                        const layerNorm = (l / numLayers) - 0.5; // Offset pita
+                        
+                        // Lebar pita melebar secara mendalam saat bicara
+                        const spreadWidth = (35 + speakingIntensity * 35) * dpr;
+                        const r = baseR + layerNorm * spreadWidth;
                         
                         ctx.beginPath();
                         for (let p = 0; p <= points; p++) {
                             const angle = (p / points) * Math.PI * 2;
                             
-                            let wave = 0;
+                            let audioAmp = 0;
                             if (freqData) {
-                                const freqIdx = Math.floor((p / points) * (freqData.length * 0.7));
-                                const freqVal = freqData[freqIdx] / 255;
-                                wave += freqVal * (48 * dpr) * speakingIntensity;
+                                const freqIdx = Math.floor((p / points) * (freqData.length * 0.6));
+                                audioAmp = (freqData[freqIdx] / 255) * speakingIntensity;
                             }
-                            // Added harmonic sine modulations for organic fluid motion
-                            wave += Math.sin(angle * 14 + time * 0.007 + layerNorm * 3) * (12 * dpr) * speakingIntensity;
-                            wave += Math.cos(angle * 9 - time * 0.0045) * (8 * dpr) * speakingIntensity;
+
+                            // Gelombang organik melengkung halus (Smooth silk curve)
+                            const wave1 = Math.sin(angle * 4 + time * 0.003 + layerNorm * 1.5) * (22 * dpr);
+                            const wave2 = Math.cos(angle * 3 - time * 0.002) * (14 * dpr);
+                            const dynamicAudioWave = (wave1 + wave2) * (0.4 + audioAmp * 1.2);
                             
-                            const currentR = r + wave;
+                            const currentR = r + dynamicAudioWave;
                             const x = cx + Math.cos(angle) * currentR;
                             const y = cy + Math.sin(angle) * currentR;
                             
@@ -927,9 +926,9 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         }
                         ctx.closePath();
                         
-                        const alpha = 0.25 + (1.0 - Math.abs(layerNorm) * 2) * 0.7;
-                        ctx.strokeStyle = `rgba(0, 255, 230, ${Math.min(1.0, alpha)})`;
-                        ctx.lineWidth = (0.8 + (1.0 - Math.abs(layerNorm)) * 0.9) * dpr;
+                        const alpha = (1.0 - Math.abs(layerNorm) * 2) * 0.35 + (speakingIntensity * 0.2);
+                        ctx.strokeStyle = `rgba(0, 250, 220, ${Math.min(0.9, Math.max(0.05, alpha))})`;
+                        ctx.lineWidth = 0.75 * dpr;
                         ctx.stroke();
                     }
                 }
