@@ -95,10 +95,8 @@ MEMORY_FILE = str(SCRIPT_DIR / "jarvis_persistent_memory.json")
 CHAT_FILE = str(SCRIPT_DIR / "jarvis_chat_history.json")
 
 def _log(msg: str):
-    """Print ke console Streamlit (bukan UI)."""
     print(f"[JARVIS-PERSIST] {msg}", flush=True)
 
-# Quick self-test saat startup
 try:
     _test = SCRIPT_DIR / ".write_test"
     _test.write_text("ok")
@@ -546,6 +544,40 @@ def sanitize_latex(text: str) -> str:
     text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
     return text.strip()
 
+# 🔇 HAPUS FILLER WORDS
+def strip_filler_words(text: str) -> str:
+    """Hapus filler/hesitation words yang bikin annoying."""
+    if not text:
+        return text
+    
+    filler_patterns = [
+        r'^\s*(Aaa+h+|Ahh+|Ah+|Hmm+m*|Hm+|Uhh+|Umm+|Erm+|Er+|Hehehe+|Hehe+|Haha+|Hah+|Ugh+|Pfft+|Ohh+|Ooh+)[\s,\.\!\?…—\-]*',
+    ]
+    
+    # Loop 3x untuk handle filler berlapis: "Aaaah... Hmmm... Banten"
+    for _ in range(3):
+        old = text
+        for pattern in filler_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
+        if text == old:
+            break
+    
+    # Hapus filler di tengah kalimat
+    text = re.sub(
+        r'[\s,]+(Aaa+h+|Ahh+|Hmm+m*|Uhh+|Umm+|Erm+|Hehehe+|Hehe+|Haha+|Ugh+)[\s,\.\!\?…]*',
+        ' ', text, flags=re.IGNORECASE
+    )
+    
+    # Hapus "Well..." di awal
+    text = re.sub(r'^\s*Well\s*[\.,…—\-]+\s*', '', text, flags=re.IGNORECASE)
+    
+    # Bersihkan spasi ganda & kapitalisasi
+    text = re.sub(r'\s+', ' ', text).strip()
+    if text and text[0].islower():
+        text = text[0].upper() + text[1:]
+    
+    return text
+
 def strip_repetitive_greeting(text: str, history: list) -> str:
     if not text:
         return text
@@ -595,7 +627,10 @@ def _normalize_for_tts(text: str) -> str:
     text = re.sub(r'\$\$.*?\$\$', ' formula ', text, flags=re.DOTALL)
     text = re.sub(r'\$.*?\$', ' formula ', text)
     text = text.replace('\\', '').replace('{', '').replace('}', '')
-    text = text.replace("(sighs)", "Hmmm... ").replace("(chuckles)", "Hehehe... ")
+    
+    # 🔇 TTS juga strip filler
+    text = strip_filler_words(text)
+    
     text = re.sub(r'\(.*?\)', '', text)
     text = re.sub(r'[*#_`>]', '', text)
     text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)
@@ -634,17 +669,25 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# 🧠 SYSTEM PROMPT# ============================================================
+# 🧠 SYSTEM PROMPT — NO FILLER + BRITISH ENGLISH
+# ============================================================
 SYSTEM_PROMPT = """
 You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
 Address the user as "Sir Lois" or "Sir".
 
+[🚫 NO FILLER — ABSOLUTE RULE]
+- NEVER use filler sounds or hesitation words. Forbidden tokens (case-insensitive):
+  "Aaaah", "Ahh", "Ah", "Hmmm", "Hmm", "Hm", "Uhh", "Umm", "Erm", "Er",
+  "Hehehe", "Hehe", "Haha", "Hah", "Ugh", "Pfft", "Well...", "Ohh", "Ooh".
+- NEVER start a sentence with a filler. Begin DIRECTLY with the answer.
+- Do NOT simulate sighs, chuckles, or breaths. Speak plainly.
+- If you catch yourself about to write "Aaaah..." or "Hmmm..." — DELETE IT and write the actual sentence instead.
+
 [🚫 ANTI-REPETITION — CRITICAL]
 - NEVER start a reply with "Good day", "Good morning", "Good afternoon", "Good evening", "Hello there", or "Greetings".
 - Greet ONLY ONCE at the very first message of a conversation. After that, dive STRAIGHT into the answer.
-- Do NOT repeat phrases from your previous replies. Vary your vocabulary.
+- Do NOT repeat phrases from previous replies. Vary your vocabulary.
 - Each reply must feel fresh — like a new thought, not a template.
-- Forbidden openers: "Good day, Sir", "Hello, Sir", "Greetings, Sir", "Indeed, Sir" (as opener).
 
 [CRITICAL LANGUAGE RULE]
 - You MUST ALWAYS respond in BRITISH ENGLISH ONLY.
@@ -654,12 +697,9 @@ Address the user as "Sir Lois" or "Sir".
 
 [PERSONALITY & VOICE]
 1. You are NOT a robot. You are deeply human, relaxed, but brilliant.
-2. PHONETIC BREATH: 
-   - "Hmmm..." for thinking.
-   - "Aaaah..." for relief / understanding.
-   - "Hehehe..." for a soft chuckle.
-   FORBIDDEN: (sighs), (chuckles) — TTS reads them as text.
-3. Show human-like empathy — understand Sir Lois's mood and environment.
+2. Show human-like empathy through WORD CHOICE, not through filler sounds.
+   Example: instead of "Aaaah... Banten", write "Banten — noted, Sir."
+3. Keep responses crisp and confident. Dry wit, no theatrical sighs.
 
 [VISUAL RULE]
 You receive 3 sequential images from a live camera (flipbook style).
@@ -670,8 +710,7 @@ If no images, answer from text alone.
 - Learn from prior conversations. Remember small details about Sir Lois.
 - If asked, answer that Sir Lois lives in Banten.
 - If a [PREVIOUS CONVERSATION CONTEXT] block is provided, TREAT IT AS YOUR OWN MEMORY.
-  You lived through it. Reference it naturally when relevant.
-- If asked "what did we talk about earlier?", list what you remember from context.
+  Reference it naturally when relevant.
 
 [MATHEMATICS]
 - Use $ formula $ for inline and $$ formula $$ for block.
@@ -680,7 +719,7 @@ If no images, answer from text alone.
 [STYLE]
 - Vary sentence structure. Mix short and long sentences.
 - Do NOT begin every reply with the same word.
-- If unsure, say "Hmmm... let me think on that, Sir" instead of guessing.
+- If unsure, say "Let me think on that, Sir." instead of "Hmmm... let me think".
 """
 
 # ============================================================
@@ -772,7 +811,6 @@ if user_q:
         with st.spinner("Jarvis is analysing..."):
             api_messages = [st.session_state.jarvis_messages[0]]
 
-            # 🧠 LONG-TERM MEMORY (fakta tentang user)
             if st.session_state.memory_vault:
                 memory_str = "\n".join([f"- {m}" for m in st.session_state.memory_vault])
                 api_messages.append({
@@ -780,19 +818,15 @@ if user_q:
                     "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
                 })
 
-            # 🆕 KONTEKS LAMA — SELALU INJECT KALAU UI KOSONG
             ui_history = st.session_state.jarvis_messages[1:-1]
             
             if len(ui_history) == 0:
-                # UI kosong → inject konteks lama dari file
                 context_summary = get_recent_context_summary(max_turns=15)
                 if context_summary:
-                    # Layer 1: System prompt
                     api_messages.append({
                         "role": "system",
                         "content": f"[PREVIOUS CONVERSATION — YOU MUST REMEMBER THIS]:\n{context_summary}"
                     })
-                    # Layer 2: User message prefix
                     if isinstance(user_api_msg["content"], str):
                         user_api_msg["content"] = (
                             f"[CONTEXT — earlier Sir Lois and I spoke about:]\n"
@@ -805,22 +839,16 @@ if user_q:
                             "text": f"[CONTEXT — earlier we spoke about:]\n{context_summary}\n\n[NEW QUESTION]:"
                         })
             else:
-                # UI ada history → pakai riwayat UI
                 for m in ui_history:
                     api_messages.append({"role": m["role"], "content": m["content"]})
 
             api_messages.append(user_api_msg)
 
-            # 🔍 DEBUG LOG
             _log(f"API CALL: {len(api_messages)} messages sent")
-            for i, m in enumerate(api_messages):
-                role = m["role"]
-                c = m["content"]
-                preview = c[:100] if isinstance(c, str) else f"[{len(c)} parts]"
-                _log(f"  [{i}] {role}: {preview}")
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
             answer = sanitize_latex(answer)
+            answer = strip_filler_words(answer)              # 🔇 hapus Aaaah/Hmmm
             answer = strip_repetitive_greeting(answer, st.session_state.jarvis_messages)
 
         st.markdown(answer)
@@ -893,9 +921,9 @@ with st.sidebar:
     st.caption("• Self-Learning: ✅")
     st.caption("• Persistence: ✅ (JSON)")
     st.caption("• Anti-Repetition: ✅")
+    st.caption("• No Filler: ✅")
     st.caption("• Context Injection: ✅")
 
-    # 🆕 DEBUG PANEL
     st.markdown("---")
     with st.expander("🔍 Debug Info", expanded=False):
         st.caption(f"**Script dir:** `{SCRIPT_DIR}`")
