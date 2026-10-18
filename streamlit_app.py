@@ -13,6 +13,7 @@ import base64
 import asyncio
 import re
 import json
+import pathlib
 import collections
 from PIL import Image
 
@@ -44,10 +45,6 @@ JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
 VOICE_EN = "en-GB-RyanNeural"
 VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
-
-# 🆕 PERSISTENCE FILES
-MEMORY_FILE = "jarvis_persistent_memory.json"
-CHAT_FILE = "jarvis_chat_history.json"
 
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="J.A.R.V.I.S - Silent Visual Memory", page_icon="🔵", layout="wide")
@@ -91,38 +88,61 @@ if not os.path.exists(MODEL_PATH):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
 # ============================================================
-# 🆕 PERSISTENCE HELPERS
+# 🆕 PERSISTENCE HELPERS — PATH ABSOLUT + LOGGING
 # ============================================================
+SCRIPT_DIR = pathlib.Path(__file__).parent.absolute()
+MEMORY_FILE = str(SCRIPT_DIR / "jarvis_persistent_memory.json")
+CHAT_FILE = str(SCRIPT_DIR / "jarvis_chat_history.json")
+
+def _log(msg: str):
+    """Print ke console Streamlit (bukan UI)."""
+    print(f"[JARVIS-PERSIST] {msg}", flush=True)
+
+# Quick self-test saat startup
+try:
+    _test = SCRIPT_DIR / ".write_test"
+    _test.write_text("ok")
+    _test.unlink()
+    _log(f"✅ Filesystem WRITABLE at {SCRIPT_DIR}")
+except Exception as _e:
+    _log(f"❌ Filesystem NOT WRITABLE at {SCRIPT_DIR}: {_e}")
+
 def load_memory() -> list:
-    """Load long-term memory dari disk."""
     if os.path.exists(MEMORY_FILE):
         try:
             with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
+                data = json.load(f)
+                _log(f"LOADED memory: {len(data)} items")
+                return data
+        except Exception as e:
+            _log(f"ERROR loading memory: {e}")
             return []
+    _log("NO memory file yet")
     return []
 
 def save_memory(memory_list: list):
-    """Save long-term memory ke disk."""
     try:
         with open(MEMORY_FILE, "w", encoding="utf-8") as f:
             json.dump(memory_list, f, ensure_ascii=False, indent=2)
+        _log(f"SAVED memory: {len(memory_list)} items → {MEMORY_FILE}")
     except Exception as e:
-        st.warning(f"Gagal simpan memori: {e}")
+        _log(f"ERROR saving memory: {e}")
+        st.error(f"❌ Gagal simpan memori: {e}")
 
 def load_chat_history() -> list:
-    """Load chat history dari disk (tanpa system prompt)."""
     if os.path.exists(CHAT_FILE):
         try:
             with open(CHAT_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
+                data = json.load(f)
+                _log(f"LOADED chat: {len(data)} messages")
+                return data
+        except Exception as e:
+            _log(f"ERROR loading chat: {e}")
             return []
+    _log("NO chat file yet")
     return []
 
 def save_chat_history(messages: list):
-    """Save chat history ke disk (skip system + skip image base64)."""
     try:
         clean_msgs = []
         for m in messages:
@@ -135,11 +155,12 @@ def save_chat_history(messages: list):
             clean_msgs.append({"role": m["role"], "content": content})
         with open(CHAT_FILE, "w", encoding="utf-8") as f:
             json.dump(clean_msgs, f, ensure_ascii=False, indent=2)
+        _log(f"SAVED chat: {len(clean_msgs)} messages → {CHAT_FILE}")
     except Exception as e:
-        st.warning(f"Gagal simpan chat: {e}")
+        _log(f"ERROR saving chat: {e}")
+        st.error(f"❌ Gagal simpan chat: {e}")
 
-# 🆕 Ambil ringkasan obrolan lama (untuk konteks saat UI di-clear)
-def get_recent_context_summary(max_turns: int = 10) -> str:
+def get_recent_context_summary(max_turns: int = 15) -> str:
     history = load_chat_history()
     if not history:
         return ""
@@ -151,6 +172,7 @@ def get_recent_context_summary(max_turns: int = 10) -> str:
         if isinstance(content, list):
             content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
         lines.append(f"{role}: {content}")
+    _log(f"CONTEXT BUILT: {len(recent)} messages")
     return "\n".join(lines)
 
 # ============================================================
@@ -525,7 +547,6 @@ def sanitize_latex(text: str) -> str:
     return text.strip()
 
 def strip_repetitive_greeting(text: str, history: list) -> str:
-    """Hapus 'Good day' / 'Hello' berulang jika sudah pernah diucapkan."""
     if not text:
         return text
     past_greetings = 0
@@ -613,8 +634,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# 🧠 SYSTEM PROMPT
-# ============================================================
+# 🧠 SYSTEM PROMPT# ============================================================
 SYSTEM_PROMPT = """
 You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
 Address the user as "Sir Lois" or "Sir".
@@ -649,6 +669,9 @@ If no images, answer from text alone.
 [MEMORY & IDENTITY]
 - Learn from prior conversations. Remember small details about Sir Lois.
 - If asked, answer that Sir Lois lives in Banten.
+- If a [PREVIOUS CONVERSATION CONTEXT] block is provided, TREAT IT AS YOUR OWN MEMORY.
+  You lived through it. Reference it naturally when relevant.
+- If asked "what did we talk about earlier?", list what you remember from context.
 
 [MATHEMATICS]
 - Use $ formula $ for inline and $$ formula $$ for block.
@@ -666,6 +689,7 @@ If no images, answer from text alone.
 if "jarvis_messages" not in st.session_state:
     saved_history = load_chat_history()
     st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + saved_history
+    _log(f"Session initialized with {len(saved_history)} messages from file")
 
 if "memory_vault" not in st.session_state:
     st.session_state.memory_vault = load_memory()
@@ -703,7 +727,6 @@ st.markdown("---")
 st.header("💬 Speak with Jarvis")
 st.caption("Ask in any language — Jarvis always replies in British English.")
 
-# Tampilkan riwayat chat dari session_state
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
     with st.chat_message(msg["role"]):
@@ -749,17 +772,7 @@ if user_q:
         with st.spinner("Jarvis is analysing..."):
             api_messages = [st.session_state.jarvis_messages[0]]
 
-            # 🆕 INJECT KONTEKS LAMA JIKA UI DI-CLEAR
-            ui_history_exists = len(st.session_state.jarvis_messages) > 1
-            if not ui_history_exists:
-                context_summary = get_recent_context_summary(max_turns=10)
-                if context_summary:
-                    api_messages.append({
-                        "role": "system",
-                        "content": f"[PREVIOUS CONVERSATION CONTEXT — you still remember this]:\n{context_summary}"
-                    })
-
-            # 🧠 LONG-TERM MEMORY
+            # 🧠 LONG-TERM MEMORY (fakta tentang user)
             if st.session_state.memory_vault:
                 memory_str = "\n".join([f"- {m}" for m in st.session_state.memory_vault])
                 api_messages.append({
@@ -767,10 +780,44 @@ if user_q:
                     "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
                 })
 
-            # RIWAYAT UI (kalau ada)
-            for m in st.session_state.jarvis_messages[1:-1]:
-                api_messages.append({"role": m["role"], "content": m["content"]})
+            # 🆕 KONTEKS LAMA — SELALU INJECT KALAU UI KOSONG
+            ui_history = st.session_state.jarvis_messages[1:-1]
+            
+            if len(ui_history) == 0:
+                # UI kosong → inject konteks lama dari file
+                context_summary = get_recent_context_summary(max_turns=15)
+                if context_summary:
+                    # Layer 1: System prompt
+                    api_messages.append({
+                        "role": "system",
+                        "content": f"[PREVIOUS CONVERSATION — YOU MUST REMEMBER THIS]:\n{context_summary}"
+                    })
+                    # Layer 2: User message prefix
+                    if isinstance(user_api_msg["content"], str):
+                        user_api_msg["content"] = (
+                            f"[CONTEXT — earlier Sir Lois and I spoke about:]\n"
+                            f"{context_summary}\n\n"
+                            f"[NEW QUESTION]:\n{user_api_msg['content']}"
+                        )
+                    else:
+                        user_api_msg["content"].insert(0, {
+                            "type": "text",
+                            "text": f"[CONTEXT — earlier we spoke about:]\n{context_summary}\n\n[NEW QUESTION]:"
+                        })
+            else:
+                # UI ada history → pakai riwayat UI
+                for m in ui_history:
+                    api_messages.append({"role": m["role"], "content": m["content"]})
+
             api_messages.append(user_api_msg)
+
+            # 🔍 DEBUG LOG
+            _log(f"API CALL: {len(api_messages)} messages sent")
+            for i, m in enumerate(api_messages):
+                role = m["role"]
+                c = m["content"]
+                preview = c[:100] if isinstance(c, str) else f"[{len(c)} parts]"
+                _log(f"  [{i}] {role}: {preview}")
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
             answer = sanitize_latex(answer)
@@ -796,18 +843,16 @@ if user_q:
     save_chat_history(st.session_state.jarvis_messages)
 
 # ============================================================
-# SIDEBAR — 3 MODE RESET
+# SIDEBAR — 4 MODE RESET + DEBUG
 # ============================================================
 with st.sidebar:
     st.header("ℹ️ Info")
 
     st.subheader("🧹 Chat Controls")
-    # 🧹 Clear UI saja — Jarvis TETAP INGAT dari file
     if st.button("🧹 Clear Chat View", help="Sembunyikan chat di layar, tapi Jarvis tetap ingat semuanya"):
         st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         st.rerun()
 
-    # 🗑️ Hapus history permanen
     if st.button("🗑️ Delete Chat History", help="Hapus permanen riwayat obrolan dari disk"):
         st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         save_chat_history([])
@@ -849,5 +894,34 @@ with st.sidebar:
     st.caption("• Persistence: ✅ (JSON)")
     st.caption("• Anti-Repetition: ✅")
     st.caption("• Context Injection: ✅")
+
+    # 🆕 DEBUG PANEL
+    st.markdown("---")
+    with st.expander("🔍 Debug Info", expanded=False):
+        st.caption(f"**Script dir:** `{SCRIPT_DIR}`")
+        st.caption(f"**CHAT_FILE:** `{CHAT_FILE}`")
+        st.caption(f"**MEMORY_FILE:** `{MEMORY_FILE}`")
+        st.caption(f"**Chat file exists:** {os.path.exists(CHAT_FILE)}")
+        st.caption(f"**Memory file exists:** {os.path.exists(MEMORY_FILE)}")
+        
+        if os.path.exists(CHAT_FILE):
+            st.caption(f"**Chat file size:** {os.path.getsize(CHAT_FILE)} bytes")
+        if os.path.exists(MEMORY_FILE):
+            st.caption(f"**Memory file size:** {os.path.getsize(MEMORY_FILE)} bytes")
+        
+        st.caption(f"**Session messages:** {len(st.session_state.jarvis_messages)}")
+        st.caption(f"**Memory vault:** {len(st.session_state.memory_vault)}")
+        
+        if st.button("📂 Show File Contents"):
+            st.json({
+                "chat_history": load_chat_history(),
+                "memory_vault": load_memory(),
+            })
+        
+        if st.button("🔄 Reload From Disk"):
+            saved = load_chat_history()
+            st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + saved
+            st.session_state.memory_vault = load_memory()
+            st.rerun()
 
 st.markdown("---")
