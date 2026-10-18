@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Seamless Loop tanpa Patahan)
+# JARVIS QUANTUM DOTS (Fibonacci Particle Sphere Core)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -725,6 +725,24 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let listeningScale = 1.0;
             let targetListeningScale = 1.0;
             
+            // Inisialisasi Titik Bola Partikel 3D (Fibonacci Sphere)
+            const sphereDots = [];
+            const NUM_SPHERE_DOTS = 320;
+            const phiRatio = (1 + Math.sqrt(5)) / 2; // Golden Ratio
+            
+            for (let i = 0; i < NUM_SPHERE_DOTS; i++) {
+                const theta = 2 * Math.PI * i / phiRatio;
+                const y = 1 - (i / (NUM_SPHERE_DOTS - 1)) * 2; // -1 to 1
+                const radiusAtY = Math.sqrt(1 - y * y);
+                const x = Math.cos(theta) * radiusAtY;
+                const z = Math.sin(theta) * radiusAtY;
+                
+                sphereDots.push({
+                    x: x, y: y, z: z,
+                    baseSize: Math.random() * 0.8 + 0.8
+                });
+            }
+
             function resize() {
                 const rect = canvas.getBoundingClientRect();
                 W = canvas.width = rect.width * (window.devicePixelRatio || 1);
@@ -759,35 +777,54 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             
             audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
             
-            function drawInnerCore(scaleFactor) {
-                const rCore = Math.min(W, H) * 0.08 * scaleFactor;
+            // Draw 3D Particle Sphere Core (Persis seperti Gambar Referensi)
+            function drawParticleSphereCore(scaleFactor) {
+                const rCore = Math.min(W, H) * 0.085 * scaleFactor;
                 const dpr = window.devicePixelRatio || 1;
                 
-                ctx.save();
-                ctx.beginPath();
-                ctx.arc(cx, cy, rCore, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(0, 240, 220, 0.6)';
-                ctx.lineWidth = 1.5 * dpr;
-                ctx.stroke();
+                // Rotasi Bola 3D
+                const rotY = time * 0.0012;
+                const rotX = time * 0.0007;
+                const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+                const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
                 
-                const numDots = 28;
-                for (let i = 0; i < numDots; i++) {
-                    const phi = Math.acos(-1 + (2 * i) / numDots);
-                    const theta = Math.sqrt(numDots * Math.PI) * phi + time * 0.001;
-                    const x = cx + rCore * Math.sin(phi) * Math.cos(theta);
-                    const y = cy + rCore * Math.sin(phi) * Math.sin(theta);
+                ctx.save();
+                
+                // Urutkan titik berdasarkan koordinat Z (Depth Sorting)
+                const projectedDots = [];
+                for (let i = 0; i < sphereDots.length; i++) {
+                    const dot = sphereDots[i];
                     
-                    ctx.beginPath();
-                    ctx.arc(x, y, 1.2 * dpr, 0, Math.PI * 2);
-                    ctx.fillStyle = 'rgba(120, 255, 240, 0.8)';
-                    ctx.fill();
+                    // Rotasi Y
+                    let x1 = dot.x * cosY - dot.z * sinY;
+                    let z1 = dot.x * sinY + dot.z * cosY;
+                    
+                    // Rotasi X
+                    let y2 = dot.y * cosX - z1 * sinX;
+                    let z2 = dot.y * sinX + z1 * cosX;
+                    
+                    projectedDots.push({
+                        px: cx + x1 * rCore,
+                        py: cy + y2 * rCore,
+                        z: z2,
+                        size: dot.baseSize
+                    });
                 }
                 
-                ctx.beginPath();
-                ctx.arc(cx, cy, rCore * 1.45, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(0, 220, 200, 0.25)';
-                ctx.lineWidth = 1.0 * dpr;
-                ctx.stroke();
+                projectedDots.sort((a, b) => a.z - b.z);
+                
+                // Gambar setiap titik partikel
+                projectedDots.forEach(p => {
+                    const depthAlpha = (p.z + 1.2) / 2.4; // 0.1 s/d 1.0
+                    const alpha = Math.max(0.12, Math.min(0.95, depthAlpha));
+                    const dotSize = p.size * (0.7 + depthAlpha * 0.6) * dpr;
+                    
+                    ctx.beginPath();
+                    ctx.arc(p.px, p.py, dotSize, 0, Math.PI * 2);
+                    ctx.fillStyle = `rgba(130, 245, 255, ${alpha})`;
+                    ctx.fill();
+                });
+                
                 ctx.restore();
             }
 
@@ -812,13 +849,15 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 speakingIntensity += (targetIntensity - speakingIntensity) * 0.12;
                 listeningScale += (targetListeningScale - listeningScale) * 0.08;
                 
-                drawInnerCore(listeningScale);
+                // Gambar Bola Partikel Tengah
+                drawParticleSphereCore(listeningScale);
                 
                 const dpr = window.devicePixelRatio || 1;
                 const baseR = Math.min(W, H) * 0.28 * listeningScale;
                 const numRings = 40;
                 const pointsPerRing = 180;
                 
+                // Gambar Lingkaran Gelombang Luar
                 ctx.save();
                 for (let r = 0; r < numRings; r++) {
                     const layerProgress = r / numRings; 
@@ -832,14 +871,12 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         if (speakingIntensity > 0.02) {
                             let audioMod = 0;
                             if (freqData && freqData.length > 0) {
-                                // Polar Audio Mapping (Simetris agar awal/akhir audio tersambung mulus)
                                 const normPos = p / pointsPerRing; 
-                                const symPos = Math.sin(normPos * Math.PI); // 0 -> 1 -> 0
+                                const symPos = Math.sin(normPos * Math.PI); 
                                 const freqIdx = Math.floor(symPos * (freqData.length * 0.5));
                                 audioMod = (freqData[freqIdx] / 255);
                             }
 
-                            // Gelombang harmonik penuh (integer multipliers: 8, 12) menjamin 2*pi seamless
                             wave += (audioMod * (25 * dpr)) * speakingIntensity;
                             wave += Math.sin(angle * 8 + time * 0.005 + r * 0.12) * (10 * dpr) * speakingIntensity;
                             wave += Math.cos(angle * 12 - time * 0.003) * (6 * dpr) * speakingIntensity;
