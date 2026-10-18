@@ -50,7 +50,7 @@ JARVIS_VISION_MODEL = os.environ.get("JARVIS_VISION_MODEL", "qwen/qwen3.8-27b")
 JARVIS_TEXT_MODEL = os.environ.get("JARVIS_TEXT_MODEL", "openai/gpt-oss-120b")
 JARVIS_MEMORY_MODEL = os.environ.get("JARVIS_MEMORY_MODEL", "openai/gpt-oss-20b")
 
-MAX_OUTPUT_TOKENS = 300
+MAX_OUTPUT_TOKENS = 1024
 MAX_CONTEXT_TURNS = 6
 MAX_MSG_CHARS = 400
 MAX_FRAMES_FOR_VISION = 1
@@ -68,7 +68,11 @@ st.markdown("Kamera merekam **setiap 0.2 detik**. Klik **'Mulai Dengar'** sekali
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    {"iceServers": [{"urls": [
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302",
+        "stun:stun.cloudflare.com:3478",
+    ]}]}
 )
 
 PINCH_ENTER = 40
@@ -154,6 +158,8 @@ def save_chat_history(messages: list):
             if isinstance(content, list):
                 texts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
                 content = " ".join(texts) if texts else "[image]"
+            if not str(content).strip():
+                continue
             if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
                 content = content[:MAX_MSG_CHARS] + "..."
             clean_msgs.append({"role": m["role"], "content": content})
@@ -296,8 +302,12 @@ class Hand3DProcessor(VideoProcessorBase):
         img_sharp = cv2.addWeighted(img, 1.3, gaussian, -0.3, 0)
         img_rgb = cv2.cvtColor(img_sharp, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-        self.frame_timestamp += 1
-        results = self.detector.detect_for_video(mp_image, self.frame_timestamp)
+        self.frame_timestamp = max(self.frame_timestamp + 1, int(time.time() * 1000))
+        try:
+            results = self.detector.detect_for_video(mp_image, self.frame_timestamp)
+        except Exception as e:
+            _log(f"MediaPipe error: {e}")
+            results = type("NoHands", (), {"hand_landmarks": []})()
 
         mode_text = "MODE: SIAP"
         color_text = (200, 200, 200)
@@ -535,59 +545,71 @@ def _is_rate_limit_error(err_str: str) -> bool:
         or "itpm" in err
     )
 
+EMPTY_FALLBACK = "My apologies, Sir, I lost my train of thought. Could you say that once more?"
+
+def _clean_llm_text(text) -> str:
+    if not text: return ""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"^.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
+
+def _call_llm(client, model: str, messages: list, max_tokens: int, temperature: float, **extra) -> str:
+    kwargs = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens, **extra)
+    if model.startswith("openai/gpt-oss"):
+        kwargs["reasoning_effort"] = "low"   # cegah token habis untuk "berpikir" -> content kosong
+    resp = client.chat.completions.create(**kwargs)
+    return _clean_llm_text(resp.choices[0].message.content)
+
+def _text_only_answer(client, api_messages: list) -> str:
+    fallback_msgs = [api_messages[0]]
+    for m in api_messages[1:]:
+        if m["role"] == "system" and isinstance(m["content"], str):
+            fallback_msgs.append(m)
+    text_msgs = []
+    for m in api_messages:
+        if m["role"] in ("user", "assistant"):
+            if isinstance(m["content"], str):
+                if m["content"].strip():
+                    text_msgs.append({"role": m["role"], "content": m["content"][:300]})
+            elif isinstance(m["content"], list):
+                texts = [c.get("text", "") for c in m["content"] if isinstance(c, dict) and c.get("type") == "text"]
+                if texts:
+                    text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
+    fallback_msgs.extend(text_msgs[-4:])
+    return _call_llm(client, JARVIS_TEXT_MODEL, fallback_msgs, 600, 0.7)
+
 def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall. Jalankan: pip install groq"
     if not GROQ_API_KEY:
-        return "❌ API Key Groq belum diisi. Silakan edit kode di bagian GROQ_API_KEY."
-    
+        return "❌ API Key Groq belum diisi. Set environment variable GROQ_API_KEY atau .streamlit/secrets.toml."
+
     client = Groq(api_key=GROQ_API_KEY)
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=api_messages,
-            temperature=0.85,
-            max_tokens=MAX_OUTPUT_TOKENS,
-            frequency_penalty=0.6,
-            presence_penalty=0.4,
-        )
-        return resp.choices[0].message.content
+        text = _call_llm(client, model, api_messages, MAX_OUTPUT_TOKENS, 0.85,
+                         frequency_penalty=0.6, presence_penalty=0.4)
+        if text: return text
+
+        _log("⚠️ Jawaban kosong — retry dengan token lebih besar")
+        text = _call_llm(client, model, api_messages, MAX_OUTPUT_TOKENS * 2, 0.7)
+        if text: return text
+
+        if use_vision:
+            _log("⚠️ Vision tetap kosong — fallback ke text-only")
+            text = _text_only_answer(client, api_messages)
+            if text: return text
+        return EMPTY_FALLBACK
     except Exception as e:
         err_str = str(e)
         _log(f"GROQ API ERROR: {err_str[:200]}")
-        
         if _is_rate_limit_error(err_str):
             _log("⚠️ Rate limit kena — fallback ke text-only")
             try:
-                fallback_msgs = [api_messages[0]]
-                for m in api_messages[1:]:
-                    if m["role"] == "system" and isinstance(m["content"], str):
-                        if "LONG-TERM MEMORY" in m["content"]:
-                            fallback_msgs.append(m)
-                
-                text_msgs = []
-                for m in api_messages:
-                    if m["role"] in ("user", "assistant"):
-                        if isinstance(m["content"], str):
-                            text_msgs.append({"role": m["role"], "content": m["content"][:300]})
-                        elif isinstance(m["content"], list):
-                            texts = [c.get("text", "") for c in m["content"] if isinstance(c, dict) and c.get("type") == "text"]
-                            if texts:
-                                text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
-                
-                fallback_msgs.extend(text_msgs[-4:])
-                
-                resp = client.chat.completions.create(
-                    model=JARVIS_TEXT_MODEL,
-                    messages=fallback_msgs,
-                    temperature=0.7,
-                    max_tokens=200,
-                )
-                answer = resp.choices[0].message.content
+                answer = _text_only_answer(client, api_messages)
+                if not answer: return EMPTY_FALLBACK
                 return f"{answer}\n\n*(Sir, I had to switch to text-only mode due to token limits.)*"
-            except Exception as e2:
+            except Exception:
                 return "Sir, my cognitive buffer is momentarily saturated. Please wait a minute and try a shorter question."
-        
         return f"❌ Error Jarvis (Groq): {err_str[:300]}"
 
 def sanitize_latex(text: str) -> str:
@@ -639,12 +661,8 @@ def extract_memory(user_text: str, ai_text: str) -> str | None:
         User: {user_text[:300]}
         AI: {ai_text[:300]}
         """
-        resp = client.chat.completions.create(
-            model=JARVIS_MEMORY_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=40, temperature=0.1
-        )
-        memory = resp.choices[0].message.content.strip()
+        memory = _call_llm(client, JARVIS_MEMORY_MODEL,
+                           [{"role": "user", "content": prompt}], 300, 0.1)
         if "NONE" not in memory.upper() and len(memory) > 5: return memory
         return None
     except Exception: return None
@@ -1289,7 +1307,7 @@ with col1:
         desired_playing_state=True if st.session_state.cam_autostart else None,
         video_processor_factory=Hand3DProcessor,
         rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
+        media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 30}}, "audio": False},
         async_processing=True,
     )
 
@@ -1305,6 +1323,9 @@ with col2:
         if st.session_state.cam_autostart:
             st.info("⏳ Kamera sedang dinyalakan... Jika browser meminta izin, klik **Allow / Izinkan**. "
                     "Jika tidak berhasil dalam beberapa detik, klik tombol START di sebelah kiri.")
+            if time.time() - st.session_state.get("cam_requested_at", time.time()) > 15:
+                st.error("Kamera belum tersambung. Cek: (1) ikon kamera di address bar browser — pastikan diizinkan, "
+                         "(2) tidak ada aplikasi lain yang memakai webcam, (3) klik START secara manual lalu pilih perangkat via SELECT DEVICE.")
         else:
             st.warning("⚪ Kamera dalam mode standby. Ucapkan 'nyalakan kamera' atau klik START.")
 
@@ -1319,7 +1340,7 @@ st.header("💬 Speak with Jarvis")
 st.caption("Klik **'Mulai Dengar'** sekali → mode obrolan suara aktif terus. Bicara → diam 1.5 detik → auto kirim. Jarvis selesai bicara → mic otomatis aktif lagi. Klik **'Stop Dengar'** untuk mematikan.")
 
 for msg in st.session_state.jarvis_messages:
-    if msg["role"] == "system": continue
+    if msg["role"] == "system" or not str(msg["content"]).strip(): continue
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
@@ -1335,6 +1356,7 @@ if user_q and cam_cmd:
     elif cam_cmd == "on":
         st.session_state.cam_nonce += 1
         st.session_state.cam_autostart = True
+        st.session_state.cam_requested_at = time.time()
         reply = "Starting the camera now, Sir. Please allow camera access if your browser asks."
     else:
         st.session_state.cam_nonce += 1
@@ -1424,7 +1446,8 @@ elif user_q:
 
             ui_history = st.session_state.jarvis_messages[1:-1]
             for m in ui_history:
-                api_messages.append({"role": m["role"], "content": m["content"]})
+                if str(m["content"]).strip():
+                    api_messages.append({"role": m["role"], "content": m["content"]})
 
             if not has_img:
                 api_messages.append({
@@ -1439,6 +1462,8 @@ elif user_q:
             answer = sanitize_latex(answer)
             answer = strip_filler_words(answer)
             answer = strip_repetitive_greeting(answer, st.session_state.jarvis_messages)
+            if not answer or not answer.strip():
+                answer = EMPTY_FALLBACK
 
         st.markdown(answer)
 
