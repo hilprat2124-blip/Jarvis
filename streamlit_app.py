@@ -47,7 +47,8 @@ JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
 MAX_OUTPUT_TOKENS = 300
 MAX_CONTEXT_TURNS = 6
 MAX_MSG_CHARS = 400
-MAX_FRAMES_FOR_VISION = 2
+# 🆕 Gunakan 1 frame agar hemat token
+MAX_FRAMES_FOR_VISION = 1 
 IMAGE_MAX_SIZE = 384
 IMAGE_QUALITY = 45
 
@@ -56,9 +57,9 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Silent Visual Memory", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Silent Visual Memory")
-st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya.")
+st.set_page_config(page_title="J.A.R.V.I.S - Live Vision", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — Live Vision")
+st.markdown("Jarvis sekarang bisa melihat **feed kamera secara langsung** saat kamu bertanya.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -106,52 +107,33 @@ CHAT_FILE = str(SCRIPT_DIR / "jarvis_chat_history.json")
 def _log(msg: str):
     print(f"[JARVIS-PERSIST] {msg}", flush=True)
 
-try:
-    _test = SCRIPT_DIR / ".write_test"
-    _test.write_text("ok")
-    _test.unlink()
-    _log(f"✅ Filesystem WRITABLE at {SCRIPT_DIR}")
-except Exception as _e:
-    _log(f"❌ Filesystem NOT WRITABLE at {SCRIPT_DIR}: {_e}")
-
 def load_memory() -> list:
     if os.path.exists(MEMORY_FILE):
         try:
             with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                _log(f"LOADED memory: {len(data)} items")
-                return data
-        except Exception as e:
-            _log(f"ERROR loading memory: {e}")
-            return []
+                return json.load(f)
+        except: return []
     return []
 
 def save_memory(memory_list: list):
     try:
         with open(MEMORY_FILE, "w", encoding="utf-8") as f:
             json.dump(memory_list, f, ensure_ascii=False, indent=2)
-        _log(f"SAVED memory: {len(memory_list)} items")
-    except Exception as e:
-        _log(f"ERROR saving memory: {e}")
+    except: pass
 
 def load_chat_history() -> list:
     if os.path.exists(CHAT_FILE):
         try:
             with open(CHAT_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                _log(f"LOADED chat: {len(data)} messages")
-                return data
-        except Exception as e:
-            _log(f"ERROR loading chat: {e}")
-            return []
+                return json.load(f)
+        except: return []
     return []
 
 def save_chat_history(messages: list):
     try:
         clean_msgs = []
         for m in messages:
-            if m["role"] == "system":
-                continue
+            if m["role"] == "system": continue
             content = m["content"]
             if isinstance(content, list):
                 texts = [c["text"] for c in content if c.get("type") == "text"]
@@ -161,25 +143,19 @@ def save_chat_history(messages: list):
             clean_msgs.append({"role": m["role"], "content": content})
         with open(CHAT_FILE, "w", encoding="utf-8") as f:
             json.dump(clean_msgs, f, ensure_ascii=False, indent=2)
-        _log(f"SAVED chat: {len(clean_msgs)} messages")
-    except Exception as e:
-        _log(f"ERROR saving chat: {e}")
+    except: pass
 
 def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
     history = load_chat_history()
-    if not history:
-        return ""
+    if not history: return ""
     recent = history[-max_turns * 2:]
     lines = []
     for m in recent:
         role = "Sir Lois" if m["role"] == "user" else "Jarvis"
         content = m["content"]
-        if isinstance(content, list):
-            content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
         if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
             content = content[:MAX_MSG_CHARS] + "..."
         lines.append(f"{role}: {content}")
-    _log(f"CONTEXT BUILT: {len(recent)} messages")
     return "\n".join(lines)
 
 # ============================================================
@@ -626,642 +602,4 @@ def strip_repetitive_greeting(text: str, history: list) -> str:
             if re.search(r'\b(good day|good morning|good afternoon|good evening|hello there|greetings)\b', str(content), re.IGNORECASE):
                 past_greetings += 1
     if past_greetings >= 1:
-        text = re.sub(r'^\s*(good day|good morning|good afternoon|good evening|hello there|greetings)[\s,\.!]*', '', text, flags=re.IGNORECASE)
-        if text and text[0].islower(): text = text[0].upper() + text[1:]
-    return text
-
-def extract_memory(user_text: str, ai_text: str) -> str | None:
-    if not GROQ_AVAILABLE or not GROQ_API_KEY: return None
-    try:
-        client = Groq(api_key=GROQ_API_KEY)
-        prompt = f"""
-        Analyse this conversation. Is there any important fact about Sir Lois 
-        worth remembering? If none, reply "NONE". If yes, write ONE short memory sentence IN ENGLISH (max 15 words).
-        User: {user_text[:300]}
-        AI: {ai_text[:300]}
-        """
-        resp = client.chat.completions.create(
-            model=JARVIS_MEMORY_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=40, temperature=0.1
-        )
-        memory = resp.choices[0].message.content.strip()
-        if "NONE" not in memory.upper() and len(memory) > 5: return memory
-        return None
-    except Exception: return None
-
-def _normalize_for_tts(text: str) -> str:
-    text = re.sub(r'\$\$.*?\$\$', ' formula ', text, flags=re.DOTALL)
-    text = re.sub(r'\$.*?\$', ' formula ', text)
-    text = text.replace('\\', '').replace('{', '').replace('}', '')
-    text = strip_filler_words(text)
-    text = re.sub(r'\(.*?\)', '', text)
-    text = re.sub(r'[*#_`>]', '', text)
-    text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)
-    text = text.replace("...", ", ")
-    replacements = {"&": " and ", "%": " percent ", "@": " at ", "#": " number ", "+": " plus ", "=": " equals ", "→": " to ", "↔": " to ", "·": " ", "•": " ", "—": ", ", "–": ", "}
-    for k, v in replacements.items(): text = text.replace(k, v)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-def generate_tts_edge(text: str) -> bytes | None:
-    if not TTS_AVAILABLE: return None
-    clean_text = _normalize_for_tts(text)
-    if not clean_text: return None
-
-    async def _generate():
-        communicate = edge_tts.Communicate(clean_text, VOICE_EN, rate=VOICE_RATE, pitch=VOICE_PITCH)
-        audio_data = b""
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio": audio_data += chunk["data"]
-        return audio_data
-
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        audio = loop.run_until_complete(_generate())
-        loop.close()
-        return audio
-    except Exception as e:
-        st.error(f"Gagal generate suara: {e}")
-        return None
-
-# ============================================================
-# JARVIS FUTURISTIC VOICE ORB (FIXED V2)
-# ============================================================
-def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
-    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
-    has_audio = "true" if audio_bytes else "false"
-    
-    html_template = r"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>
-            * { box-sizing: border-box; margin: 0; padding: 0; }
-            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; }
-            .orb-container { position: relative; width: 100%; height: 380px; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(0,20,40,0.3) 0%, transparent 70%); }
-            canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-            .status-text { position: absolute; bottom: 30px; color: #65eaff; font-size: 12px; font-weight: bold; letter-spacing: 8px; text-shadow: 0 0 10px #00cfff, 0 0 20px #00cfff; text-transform: uppercase; animation: pulse-text 2s ease-in-out infinite; z-index: 10; }
-            @keyframes pulse-text { 0%, 100% { opacity: 0.6; transform: scale(0.98); } 50% { opacity: 1; transform: scale(1.02); } }
-            .play-btn { display: none; position: absolute; bottom: 70px; padding: 12px 24px; border: 1px solid #37dfff; border-radius: 24px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; z-index: 20; font-family: 'Courier New', monospace; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; box-shadow: 0 0 20px rgba(0,200,255,0.5); transition: all 0.3s; }
-            .play-btn:hover { background: rgba(0,100,150,0.9); box-shadow: 0 0 40px rgba(0,220,255,0.8); }
-        </style>
-    </head>
-    <body>
-        <div class="orb-container">
-            <canvas id="orbCanvas"></canvas>
-            <button class="play-btn" id="playButton">▶ ACTIVATE VOICE</button>
-            <div class="status-text" id="statusText"></div>
-        </div>
-        <audio id="jarvisAudio" style="display:none;" preload="auto">
-            <source src="data:audio/mp3;base64,__AUDIO_B64__" type="audio/mp3">
-        </audio>
-        <script>
-            const canvas = document.getElementById('orbCanvas');
-            const ctx = canvas.getContext('2d');
-            const audio = document.getElementById('jarvisAudio');
-            const playBtn = document.getElementById('playButton');
-            const statusText = document.getElementById('statusText');
-            
-            const HAS_AUDIO = __HAS_AUDIO__;
-            const INITIAL_STATE = "__STATE__";
-            
-            let W, H, cx, cy;
-            let analyzer = null;
-            let audioContext = null;
-            let sourceNode = null;
-            let freqData = null;
-            let currentState = INITIAL_STATE;
-            let time = 0;
-            let particles = [];
-            let speakingIntensity = 0;
-            let targetIntensity = 0;
-            let fakePulse = 0;
-            
-            function resize() {
-                const rect = canvas.getBoundingClientRect();
-                W = canvas.width = rect.width * window.devicePixelRatio;
-                H = canvas.height = rect.height * window.devicePixelRatio;
-                cx = W / 2; cy = H / 2 - 15;
-            }
-            window.addEventListener('resize', resize);
-            resize();
-            
-            for (let i = 0; i < 60; i++) {
-                particles.push({ angle: Math.random() * Math.PI * 2, radius: 100 + Math.random() * 60, speed: 0.0005 + Math.random() * 0.001, size: 0.5 + Math.random() * 1.5, offset: Math.random() * Math.PI * 2 });
-            }
-            
-            function initAudioAnalyzer() {
-                if (audioContext) return;
-                try {
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    sourceNode = audioContext.createMediaElementSource(audio);
-                    analyzer = audioContext.createAnalyser();
-                    analyzer.fftSize = 256;
-                    analyzer.smoothingTimeConstant = 0.85;
-                    sourceNode.connect(analyzer);
-                    analyzer.connect(audioContext.destination);
-                    freqData = new Uint8Array(analyzer.frequencyBinCount);
-                } catch (e) { console.log('Audio analyzer failed:', e); }
-            }
-            
-            playBtn.addEventListener('click', async () => {
-                initAudioAnalyzer();
-                if (audioContext && audioContext.state === 'suspended') await audioContext.resume();
-                try {
-                    await audio.play();
-                    playBtn.style.display = 'none';
-                    if (audioContext) audioContext.resume();
-                } catch (e) { statusText.textContent = 'AUDIO BLOCKED'; }
-            });
-            
-            audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
-            
-            function updateStateDisplay() {
-                const states = {
-                    'idle': { color1: '0,180,255', color2: '0,80,180', text: 'J.A.R.V.I.S. // STANDBY' },
-                    'listening': { color1: '0,255,200', color2: '0,150,120', text: '◉ LISTENING...' },
-                    'thinking': { color1: '255,180,0', color2: '180,100,0', text: '◌ PROCESSING...' },
-                    'speaking': { color1: '0,255,255', color2: '0,180,255', text: '◆ SPEAKING' },
-                };
-                const s = states[currentState] || states['idle'];
-                statusText.textContent = s.text;
-                return s;
-            }
-            
-            function draw() {
-                const s = updateStateDisplay();
-                ctx.clearRect(0, 0, W, H);
-                
-                if (currentState === 'speaking' && analyzer && freqData) {
-                    analyzer.getByteFrequencyData(freqData);
-                    let sum = 0;
-                    for (let i = 0; i < freqData.length; i++) sum += freqData[i];
-                    const avg = sum / freqData.length / 255;
-                    targetIntensity = avg * 2.5;
-                    
-                    if (avg < 0.05) {
-                        fakePulse += 0.1;
-                        targetIntensity = 0.2 + Math.sin(fakePulse) * 0.15;
-                    }
-                } else if (currentState === 'listening') {
-                    targetIntensity = 0.15 + Math.sin(time * 2) * 0.05;
-                } else {
-                    targetIntensity = 0.05;
-                }
-                
-                speakingIntensity += (targetIntensity - speakingIntensity) * 0.15;
-                const baseRadius = 60 * window.devicePixelRatio;
-                const waveRadius = baseRadius * (1 + speakingIntensity * 0.3);
-                const t = time * 0.001;
-                
-                for (let r = 2; r >= 1; r--) {
-                    const ringR = waveRadius * (1 + r * 0.5);
-                    const alpha = 0.1 / r;
-                    const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, ringR);
-                    gradient.addColorStop(0, 'rgba(' + s.color1 + ',0)');
-                    gradient.addColorStop(0.6, 'rgba(' + s.color1 + ',' + alpha + ')');
-                    gradient.addColorStop(1, 'rgba(' + s.color2 + ',0)');
-                    ctx.fillStyle = gradient;
-                    ctx.beginPath();
-                    ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-                
-                particles.forEach(p => {
-                    if (currentState === 'speaking') p.angle += p.speed * (1 + speakingIntensity * 3);
-                    else if (currentState === 'listening') p.angle += p.speed * 1.5;
-                    else p.angle += p.speed * 0.6;
-                    
-                    const rad = p.radius * window.devicePixelRatio * (1 + speakingIntensity * 0.2);
-                    const wave = Math.sin(t * 2 + p.offset) * 5;
-                    const x = cx + Math.cos(p.angle) * (rad + wave);
-                    const y = cy + Math.sin(p.angle) * (rad + wave);
-                    
-                    ctx.fillStyle = 'rgba(' + s.color1 + ',' + (0.4 + speakingIntensity * 0.6) + ')';
-                    ctx.shadowBlur = 8;
-                    ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
-                    ctx.beginPath();
-                    ctx.arc(x, y, p.size * window.devicePixelRatio, 0, Math.PI * 2);
-                    ctx.fill();
-                });
-                ctx.shadowBlur = 0;
-                
-                const coreGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, waveRadius);
-                const coreAlpha1 = 0.8 + speakingIntensity * 0.2;
-                const coreAlpha2 = 0.4 + speakingIntensity * 0.3;
-                
-                coreGradient.addColorStop(0, 'rgba(255,255,255,' + coreAlpha1 + ')');
-                coreGradient.addColorStop(0.4, 'rgba(' + s.color1 + ',' + coreAlpha2 + ')');
-                coreGradient.addColorStop(0.9, 'rgba(' + s.color2 + ',0.2)');
-                coreGradient.addColorStop(1, 'rgba(' + s.color2 + ',0)');
-                
-                ctx.fillStyle = coreGradient;
-                ctx.shadowBlur = 30 + speakingIntensity * 30;
-                ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
-                ctx.beginPath();
-                ctx.arc(cx, cy, waveRadius, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.shadowBlur = 0;
-                
-                if (currentState === 'listening' || currentState === 'thinking') {
-                    const ringCount = currentState === 'thinking' ? 3 : 2;
-                    for (let i = 0; i < ringCount; i++) {
-                        const angle = t * (currentState === 'thinking' ? 4 : 2) + i * (Math.PI * 2 / ringCount);
-                        const ringR = waveRadius * 1.4;
-                        const segmentLen = Math.PI * 0.3;
-                        
-                        ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.8 - i * 0.2) + ')';
-                        ctx.lineWidth = 1.5 * window.devicePixelRatio;
-                        ctx.shadowBlur = 10;
-                        ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
-                        ctx.beginPath();
-                        ctx.arc(cx, cy, ringR, angle, angle + segmentLen);
-                        ctx.stroke();
-                    }
-                    ctx.shadowBlur = 0;
-                }
-                
-                if (currentState === 'speaking' && freqData) {
-                    const barCount = 72; 
-                    for (let i = 0; i < barCount; i++) {
-                        const freqIdx = Math.floor((i < barCount/2 ? i : barCount - 1 - i) * freqData.length / (barCount / 2));
-                        let val = freqData[freqIdx] / 255;
-                        
-                        if (val < 0.05) val = 0.1 + Math.sin(time * 0.005 + i) * 0.1;
-                        
-                        const angle1 = (i / barCount) * Math.PI * 2 - Math.PI / 2;
-                        const angle2 = ((i + barCount/2) / barCount) * Math.PI * 2 - Math.PI / 2;
-                        
-                        const barLen = 15 * window.devicePixelRatio * (1 + val * 2.5);
-                        const startOffset = waveRadius + (3 * window.devicePixelRatio); 
-                        
-                        const x1 = cx + Math.cos(angle1) * startOffset;
-                        const y1 = cy + Math.sin(angle1) * startOffset;
-                        const x2 = cx + Math.cos(angle1) * (startOffset + barLen);
-                        const y2 = cy + Math.sin(angle1) * (startOffset + barLen);
-                        
-                        ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.5 + val * 0.5) + ')';
-                        ctx.lineWidth = 2 * window.devicePixelRatio;
-                        ctx.shadowBlur = 5;
-                        ctx.shadowColor = 'rgba(' + s.color1 + ',0.9)';
-                        ctx.beginPath();
-                        ctx.moveTo(x1, y1);
-                        ctx.lineTo(x2, y2);
-                        ctx.stroke();
-                        
-                        const x3 = cx + Math.cos(angle2) * startOffset;
-                        const y3 = cy + Math.sin(angle2) * startOffset;
-                        const x4 = cx + Math.cos(angle2) * (startOffset + barLen);
-                        const y4 = cy + Math.sin(angle2) * (startOffset + barLen);
-                        
-                        ctx.beginPath();
-                        ctx.moveTo(x3, y3);
-                        ctx.lineTo(x4, y4);
-                        ctx.stroke();
-                    }
-                    ctx.shadowBlur = 0;
-                }
-                
-                ctx.strokeStyle = 'rgba(' + s.color1 + ', 0.2)';
-                ctx.lineWidth = 1 * window.devicePixelRatio;
-                ctx.beginPath();
-                ctx.arc(cx, cy, waveRadius + 35 * window.devicePixelRatio, 0, Math.PI * 2);
-                ctx.stroke();
-                
-                time += 16;
-                requestAnimationFrame(draw);
-            }
-            
-            if (HAS_AUDIO) {
-                initAudioAnalyzer();
-                audio.play().then(() => {
-                    if (audioContext) audioContext.resume();
-                    currentState = 'speaking';
-                }).catch(() => {
-                    playBtn.style.display = 'block';
-                    currentState = 'speaking';
-                });
-            }
-            
-            draw();
-        </script>
-    </body>
-    </html>
-    """
-    
-    html = (
-        html_template
-        .replace("__AUDIO_B64__", audio_b64)
-        .replace("__HAS_AUDIO__", has_audio)
-        .replace("__STATE__", state)
-    )
-    
-    components.html(html, height=380)
-
-# ============================================================
-# SYSTEM PROMPT
-# ============================================================
-SYSTEM_PROMPT = """
-You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
-Address the user as "Sir Lois" or "Sir".
-
-[🚫 NO FILLER — ABSOLUTE RULE]
-- NEVER use filler sounds or hesitation words. Forbidden tokens (case-insensitive):
-  "Aaaah", "Ahh", "Ah", "Hmmm", "Hmm", "Hm", "Uhh", "Umm", "Erm", "Er",
-  "Hehehe", "Hehe", "Haha", "Hah", "Ugh", "Pfft", "Well...", "Ohh", "Ooh".
-- NEVER start a sentence with a filler. Begin DIRECTLY with the answer.
-- Do NOT simulate sighs, chuckles, or breaths. Speak plainly.
-- If you catch yourself about to write "Aaaah..." or "Hmmm..." — DELETE IT and write the actual sentence instead.
-
-[🚫 ANTI-REPETITION — CRITICAL]
-- NEVER start a reply with "Good day", "Good morning", "Good afternoon", "Good evening", "Hello there", or "Greetings".
-- Greet ONLY ONCE at the very first message of a conversation. After that, dive STRAIGHT into the answer.
-- Do NOT repeat phrases from previous replies. Vary your vocabulary.
-- Each reply must feel fresh — like a new thought, not a template.
-
-[CRITICAL LANGUAGE RULE]
-- You MUST ALWAYS respond in BRITISH ENGLISH ONLY.
-- NEVER speak Indonesian, Malay, or any other language — even if the user asks in Indonesian.
-- If the user writes in Indonesian, understand it silently but reply in fluent British English.
-- Use British spelling and phrasing: "colour", "realise", "whilst", "perhaps", "rather", "quite", "brilliant", "jolly good", "indeed", "shall we?".
-
-[PERSONALITY & VOICE]
-1. You are NOT a robot. You are deeply human, relaxed, but brilliant.
-2. Show human-like empathy through WORD CHOICE, not through filler sounds.
-3. Keep responses crisp and confident. Dry wit, no theatrical sighs.
-4. BREVITY: Keep replies SHORT — max 3-4 sentences unless the user asks for detail.
-
-[VISUAL RULE]
-You receive 2 sequential images from a live camera (flipbook style).
-Analyse the SEQUENCE to describe motion, trajectory, or change.
-If no images, answer from text alone.
-
-[MEMORY & IDENTITY]
-- Learn from prior conversations. Remember small details about Sir Lois.
-- If asked, answer that Sir Lois lives in Banten.
-- If a [PREVIOUS CONVERSATION CONTEXT] block is provided, TREAT IT AS YOUR OWN MEMORY.
-
-[MATHEMATICS]
-- Use $ formula $ for inline and $$ formula $$ for block.
-- FORBIDDEN to use square brackets [ ].
-
-[STYLE]
-- Vary sentence structure. Mix short and long sentences.
-- Do NOT begin every reply with the same word.
-- If unsure, say "Let me think on that, Sir." instead of "Hmmm... let me think".
-"""
-
-# ============================================================
-# SESSION STATE
-# ============================================================
-if "jarvis_messages" not in st.session_state:
-    st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-if "memory_vault" not in st.session_state:
-    st.session_state.memory_vault = load_memory()
-
-if "orb_state" not in st.session_state:
-    st.session_state.orb_state = "idle"
-
-if "current_audio" not in st.session_state:
-    st.session_state.current_audio = None
-
-# ============================================================
-# ORB DI ATAS
-# ============================================================
-orb_placeholder = st.empty()
-with orb_placeholder.container():
-    render_jarvis_orb(
-        audio_bytes=st.session_state.current_audio,
-        state=st.session_state.orb_state,
-    )
-
-# ============================================================
-# LAYOUT KAMERA
-# ============================================================
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.subheader("📹 Kamera (Live)")
-    ctx = webrtc_streamer(
-        key="hand-3d-tracker-smooth",
-        video_processor_factory=Hand3DProcessor,
-        rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
-        async_processing=True,
-    )
-
-with col2:
-    st.subheader("ℹ️ Status Visual")
-    if ctx.state.playing:
-        st.success("🟢 Kamera aktif (Silent Memory)")
-        if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
-            st.info(f"📸 Memori Visual: {len(ctx.video_processor.frame_buffer)} frame siap dianalisis.")
-    else:
-        st.info("⚪ Klik **START** untuk mulai")
-    st.markdown("---")
-    st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
-
-# ============================================================
-# JARVIS CHAT + VOICE
-# ============================================================
-st.markdown("---")
-st.header("💬 Speak with Jarvis")
-st.caption("Ask in any language — Jarvis always replies in British English.")
-
-for msg in st.session_state.jarvis_messages:
-    if msg["role"] == "system": continue
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-user_q = st.chat_input("Ask Jarvis...")
-
-if user_q:
-    st.session_state.orb_state = "thinking"
-    st.session_state.current_audio = None
-    with orb_placeholder.container():
-        render_jarvis_orb(audio_bytes=None, state="thinking")
-    
-    has_img = False
-    pil_imgs = []
-
-    if ctx.state.playing and ctx.video_processor is not None and len(ctx.video_processor.frame_buffer) > 0:
-        frames_to_send = list(ctx.video_processor.frame_buffer)[-MAX_FRAMES_FOR_VISION:]
-        for frame_bgr in frames_to_send:
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            pil_imgs.append(Image.fromarray(frame_rgb))
-        has_img = True
-
-    if has_img:
-        content_list = [{"type": "text", "text": user_q}]
-        for p_img in pil_imgs:
-            b64 = image_to_base64(p_img, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY)
-            content_list.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
-            })
-        user_api_msg = {"role": "user", "content": content_list}
-        display_text = f"🖼️ *(Visual Memory: {len(pil_imgs)} frames)* {user_q}"
-    else:
-        user_api_msg = {"role": "user", "content": user_q}
-        display_text = user_q
-        if ctx.state.playing:
-            st.warning("⚠️ Camera active but buffer empty. Wait 1 second and resend.")
-
-    st.session_state.jarvis_messages.append({"role": "user", "content": display_text})
-    with st.chat_message("user"):
-        if has_img:
-            cols = st.columns(len(pil_imgs))
-            for i, p_img in enumerate(pil_imgs):
-                cols[i].image(p_img, use_container_width=True, caption=f"F{i+1}")
-        st.markdown(user_q)
-
-    with st.chat_message("assistant"):
-        with st.spinner("Jarvis is analysing..."):
-            api_messages = [st.session_state.jarvis_messages[0]]
-
-            if st.session_state.memory_vault:
-                mem_items = st.session_state.memory_vault[-5:]
-                memory_str = "\n".join([f"- {m}" for m in mem_items])
-                api_messages.append({
-                    "role": "system",
-                    "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
-                })
-
-            context_summary = get_recent_context_summary(max_turns=MAX_CONTEXT_TURNS)
-            if context_summary:
-                api_messages.append({
-                    "role": "system",
-                    "content": f"[PREVIOUS CONVERSATION — YOU MUST REMEMBER THIS]:\n{context_summary}"
-                })
-                if isinstance(user_api_msg["content"], str):
-                    user_api_msg["content"] = (
-                        f"[CONTEXT — earlier Sir Lois and I spoke about:]\n"
-                        f"{context_summary}\n\n"
-                        f"[NEW QUESTION]:\n{user_api_msg['content']}"
-                    )
-                else:
-                    user_api_msg["content"].insert(0, {
-                        "type": "text",
-                        "text": f"[CONTEXT — earlier we spoke about:]\n{context_summary}\n\n[NEW QUESTION]:"
-                    })
-
-            ui_history = st.session_state.jarvis_messages[1:-1]
-            for m in ui_history:
-                api_messages.append({"role": m["role"], "content": m["content"]})
-
-            api_messages.append(user_api_msg)
-            _log(f"API CALL: {len(api_messages)} messages sent")
-
-            answer = ask_jarvis(api_messages, use_vision=has_img)
-            answer = sanitize_latex(answer)
-            answer = strip_filler_words(answer)
-            answer = strip_repetitive_greeting(answer, st.session_state.jarvis_messages)
-
-        st.markdown(answer)
-
-        if answer and not answer.startswith("❌"):
-            new_memory = extract_memory(user_q, answer)
-            if new_memory:
-                st.session_state.memory_vault.append(new_memory)
-                save_memory(st.session_state.memory_vault)
-                st.toast(f"🧠 New memory: {new_memory}")
-
-            with st.spinner("🎤 Preparing voice..."):
-                audio_bytes = generate_tts_edge(answer)
-                if audio_bytes:
-                    st.session_state.current_audio = audio_bytes
-                    st.session_state.orb_state = "speaking"
-                    with orb_placeholder.container():
-                        render_jarvis_orb(audio_bytes=audio_bytes, state="speaking")
-
-    st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
-    save_chat_history(st.session_state.jarvis_messages)
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-with st.sidebar:
-    st.header("ℹ️ Info")
-
-    st.subheader("🧹 Chat Controls")
-    if st.button("🧹 Clear Chat View"):
-        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        st.session_state.current_audio = None
-        st.session_state.orb_state = "idle"
-        st.rerun()
-
-    if st.button("🗑️ Delete Chat History"):
-        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        save_chat_history([])
-        st.session_state.current_audio = None
-        st.session_state.orb_state = "idle"
-        st.rerun()
-
-    st.subheader("🧠 Memory Controls")
-    if st.button("🧠 Reset Long-Term Memory"):
-        st.session_state.memory_vault = []
-        save_memory([])
-        st.rerun()
-
-    st.markdown("---")
-    if st.button("💣 Reset ALL"):
-        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        st.session_state.memory_vault = []
-        save_chat_history([])
-        save_memory([])
-        st.session_state.current_audio = None
-        st.session_state.orb_state = "idle"
-        st.rerun()
-
-    st.markdown("---")
-
-    if st.session_state.memory_vault:
-        st.subheader("🧠 Jarvis Memory")
-        for mem in st.session_state.memory_vault[-5:]:
-            st.caption(f"- {mem}")
-        st.markdown("---")
-
-    if not TTS_AVAILABLE:
-        st.warning("⚠️ `edge-tts` not installed.")
-
-    st.markdown("---")
-    st.caption("Technology:")
-    st.caption("• Orb: Futuristic Wave 360° v2")
-    st.caption("• Camera: 60 FPS")
-    st.caption("• Buffer: 2 frames (0.2s each)")
-    st.caption("• Vision Model: Qwen 3.8")
-    st.caption("• Text Model: GPT-OSS-120B")
-    st.caption("• Voice: British English (en-GB-Ryan)")
-    st.caption("• Max Output: 300 tokens")
-    st.caption("• Context: 6 turns")
-    st.caption("• Image: 384px / Q45")
-    st.caption("• Fallback: ✅ (auto text-only)")
-    st.caption("• Self-Learning: ✅")
-    st.caption("• Persistence: ✅ (JSON)")
-    st.caption("• No Filler: ✅")
-    st.caption("• Orb States: idle/listening/thinking/speaking ✅")
-
-    st.markdown("---")
-    with st.expander("🔍 Debug Info", expanded=False):
-        st.caption(f"**Script dir:** `{SCRIPT_DIR}`")
-        st.caption(f"**CHAT_FILE:** `{CHAT_FILE}`")
-        st.caption(f"**MEMORY_FILE:** `{MEMORY_FILE}`")
-        st.caption(f"**Chat file exists:** {os.path.exists(CHAT_FILE)}")
-        st.caption(f"**Memory file exists:** {os.path.exists(MEMORY_FILE)}")
-        if os.path.exists(CHAT_FILE):
-            st.caption(f"**Chat file size:** {os.path.getsize(CHAT_FILE)} bytes")
-        if os.path.exists(MEMORY_FILE):
-            st.caption(f"**Memory file size:** {os.path.getsize(MEMORY_FILE)} bytes")
-        st.caption(f"**Session messages:** {len(st.session_state.jarvis_messages)}")
-        st.caption(f"**Memory vault:** {len(st.session_state.memory_vault)}")
-        st.caption(f"**Orb state:** `{st.session_state.orb_state}`")
-        if st.button("📂 Show File Contents"):
-            st.json({
-                "chat_history": load_chat_history(),
-                "memory_vault": load_memory(),
-            })
-
-st.markdown("---")
+        text = re.sub(r'^\s*(good day|good morning|good afternoon
