@@ -35,15 +35,13 @@ except ImportError:
     TTS_AVAILABLE = False
 
 # ============ KONFIGURASI GROQ API ============
-# API Key Groq milikmu
 GROQ_API_KEY = "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"
 
-# Model Groq
 JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
 JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
 
-MAX_OUTPUT_TOKENS = 300 # Dikunci kecil agar hemat token gratis
+MAX_OUTPUT_TOKENS = 300
 MAX_CONTEXT_TURNS = 6
 MAX_MSG_CHARS = 400
 MAX_FRAMES_FOR_VISION = 1 
@@ -57,7 +55,7 @@ VOICE_PITCH = "-3Hz"
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="J.A.R.V.I.S - Groq Vision", page_icon="🔵", layout="wide")
 st.title("🔵 J.A.R.V.I.S — Groq Vision")
-st.markdown("Jarvis sekarang menggunakan Groq API.")
+st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -679,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS FUTURISTIC VOICE ORB
+# JARVIS FUTURISTIC VOICE ORB (ARC REACTOR STYLE)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -726,7 +724,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let freqData = null;
             let currentState = INITIAL_STATE;
             let time = 0;
-            let particles = [];
             let speakingIntensity = 0;
             let targetIntensity = 0;
             let fakePulse = 0;
@@ -739,10 +736,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             }
             window.addEventListener('resize', resize);
             resize();
-            
-            for (let i = 0; i < 60; i++) {
-                particles.push({ angle: Math.random() * Math.PI * 2, radius: 100 + Math.random() * 60, speed: 0.0005 + Math.random() * 0.001, size: 0.5 + Math.random() * 1.5, offset: Math.random() * Math.PI * 2 });
-            }
             
             function initAudioAnalyzer() {
                 if (audioContext) return;
@@ -772,16 +765,29 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             
             function updateStateDisplay() {
                 const states = {
-                    'idle': { color1: '0,180,255', color2: '0,80,180', text: 'J.A.R.V.I.S. // STANDBY' },
-                    'listening': { color1: '0,255,200', color2: '0,150,120', text: '◉ LISTENING...' },
-                    'thinking': { color1: '255,180,0', color2: '180,100,0', text: '◌ PROCESSING...' },
-                    'speaking': { color1: '0,255,255', color2: '0,180,255', text: '◆ SPEAKING' },
+                    'idle': { color1: '0,180,255', color2: '0,80,180', text: 'JARVIS // STANDBY' },
+                    'listening': { color1: '0,255,200', color2: '0,150,120', text: 'JARVIS // LISTENING' },
+                    'thinking': { color1: '255,180,0', color2: '180,100,0', text: 'JARVIS // PROCESSING' },
+                    'speaking': { color1: '0,255,255', color2: '0,180,255', text: 'JARVIS // SPEAKING' },
                 };
                 const s = states[currentState] || states['idle'];
                 statusText.textContent = s.text;
                 return s;
             }
             
+            // Helper to draw a triangle (Arc Reactor core)
+            function drawTriangle(cx, cy, size, angleOffset) {
+                ctx.beginPath();
+                for (let i = 0; i < 3; i++) {
+                    const angle = angleOffset + i * (Math.PI * 2 / 3);
+                    const x = cx + Math.cos(angle) * size;
+                    const y = cy + Math.sin(angle) * size;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                }
+                ctx.closePath();
+            }
+
             function draw() {
                 const s = updateStateDisplay();
                 ctx.clearRect(0, 0, W, H);
@@ -808,12 +814,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 const waveRadius = baseRadius * (1 + speakingIntensity * 0.3);
                 const t = time * 0.001;
                 
-                for (let r = 2; r >= 1; r--) {
-                    const ringR = waveRadius * (1 + r * 0.5);
+                // 1. Glow Latar
+                for (let r = 3; r >= 1; r--) {
+                    const ringR = waveRadius * (1 + r * 0.4);
                     const alpha = 0.1 / r;
                     const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, ringR);
                     gradient.addColorStop(0, 'rgba(' + s.color1 + ',0)');
-                    gradient.addColorStop(0.6, 'rgba(' + s.color1 + ',' + alpha + ')');
+                    gradient.addColorStop(0.5, 'rgba(' + s.color1 + ',' + alpha + ')');
                     gradient.addColorStop(1, 'rgba(' + s.color2 + ',0)');
                     ctx.fillStyle = gradient;
                     ctx.beginPath();
@@ -821,107 +828,88 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     ctx.fill();
                 }
                 
-                particles.forEach(p => {
-                    if (currentState === 'speaking') p.angle += p.speed * (1 + speakingIntensity * 3);
-                    else if (currentState === 'listening') p.angle += p.speed * 1.5;
-                    else p.angle += p.speed * 0.6;
-                    
-                    const rad = p.radius * window.devicePixelRatio * (1 + speakingIntensity * 0.2);
-                    const wave = Math.sin(t * 2 + p.offset) * 5;
-                    const x = cx + Math.cos(p.angle) * (rad + wave);
-                    const y = cy + Math.sin(p.angle) * (rad + wave);
-                    
-                    ctx.fillStyle = 'rgba(' + s.color1 + ',' + (0.4 + speakingIntensity * 0.6) + ')';
-                    ctx.shadowBlur = 8;
-                    ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
-                    ctx.beginPath();
-                    ctx.arc(x, y, p.size * window.devicePixelRatio, 0, Math.PI * 2);
-                    ctx.fill();
-                });
-                ctx.shadowBlur = 0;
-                
-                const coreGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, waveRadius);
-                const coreAlpha1 = 0.8 + speakingIntensity * 0.2;
-                const coreAlpha2 = 0.4 + speakingIntensity * 0.3;
-                
-                coreGradient.addColorStop(0, 'rgba(255,255,255,' + coreAlpha1 + ')');
-                coreGradient.addColorStop(0.4, 'rgba(' + s.color1 + ',' + coreAlpha2 + ')');
-                coreGradient.addColorStop(0.9, 'rgba(' + s.color2 + ',0.2)');
-                coreGradient.addColorStop(1, 'rgba(' + s.color2 + ',0)');
-                
-                ctx.fillStyle = coreGradient;
-                ctx.shadowBlur = 30 + speakingIntensity * 30;
-                ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
-                ctx.beginPath();
-                ctx.arc(cx, cy, waveRadius, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.shadowBlur = 0;
-                
-                if (currentState === 'listening' || currentState === 'thinking') {
-                    const ringCount = currentState === 'thinking' ? 3 : 2;
-                    for (let i = 0; i < ringCount; i++) {
-                        const angle = t * (currentState === 'thinking' ? 4 : 2) + i * (Math.PI * 2 / ringCount);
-                        const ringR = waveRadius * 1.4;
-                        const segmentLen = Math.PI * 0.3;
-                        
-                        ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.8 - i * 0.2) + ')';
-                        ctx.lineWidth = 1.5 * window.devicePixelRatio;
-                        ctx.shadowBlur = 10;
-                        ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
-                        ctx.beginPath();
-                        ctx.arc(cx, cy, ringR, angle, angle + segmentLen);
-                        ctx.stroke();
-                    }
-                    ctx.shadowBlur = 0;
-                }
-                
+                // 2. Cincin Equalizer Audio (360 derajat) - Desain Teknis
                 if (currentState === 'speaking' && freqData) {
-                    const barCount = 72; 
+                    const barCount = 60; 
                     for (let i = 0; i < barCount; i++) {
-                        const freqIdx = Math.floor((i < barCount/2 ? i : barCount - 1 - i) * freqData.length / (barCount / 2));
+                        // Hanya gambar di setengah lingkaran lalu di-mirror
+                        const halfIndex = i < barCount / 2 ? i : barCount - 1 - i;
+                        const freqIdx = Math.floor(halfIndex * freqData.length / (barCount / 2));
                         let val = freqData[freqIdx] / 255;
                         
                         if (val < 0.05) val = 0.1 + Math.sin(time * 0.005 + i) * 0.1;
                         
-                        const angle1 = (i / barCount) * Math.PI * 2 - Math.PI / 2;
-                        const angle2 = ((i + barCount/2) / barCount) * Math.PI * 2 - Math.PI / 2;
+                        const angle = (i / barCount) * Math.PI * 2 - Math.PI / 2;
+                        const barLen = 10 * window.devicePixelRatio * (1 + val * 3);
+                        const startOffset = waveRadius + (8 * window.devicePixelRatio); 
                         
-                        const barLen = 15 * window.devicePixelRatio * (1 + val * 2.5);
-                        const startOffset = waveRadius + (3 * window.devicePixelRatio); 
+                        const x1 = cx + Math.cos(angle) * startOffset;
+                        const y1 = cy + Math.sin(angle) * startOffset;
+                        const x2 = cx + Math.cos(angle) * (startOffset + barLen);
+                        const y2 = cy + Math.sin(angle) * (startOffset + barLen);
                         
-                        const x1 = cx + Math.cos(angle1) * startOffset;
-                        const y1 = cy + Math.sin(angle1) * startOffset;
-                        const x2 = cx + Math.cos(angle1) * (startOffset + barLen);
-                        const y2 = cy + Math.sin(angle1) * (startOffset + barLen);
-                        
-                        ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.5 + val * 0.5) + ')';
-                        ctx.lineWidth = 2 * window.devicePixelRatio;
-                        ctx.shadowBlur = 5;
-                        ctx.shadowColor = 'rgba(' + s.color1 + ',0.9)';
+                        ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.4 + val * 0.6) + ')';
+                        ctx.lineWidth = 1.5 * window.devicePixelRatio;
                         ctx.beginPath();
                         ctx.moveTo(x1, y1);
                         ctx.lineTo(x2, y2);
                         ctx.stroke();
-                        
-                        const x3 = cx + Math.cos(angle2) * startOffset;
-                        const y3 = cy + Math.sin(angle2) * startOffset;
-                        const x4 = cx + Math.cos(angle2) * (startOffset + barLen);
-                        const y4 = cy + Math.sin(angle2) * (startOffset + barLen);
-                        
-                        ctx.beginPath();
-                        ctx.moveTo(x3, y3);
-                        ctx.lineTo(x4, y4);
-                        ctx.stroke();
                     }
-                    ctx.shadowBlur = 0;
                 }
                 
-                ctx.strokeStyle = 'rgba(' + s.color1 + ', 0.2)';
+                // 3. Cincin Luar Statis (Garis Teknis)
+                ctx.strokeStyle = 'rgba(' + s.color1 + ', 0.3)';
                 ctx.lineWidth = 1 * window.devicePixelRatio;
                 ctx.beginPath();
-                ctx.arc(cx, cy, waveRadius + 35 * window.devicePixelRatio, 0, Math.PI * 2);
+                ctx.arc(cx, cy, waveRadius + 12 * window.devicePixelRatio, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // 4. Cincin Segmen Berputar
+                const ringSegments = 12;
+                for (let i = 0; i < ringSegments; i++) {
+                    const angle = t * (currentState === 'thinking' ? 3 : 1) + i * (Math.PI * 2 / ringSegments);
+                    const segLen = Math.PI * 0.08;
+                    ctx.strokeStyle = 'rgba(' + s.color1 + ', 0.6)';
+                    ctx.lineWidth = 2 * window.devicePixelRatio;
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, waveRadius + 20 * window.devicePixelRatio, angle, angle + segLen);
+                    ctx.stroke();
+                }
+
+                // 5. Inti Orb (Core) - Desain Segitiga Arc Reactor
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(t * 0.5); // Rotasi lambat segitiga
+                
+                // Gambar glow segitiga
+                ctx.shadowBlur = 40 + speakingIntensity * 40;
+                ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
+                ctx.fillStyle = 'rgba(' + s.color1 + ', 0.2)';
+                drawTriangle(0, 0, waveRadius * 0.8, 0);
+                ctx.fill();
+                
+                // Garis tepi segitiga
+                ctx.strokeStyle = 'rgba(' + s.color1 + ', 0.9)';
+                ctx.lineWidth = 2 * window.devicePixelRatio;
+                drawTriangle(0, 0, waveRadius * 0.8, 0);
                 ctx.stroke();
                 
+                // Gambar segitiga dalam
+                ctx.fillStyle = 'rgba(255,255,255, 0.6)';
+                drawTriangle(0, 0, waveRadius * 0.5, Math.PI);
+                ctx.fill();
+                
+                ctx.restore();
+
+                // 6. Lingkaran Inti Tengah
+                const coreGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, waveRadius * 0.3);
+                coreGradient.addColorStop(0, 'rgba(255,255,255,' + (0.8 + speakingIntensity * 0.2) + ')');
+                coreGradient.addColorStop(1, 'rgba(' + s.color1 + ',0)');
+                ctx.fillStyle = coreGradient;
+                ctx.beginPath();
+                ctx.arc(cx, cy, waveRadius * 0.3, 0, Math.PI * 2);
+                ctx.fill();
+
                 time += 16;
                 requestAnimationFrame(draw);
             }
@@ -1204,7 +1192,7 @@ with st.sidebar:
     if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
     
     st.caption("Technology:")
-    st.caption("• Orb: Futuristic Wave")
+    st.caption("• Orb: Arc Reactor Style")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
     st.caption("• Vision Model: Qwen 3.8")
