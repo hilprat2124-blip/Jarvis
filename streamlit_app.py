@@ -687,7 +687,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS FUTURISTIC VOICE ORB (Fixed 360 & Autoplay)
+# JARVIS FUTURISTIC VOICE ORB (FIXED V2)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -702,9 +702,9 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; }
             .orb-container { position: relative; width: 100%; height: 380px; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(0,20,40,0.3) 0%, transparent 70%); }
             canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-            .status-text { position: absolute; bottom: 18px; color: #65eaff; font-size: 11px; letter-spacing: 6px; text-shadow: 0 0 10px #00cfff, 0 0 20px #00cfff; text-transform: uppercase; animation: pulse-text 2s ease-in-out infinite; z-index: 10; }
-            @keyframes pulse-text { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
-            .play-btn { display: none; position: absolute; padding: 12px 24px; border: 1px solid #37dfff; border-radius: 24px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; z-index: 20; font-family: 'Courier New', monospace; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; box-shadow: 0 0 20px rgba(0,200,255,0.5); transition: all 0.3s; }
+            .status-text { position: absolute; bottom: 30px; color: #65eaff; font-size: 12px; font-weight: bold; letter-spacing: 8px; text-shadow: 0 0 10px #00cfff, 0 0 20px #00cfff; text-transform: uppercase; animation: pulse-text 2s ease-in-out infinite; z-index: 10; }
+            @keyframes pulse-text { 0%, 100% { opacity: 0.6; transform: scale(0.98); } 50% { opacity: 1; transform: scale(1.02); } }
+            .play-btn { display: none; position: absolute; bottom: 70px; padding: 12px 24px; border: 1px solid #37dfff; border-radius: 24px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; z-index: 20; font-family: 'Courier New', monospace; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; box-shadow: 0 0 20px rgba(0,200,255,0.5); transition: all 0.3s; }
             .play-btn:hover { background: rgba(0,100,150,0.9); box-shadow: 0 0 40px rgba(0,220,255,0.8); }
         </style>
     </head>
@@ -743,13 +743,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 const rect = canvas.getBoundingClientRect();
                 W = canvas.width = rect.width * window.devicePixelRatio;
                 H = canvas.height = rect.height * window.devicePixelRatio;
-                cx = W / 2; cy = H / 2;
+                cx = W / 2; cy = H / 2 - 15;
             }
             window.addEventListener('resize', resize);
             resize();
             
-            for (let i = 0; i < 80; i++) {
-                particles.push({ angle: Math.random() * Math.PI * 2, radius: 80 + Math.random() * 100, speed: 0.0005 + Math.random() * 0.002, size: 0.5 + Math.random() * 2, offset: Math.random() * Math.PI * 2 });
+            for (let i = 0; i < 60; i++) {
+                particles.push({ angle: Math.random() * Math.PI * 2, radius: 100 + Math.random() * 60, speed: 0.0005 + Math.random() * 0.001, size: 0.5 + Math.random() * 1.5, offset: Math.random() * Math.PI * 2 });
             }
             
             function initAudioAnalyzer() {
@@ -812,16 +812,16 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 }
                 
                 speakingIntensity += (targetIntensity - speakingIntensity) * 0.15;
-                const baseRadius = 70 * window.devicePixelRatio;
-                const waveRadius = baseRadius * (1 + speakingIntensity * 0.6);
+                const baseRadius = 60 * window.devicePixelRatio;
+                const waveRadius = baseRadius * (1 + speakingIntensity * 0.3);
                 const t = time * 0.001;
                 
-                for (let r = 3; r >= 1; r--) {
-                    const ringR = waveRadius * (1 + r * 0.35);
-                    const alpha = 0.08 / r;
+                for (let r = 2; r >= 1; r--) {
+                    const ringR = waveRadius * (1 + r * 0.5);
+                    const alpha = 0.1 / r;
                     const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, ringR);
                     gradient.addColorStop(0, 'rgba(' + s.color1 + ',0)');
-                    gradient.addColorStop(0.5, 'rgba(' + s.color1 + ',' + alpha + ')');
+                    gradient.addColorStop(0.6, 'rgba(' + s.color1 + ',' + alpha + ')');
                     gradient.addColorStop(1, 'rgba(' + s.color2 + ',0)');
                     ctx.fillStyle = gradient;
                     ctx.beginPath();
@@ -834,14 +834,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     else if (currentState === 'listening') p.angle += p.speed * 1.5;
                     else p.angle += p.speed * 0.6;
                     
-                    const rad = p.radius * window.devicePixelRatio * (1 + speakingIntensity * 0.4);
-                    const wave = Math.sin(t * 2 + p.offset) * 8 * (1 + speakingIntensity);
+                    const rad = p.radius * window.devicePixelRatio * (1 + speakingIntensity * 0.2);
+                    const wave = Math.sin(t * 2 + p.offset) * 5;
                     const x = cx + Math.cos(p.angle) * (rad + wave);
                     const y = cy + Math.sin(p.angle) * (rad + wave);
                     
-                    const alpha = 0.3 + speakingIntensity * 0.7;
-                    ctx.fillStyle = 'rgba(' + s.color1 + ',' + alpha + ')';
-                    ctx.shadowBlur = 8 + speakingIntensity * 12;
+                    ctx.fillStyle = 'rgba(' + s.color1 + ',' + (0.4 + speakingIntensity * 0.6) + ')';
+                    ctx.shadowBlur = 8;
                     ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
                     ctx.beginPath();
                     ctx.arc(x, y, p.size * window.devicePixelRatio, 0, Math.PI * 2);
@@ -849,18 +848,18 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 });
                 ctx.shadowBlur = 0;
                 
-                const coreGradient = ctx.createRadialGradient(cx - waveRadius * 0.3, cy - waveRadius * 0.3, 0, cx, cy, waveRadius);
-                const coreAlpha1 = 0.6 + speakingIntensity * 0.4;
-                const coreAlpha2 = 0.5 + speakingIntensity * 0.5;
+                const coreGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, waveRadius);
+                const coreAlpha1 = 0.8 + speakingIntensity * 0.2;
+                const coreAlpha2 = 0.4 + speakingIntensity * 0.3;
                 
                 coreGradient.addColorStop(0, 'rgba(255,255,255,' + coreAlpha1 + ')');
-                coreGradient.addColorStop(0.3, 'rgba(' + s.color1 + ',' + coreAlpha2 + ')');
-                coreGradient.addColorStop(0.7, 'rgba(' + s.color2 + ',0.4)');
+                coreGradient.addColorStop(0.4, 'rgba(' + s.color1 + ',' + coreAlpha2 + ')');
+                coreGradient.addColorStop(0.9, 'rgba(' + s.color2 + ',0.2)');
                 coreGradient.addColorStop(1, 'rgba(' + s.color2 + ',0)');
                 
                 ctx.fillStyle = coreGradient;
-                ctx.shadowBlur = 40 + speakingIntensity * 40;
-                ctx.shadowColor = 'rgba(' + s.color1 + ',0.9)';
+                ctx.shadowBlur = 30 + speakingIntensity * 30;
+                ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
                 ctx.beginPath();
                 ctx.arc(cx, cy, waveRadius, 0, Math.PI * 2);
                 ctx.fill();
@@ -869,13 +868,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 if (currentState === 'listening' || currentState === 'thinking') {
                     const ringCount = currentState === 'thinking' ? 3 : 2;
                     for (let i = 0; i < ringCount; i++) {
-                        const angle = t * (currentState === 'thinking' ? 3 : 1.5) + i * (Math.PI * 2 / ringCount);
-                        const ringR = waveRadius * 1.8;
-                        const segmentLen = Math.PI * 0.4;
+                        const angle = t * (currentState === 'thinking' ? 4 : 2) + i * (Math.PI * 2 / ringCount);
+                        const ringR = waveRadius * 1.4;
+                        const segmentLen = Math.PI * 0.3;
                         
-                        ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.6 - i * 0.15) + ')';
-                        ctx.lineWidth = 2 * window.devicePixelRatio;
-                        ctx.shadowBlur = 15;
+                        ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.8 - i * 0.2) + ')';
+                        ctx.lineWidth = 1.5 * window.devicePixelRatio;
+                        ctx.shadowBlur = 10;
                         ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
                         ctx.beginPath();
                         ctx.arc(cx, cy, ringR, angle, angle + segmentLen);
@@ -885,7 +884,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 }
                 
                 if (currentState === 'speaking' && freqData) {
-                    const barCount = 64; 
+                    const barCount = 72; 
                     for (let i = 0; i < barCount; i++) {
                         const freqIdx = Math.floor((i < barCount/2 ? i : barCount - 1 - i) * freqData.length / (barCount / 2));
                         let val = freqData[freqIdx] / 255;
@@ -895,26 +894,27 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         const angle1 = (i / barCount) * Math.PI * 2 - Math.PI / 2;
                         const angle2 = ((i + barCount/2) / barCount) * Math.PI * 2 - Math.PI / 2;
                         
-                        const barLen = 25 * window.devicePixelRatio * (1 + val * 3);
+                        const barLen = 15 * window.devicePixelRatio * (1 + val * 2.5);
+                        const startOffset = waveRadius + (3 * window.devicePixelRatio); 
                         
-                        const x1 = cx + Math.cos(angle1) * waveRadius;
-                        const y1 = cy + Math.sin(angle1) * waveRadius;
-                        const x2 = cx + Math.cos(angle1) * (waveRadius + barLen);
-                        const y2 = cy + Math.sin(angle1) * (waveRadius + barLen);
+                        const x1 = cx + Math.cos(angle1) * startOffset;
+                        const y1 = cy + Math.sin(angle1) * startOffset;
+                        const x2 = cx + Math.cos(angle1) * (startOffset + barLen);
+                        const y2 = cy + Math.sin(angle1) * (startOffset + barLen);
                         
-                        ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.4 + val * 0.6) + ')';
+                        ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.5 + val * 0.5) + ')';
                         ctx.lineWidth = 2 * window.devicePixelRatio;
-                        ctx.shadowBlur = 10;
+                        ctx.shadowBlur = 5;
                         ctx.shadowColor = 'rgba(' + s.color1 + ',0.9)';
                         ctx.beginPath();
                         ctx.moveTo(x1, y1);
                         ctx.lineTo(x2, y2);
                         ctx.stroke();
                         
-                        const x3 = cx + Math.cos(angle2) * waveRadius;
-                        const y3 = cy + Math.sin(angle2) * waveRadius;
-                        const x4 = cx + Math.cos(angle2) * (waveRadius + barLen);
-                        const y4 = cy + Math.sin(angle2) * (waveRadius + barLen);
+                        const x3 = cx + Math.cos(angle2) * startOffset;
+                        const y3 = cy + Math.sin(angle2) * startOffset;
+                        const x4 = cx + Math.cos(angle2) * (startOffset + barLen);
+                        const y4 = cy + Math.sin(angle2) * (startOffset + barLen);
                         
                         ctx.beginPath();
                         ctx.moveTo(x3, y3);
@@ -923,6 +923,12 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     }
                     ctx.shadowBlur = 0;
                 }
+                
+                ctx.strokeStyle = 'rgba(' + s.color1 + ', 0.2)';
+                ctx.lineWidth = 1 * window.devicePixelRatio;
+                ctx.beginPath();
+                ctx.arc(cx, cy, waveRadius + 35 * window.devicePixelRatio, 0, Math.PI * 2);
+                ctx.stroke();
                 
                 time += 16;
                 requestAnimationFrame(draw);
@@ -1223,7 +1229,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption("Technology:")
-    st.caption("• Orb: Futuristic Wave 360°")
+    st.caption("• Orb: Futuristic Wave 360° v2")
     st.caption("• Camera: 60 FPS")
     st.caption("• Buffer: 2 frames (0.2s each)")
     st.caption("• Vision Model: Qwen 3.8")
