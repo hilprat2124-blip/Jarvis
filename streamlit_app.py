@@ -176,45 +176,6 @@ def is_camera_on_command(text: str) -> bool:
     return False
 
 # ============================================================
-# JS AUTO-CLICKER (MENEMBUS SHADOW DOM STREAMLIT)
-# ============================================================
-def inject_camera_autostart_js():
-    """Script JS yang mencari tombol START merah di halaman utama Streamlit dan mengkliknya."""
-    html = """
-    <script>
-    (function() {
-        const pDoc = window.parent.document;
-        let attempts = 0;
-        const maxAttempts = 20; // Coba selama 10 detik
-        
-        function findAndClickStart() {
-            // Cari semua button di halaman utama
-            const buttons = pDoc.querySelectorAll('button');
-            for (let btn of buttons) {
-                const text = (btn.innerText || btn.textContent || '').trim().toUpperCase();
-                // Cari tombol START merah (abaikan SELECT DEVICE)
-                if ((text === 'START' || text.startsWith('START')) && !text.includes('SELECT') && !text.includes('DEVICE')) {
-                    btn.click();
-                    console.log("[JARVIS] Auto-clicked START button!");
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        // Loop pencarian
-        const interval = setInterval(() => {
-            attempts++;
-            if (findAndClickStart() || attempts >= maxAttempts) {
-                clearInterval(interval);
-            }
-        }, 500);
-    })();
-    </script>
-    """
-    components.html(html, height=0, width=0)
-
-# ============================================================
 # KELAS KAMERA
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
@@ -648,7 +609,7 @@ def generate_tts_edge(text: str) -> bytes | None:
     except: return None
 
 # ============================================================
-# JARVIS ORB (Sama seperti sebelumnya)
+# JARVIS ORB
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -775,6 +736,8 @@ if "conversation_mode" not in st.session_state:
     st.session_state.conversation_mode = False
 if "needs_cam_start" not in st.session_state:
     st.session_state.needs_cam_start = False
+if "force_cam_on" not in st.session_state:
+    st.session_state.force_cam_on = False
 
 # ============================================================
 # ORB DI ATAS
@@ -795,22 +758,25 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("📹 Kamera (Live)")
     
-    # 1. Render WebRTC
+    # --- TOMBOL KONTROL KAMERA MANUAL/AUTO ---
+    # Tombol ini merubah state force_cam_on yang akan memicu streamlit_webrtc
+    if not st.session_state.force_cam_on:
+        if st.button("🔴 START KAMERA (Voice: 'Nyalakan Kamera')", use_container_width=True):
+            st.session_state.force_cam_on = True
+            st.rerun()
+            
+    # Render WebRTC dengan desired_playing_state
     ctx = webrtc_streamer(
         key="hand-3d-tracker-smooth",
         video_processor_factory=Hand3DProcessor,
         rtc_configuration=RTC_CONFIGURATION,
         media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
         async_processing=True,
+        desired_playing_state=True if st.session_state.force_cam_on else None
     )
     
-    # 2. Jika terdeteksi perintah suara "on cam", jalankan Auto-Clicker JS
-    if st.session_state.get("needs_cam_start", False) and not ctx.state.playing:
-        st.info("🎥 Menyalakan kamera otomatis... Harap izinkan akses kamera di browser Anda.")
-        inject_camera_autostart_js() # <--- Menembak tombol START via JS
-    elif not ctx.state.playing and not st.session_state.get("needs_cam_start", False):
-        # Tampilkan panduan kecil jika belum nyala
-        st.caption("Kamera belum aktif. Klik tombol START atau ucapkan 'Turn on the cam'.")
+    if not ctx.state.playing:
+        st.caption("Kamera belum aktif. Klik tombol merah di atas atau ucapkan 'Nyalakan kamera'.")
 
 with col2:
     st.subheader("ℹ️ Status Visual")
@@ -818,11 +784,8 @@ with col2:
         st.success("🟢 Kamera aktif")
         if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
             st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame.")
-        # Reset flag karena kamera sudah benar-benar nyala
-        if st.session_state.get("needs_cam_start", False):
-            st.session_state.needs_cam_start = False
     else:
-        st.info("⚪ Klik **START** untuk mulai")
+        st.info("⚪ Kamera mati")
     st.markdown("---")
     st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
 
@@ -843,8 +806,10 @@ user_q = st.chat_input("Ask Jarvis...")
 if user_q:
     # === DETEKSI PERINTAH ON CAM ===
     if is_camera_on_command(user_q):
-        st.session_state["needs_cam_start"] = True
-        st.toast("🎥 Perintah nyalakan kamera terdeteksi — menyalakan kamera...", icon="🔴")
+        st.session_state.force_cam_on = True # <-- INI KUNCINYA
+        st.toast("🎥 Perintah nyalakan kamera terdeteksi — Menyalakan kamera...", icon="🔴")
+        time.sleep(1) # Beri waktu sebentar untuk UI update
+        st.rerun()
 
     st.session_state.orb_state = "listening"
     st.session_state.current_audio = None
@@ -965,7 +930,7 @@ with st.sidebar:
         st.session_state.current_audio = None
         st.session_state.orb_state = "idle"
         st.session_state.conversation_mode = False
-        st.session_state.needs_cam_start = False
+        st.session_state.force_cam_on = False
         st.rerun()
 
     st.markdown("---")
@@ -984,4 +949,4 @@ with st.sidebar:
     st.caption("• Voice Mode: Continuous Conversation")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
-    st.caption("• 🎥 Auto-Start Cam: JS Injection")
+    st.caption("• 🎥 Auto-Start Cam: Session State")
