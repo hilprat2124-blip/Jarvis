@@ -554,7 +554,6 @@ def strip_filler_words(text: str) -> str:
         r'^\s*(Aaa+h+|Ahh+|Ah+|Hmm+m*|Hm+|Uhh+|Umm+|Erm+|Er+|Hehehe+|Hehe+|Haha+|Hah+|Ugh+|Pfft+|Ohh+|Ooh+)[\s,\.\!\?…—\-]*',
     ]
     
-    # Loop 3x untuk handle filler berlapis: "Aaaah... Hmmm... Banten"
     for _ in range(3):
         old = text
         for pattern in filler_patterns:
@@ -562,16 +561,13 @@ def strip_filler_words(text: str) -> str:
         if text == old:
             break
     
-    # Hapus filler di tengah kalimat
     text = re.sub(
         r'[\s,]+(Aaa+h+|Ahh+|Hmm+m*|Uhh+|Umm+|Erm+|Hehehe+|Hehe+|Haha+|Ugh+)[\s,\.\!\?…]*',
         ' ', text, flags=re.IGNORECASE
     )
     
-    # Hapus "Well..." di awal
     text = re.sub(r'^\s*Well\s*[\.,…—\-]+\s*', '', text, flags=re.IGNORECASE)
     
-    # Bersihkan spasi ganda & kapitalisasi
     text = re.sub(r'\s+', ' ', text).strip()
     if text and text[0].islower():
         text = text[0].upper() + text[1:]
@@ -628,7 +624,6 @@ def _normalize_for_tts(text: str) -> str:
     text = re.sub(r'\$.*?\$', ' formula ', text)
     text = text.replace('\\', '').replace('{', '').replace('}', '')
     
-    # 🔇 TTS juga strip filler
     text = strip_filler_words(text)
     
     text = re.sub(r'\(.*?\)', '', text)
@@ -723,12 +718,13 @@ If no images, answer from text alone.
 """
 
 # ============================================================
-# 🧠 SESSION STATE + PERSISTENCE LOAD
+# 🧠 SESSION STATE — UI SELALU FRESH SETIAP REFRESH
 # ============================================================
+# Jangan load history ke session_state — biar UI selalu kosong saat refresh
+# Tapi Jarvis TETAP INGAT via context injection dari file JSON
 if "jarvis_messages" not in st.session_state:
-    saved_history = load_chat_history()
-    st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + saved_history
-    _log(f"Session initialized with {len(saved_history)} messages from file")
+    st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    _log("Session initialized FRESH (UI empty, memory from file)")
 
 if "memory_vault" not in st.session_state:
     st.session_state.memory_vault = load_memory()
@@ -818,29 +814,31 @@ if user_q:
                     "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
                 })
 
-            ui_history = st.session_state.jarvis_messages[1:-1]
-            
-            if len(ui_history) == 0:
-                context_summary = get_recent_context_summary(max_turns=15)
-                if context_summary:
-                    api_messages.append({
-                        "role": "system",
-                        "content": f"[PREVIOUS CONVERSATION — YOU MUST REMEMBER THIS]:\n{context_summary}"
+            # 🆕 SELALU inject konteks lama dari FILE (bukan dari UI)
+            # Ini bikin Jarvis tetap ingat walau UI di-refresh / di-clear
+            context_summary = get_recent_context_summary(max_turns=15)
+            if context_summary:
+                api_messages.append({
+                    "role": "system",
+                    "content": f"[PREVIOUS CONVERSATION — YOU MUST REMEMBER THIS]:\n{context_summary}"
+                })
+                # Juga taruh di user message sebagai prefix (double reinforcement)
+                if isinstance(user_api_msg["content"], str):
+                    user_api_msg["content"] = (
+                        f"[CONTEXT — earlier Sir Lois and I spoke about:]\n"
+                        f"{context_summary}\n\n"
+                        f"[NEW QUESTION]:\n{user_api_msg['content']}"
+                    )
+                else:
+                    user_api_msg["content"].insert(0, {
+                        "type": "text",
+                        "text": f"[CONTEXT — earlier we spoke about:]\n{context_summary}\n\n[NEW QUESTION]:"
                     })
-                    if isinstance(user_api_msg["content"], str):
-                        user_api_msg["content"] = (
-                            f"[CONTEXT — earlier Sir Lois and I spoke about:]\n"
-                            f"{context_summary}\n\n"
-                            f"[NEW QUESTION]:\n{user_api_msg['content']}"
-                        )
-                    else:
-                        user_api_msg["content"].insert(0, {
-                            "type": "text",
-                            "text": f"[CONTEXT — earlier we spoke about:]\n{context_summary}\n\n[NEW QUESTION]:"
-                        })
-            else:
-                for m in ui_history:
-                    api_messages.append({"role": m["role"], "content": m["content"]})
+
+            # 🆕 Tambahkan riwayat UI juga (kalau ada pesan di sesi ini)
+            ui_history = st.session_state.jarvis_messages[1:-1]
+            for m in ui_history:
+                api_messages.append({"role": m["role"], "content": m["content"]})
 
             api_messages.append(user_api_msg)
 
@@ -848,7 +846,7 @@ if user_q:
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
             answer = sanitize_latex(answer)
-            answer = strip_filler_words(answer)              # 🔇 hapus Aaaah/Hmmm
+            answer = strip_filler_words(answer)
             answer = strip_repetitive_greeting(answer, st.session_state.jarvis_messages)
 
         st.markdown(answer)
@@ -945,11 +943,5 @@ with st.sidebar:
                 "chat_history": load_chat_history(),
                 "memory_vault": load_memory(),
             })
-        
-        if st.button("🔄 Reload From Disk"):
-            saved = load_chat_history()
-            st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + saved
-            st.session_state.memory_vault = load_memory()
-            st.rerun()
 
 st.markdown("---")
