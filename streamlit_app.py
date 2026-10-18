@@ -53,8 +53,8 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Quantum Vision", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Quantum Vision")
+st.set_page_config(page_title="J.A.R.V.I.S - Aurora Vision", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — Aurora Vision")
 st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya.")
 
 # ============ WebRTC & Konstanta ============
@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM REACTOR ORB (100000x Cooler)
+# JARVIS AURORA PARTICLE ORB (Micro Particles & Waves)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -712,25 +712,21 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             const playBtn = document.getElementById('playButton');
             
             const HAS_AUDIO = __HAS_AUDIO__;
+            let currentState = "__STATE__";
             
             let W, H, cx, cy;
             let analyzer = null;
             let audioContext = null;
             let sourceNode = null;
             let freqData = null;
-            let currentState = "__STATE__";
             let time = 0;
             let speakingIntensity = 0;
             let targetIntensity = 0;
             let fakePulse = 0;
             
-            // Plasma Particles System
-            let plasmaParticles = [];
-            
-            // Liquid Ring Points
-            const points = 100;
-            let radii = new Array(points).fill(0);
-            let velocities = new Array(points).fill(0);
+            // Sistem Partikel Aurora
+            const PARTICLE_COUNT = 1200;
+            let particles = [];
             
             function resize() {
                 const rect = canvas.getBoundingClientRect();
@@ -740,6 +736,19 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             }
             window.addEventListener('resize', resize);
             resize();
+            
+            // Inisialisasi Partikel
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                particles.push({
+                    angle: Math.random() * Math.PI * 2,
+                    baseRadius: 0,
+                    currentRadius: 0,
+                    speed: (Math.random() - 0.5) * 0.02,
+                    size: Math.random() * 1.5 + 0.5,
+                    colorOffset: Math.random() * 50, // Variasi warna cyan
+                    noiseOffset: Math.random() * 100
+                });
+            }
             
             function initAudioAnalyzer() {
                 if (audioContext) return;
@@ -767,21 +776,10 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             
             audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
             
-            // Fungsi bantuan untuk menggambar poligon beraturan
-            function drawPolygon(cx, cy, radius, sides, rotation) {
-                ctx.beginPath();
-                for (let i = 0; i < sides; i++) {
-                    const angle = rotation + (i * 2 * Math.PI / sides);
-                    const x = cx + Math.cos(angle) * radius;
-                    const y = cy + Math.sin(angle) * radius;
-                    if (i === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                }
-                ctx.closePath();
-            }
-
             function draw() {
-                ctx.clearRect(0, 0, W, H);
+                // Efek trail tipis (motion blur) untuk nuansa aurora
+                ctx.fillStyle = 'rgba(0, 5, 10, 0.2)';
+                ctx.fillRect(0, 0, W, H);
                 
                 // State management
                 if (currentState === 'speaking' && analyzer && freqData) {
@@ -798,149 +796,73 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 } else if (currentState === 'listening') {
                     targetIntensity = 0.15; 
                 } else {
-                    targetIntensity = 0.0; // Bulat sempurna
+                    targetIntensity = 0.05; // Tenang
                 }
                 
                 speakingIntensity += (targetIntensity - speakingIntensity) * 0.1;
                 
-                const baseRadius = Math.min(W, H) * 0.18;
+                const baseRadius = Math.min(W, H) * 0.2;
                 const t = time * 0.001;
                 
-                // Warna tema
-                const cPrimary = '0, 255, 220';   // Cyan Neon
-                const cSecondary = '0, 150, 255'; // Blue
-                const cDark = '10, 30, 50';       // Deep Space
-
-                // 1. Inti Energi (Core Glow)
-                const coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, baseRadius * 1.5);
-                coreGrad.addColorStop(0, 'rgba(255, 255, 255, ' + (0.8 + speakingIntensity*0.2) + ')');
-                coreGrad.addColorStop(0.2, 'rgba(' + cPrimary + ', 0.8)');
-                coreGrad.addColorStop(0.5, 'rgba(' + cSecondary + ', 0.3)');
+                // Draw Core Glow (Pusat cahaya)
+                const coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, baseRadius * 1.2);
+                coreGrad.addColorStop(0, 'rgba(0, 255, 220, ' + (0.1 + speakingIntensity*0.3) + ')');
                 coreGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
                 ctx.fillStyle = coreGrad;
                 ctx.beginPath();
                 ctx.arc(cx, cy, baseRadius * 1.5, 0, Math.PI * 2);
                 ctx.fill();
 
-                // 2. Liquid Ring (Bergelombang hanya saat speaking)
-                for (let i = 0; i < points; i++) {
-                    const angle = (i / points) * Math.PI * 2;
-                    let targetR = baseRadius;
+                // Gambar Partikel
+                for (let i = 0; i < PARTICLE_COUNT; i++) {
+                    let p = particles[i];
                     
-                    if (speakingIntensity > 0.05) {
-                        if (freqData && currentState === 'speaking') {
-                            const halfIdx = i < points/2 ? i : points - 1 - i;
-                            const freqIdx = Math.floor(halfIdx * freqData.length / (points / 2));
-                            const val = freqData[freqIdx] / 255;
-                            targetR += val * baseRadius * 0.6 * speakingIntensity;
-                        }
-                        targetR += Math.sin(angle * 8 + t * 5) * (baseRadius * 0.05) * speakingIntensity;
+                    // Rotasi partikel
+                    p.angle += p.speed;
+                    
+                    // Kalkulasi jarak (Radius)
+                    // Semakin banyak partikel, semakin tebal lingkarannya
+                    let baseRing = baseRadius * (0.8 + Math.sin(p.noiseOffset) * 0.2); 
+                    
+                    // Gelombang Suara
+                    if (freqData && currentState === 'speaking') {
+                        const idx = Math.floor((Math.abs(p.angle) % (Math.PI*2)) / (Math.PI*2) * freqData.length);
+                        const val = freqData[idx] / 255;
+                        baseRing += val * baseRadius * 0.8 * speakingIntensity;
                     }
                     
-                    const force = targetR - radii[i];
-                    velocities[i] += force * 0.1;
-                    velocities[i] *= 0.8; 
-                    radii[i] += velocities[i];
-                }
-                
-                ctx.beginPath();
-                for (let i = 0; i <= points; i++) {
-                    const angle = (i % points / points) * Math.PI * 2;
-                    const r = radii[i % points];
-                    const x = cx + Math.cos(angle) * r;
-                    const y = cy + Math.sin(angle) * r;
-                    if (i === 0) ctx.moveTo(x, y);
-                    else {
-                        const prevAngle = ((i - 1) % points / points) * Math.PI * 2;
-                        const prevR = radii[(i - 1) % points];
-                        const prevX = cx + Math.cos(prevAngle) * prevR;
-                        const prevY = cy + Math.sin(prevAngle) * prevR;
-                        ctx.quadraticCurveTo(prevX, prevY, (prevX+x)/2, (prevY+y)/2);
-                    }
-                }
-                ctx.closePath();
-                ctx.shadowBlur = 20 + speakingIntensity * 40;
-                ctx.shadowColor = 'rgba(' + cPrimary + ', 0.8)';
-                ctx.strokeStyle = 'rgba(' + cPrimary + ', 1)';
-                ctx.lineWidth = 2 * window.devicePixelRatio;
-                ctx.stroke();
-                ctx.shadowBlur = 0;
-
-                // 3. Cincin Kisi (Wireframe Polygon)
-                const polyRadius = baseRadius * 1.3;
-                ctx.strokeStyle = 'rgba(' + cPrimary + ', 0.3)';
-                ctx.lineWidth = 1 * window.devicePixelRatio;
-                
-                ctx.save();
-                ctx.translate(cx, cy);
-                ctx.rotate(t * 0.5);
-                drawPolygon(0, 0, polyRadius, 6, 0);
-                ctx.stroke();
-                drawPolygon(0, 0, polyRadius * 0.9, 6, Math.PI/6);
-                ctx.stroke();
-                ctx.restore();
-
-                // 4. Orbit Mekanik Berputar (3 Layer)
-                const numOrbits = 3;
-                for (let i = 0; i < numOrbits; i++) {
-                    const r = baseRadius * (1.5 + i * 0.25);
-                    const speed = (i % 2 === 0 ? 1 : -1) * (0.5 + i * 0.2) * (currentState === 'thinking' ? 3 : 1);
+                    // Noise organik (napas aurora)
+                    baseRing += Math.sin(t * 2 + p.angle * 5 + p.noiseOffset) * (baseRadius * 0.05) * (1 + speakingIntensity * 2);
                     
-                    ctx.save();
-                    ctx.translate(cx, cy);
-                    ctx.rotate(t * speed);
+                    // Smooth pergerakan
+                    p.currentRadius += (baseRing - p.currentRadius) * 0.2;
                     
-                    // Bikin cincin putus-putus
-                    ctx.setLineDash([15 * window.devicePixelRatio, 20 * window.devicePixelRatio]);
-                    ctx.strokeStyle = 'rgba(' + cSecondary + ', ' + (0.4 - i*0.1) + ')';
-                    ctx.lineWidth = (3 - i) * window.devicePixelRatio;
+                    // Posisi
+                    const x = cx + Math.cos(p.angle) * p.currentRadius;
+                    const y = cy + Math.sin(p.angle) * p.currentRadius;
+                    
+                    // Warna (Cyan ke Hijau Aurora)
+                    const r = 0;
+                    const g = 200 + Math.sin(p.angle * 2 + t) * 55;
+                    const b = 255;
+                    const alpha = 0.3 + speakingIntensity * 0.7;
+                    
+                    ctx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+                    
+                    // Gambar titik
                     ctx.beginPath();
-                    ctx.arc(0, 0, r, 0, Math.PI * 2);
-                    ctx.stroke();
-                    ctx.restore();
+                    ctx.arc(x, y, p.size * window.devicePixelRatio * (1 + speakingIntensity), 0, Math.PI * 2);
+                    ctx.fill();
                 }
-                ctx.setLineDash([]); // Reset
-
-                // 5. Plasma Particles (Hanya saat speaking)
-                if (speakingIntensity > 0.15) {
-                    // Spawn partikel
-                    if (Math.random() < speakingIntensity * 1.5) {
-                        const angle = Math.random() * Math.PI * 2;
-                        const r = baseRadius;
-                        plasmaParticles.push({
-                            x: cx + Math.cos(angle) * r,
-                            y: cy + Math.sin(angle) * r,
-                            vx: Math.cos(angle) * (Math.random() * 3 + 2),
-                            vy: Math.sin(angle) * (Math.random() * 3 + 2),
-                            life: 1.0,
-                            decay: Math.random() * 0.03 + 0.02,
-                            size: Math.random() * 2 + 1
-                        });
-                    }
-
-                    // Update dan render partikel
-                    for (let i = plasmaParticles.length - 1; i >= 0; i--) {
-                        let p = plasmaParticles[i];
-                        p.x += p.vx;
-                        p.y += p.vy;
-                        p.vx *= 0.95; // Friction
-                        p.vy *= 0.95;
-                        p.life -= p.decay;
-                        
-                        if (p.life <= 0) {
-                            plasmaParticles.splice(i, 1);
-                            continue;
-                        }
-
-                        ctx.fillStyle = 'rgba(255, 255, 255, ' + p.life + ')';
-                        ctx.shadowBlur = 10;
-                        ctx.shadowColor = 'rgba(' + cPrimary + ', ' + p.life + ')';
-                        ctx.beginPath();
-                        ctx.arc(p.x, p.y, p.size * p.life * window.devicePixelRatio, 0, Math.PI * 2);
-                        ctx.fill();
-                    }
-                    ctx.shadowBlur = 0;
-                }
+                
+                // Lapisan inti (Inner Core)
+                ctx.shadowBlur = 40 + speakingIntensity * 60;
+                ctx.shadowColor = 'rgba(0, 255, 255, 0.8)';
+                ctx.fillStyle = 'rgba(255, 255, 255, ' + (0.1 + speakingIntensity * 0.4) + ')';
+                ctx.beginPath();
+                ctx.arc(cx, cy, baseRadius * 0.4, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
 
                 time += 16;
                 requestAnimationFrame(draw);
@@ -1224,7 +1146,7 @@ with st.sidebar:
     if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
     
     st.caption("Technology:")
-    st.caption("• Orb: Quantum Arc Reactor")
+    st.caption("• Orb: Aurora Micro-Particles")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
     st.caption("• Vision Model: Qwen 3.8")
