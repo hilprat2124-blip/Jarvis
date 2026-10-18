@@ -35,12 +35,11 @@ except ImportError:
     TTS_AVAILABLE = False
 
 # ============ KONFIGURASI ROUTERRA API ============
-# ⚠️ MASUKKAN API KEY ROUTERRA KAMU DI SINI (contoh format: sk-or-v1-...)
-ROUTERRA_API_KEY = "MASUKKAN_API_KEY_ROUTERRA_KAMU_DI_SINI"
+# API Key sudah dimasukkan sesuai permintaan
+ROUTERRA_API_KEY = "sk-yCKwxnRa5da3fQw674SDtSRzyT9ZzVpEqZx1l7BdH1yqlGio"
 ROUTERRA_BASE_URL = "https://api.routerra.ai/v1"
 
-# Pilih model vision yang tersedia di Routerra (misalnya qwen, gemini, atau gpt-4o)
-# Cek daftar model di dashboard Routerra kamu
+# Pilih model vision yang tersedia di Routerra
 JARVIS_VISION_MODEL = "qwen/qwen-2.5-vl-72b-instruct" 
 JARVIS_TEXT_MODEL = "qwen/qwen-2.5-72b-instruct"
 
@@ -522,8 +521,6 @@ def image_to_base64(pil_img: Image.Image, max_size=IMAGE_MAX_SIZE, quality=IMAGE
 
 def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     if not OPENAI_AVAILABLE: return "❌ `openai` belum terinstall. Jalankan: pip install openai"
-    if not ROUTERRA_API_KEY or ROUTERRA_API_KEY == "MASUKKAN_API_KEY_ROUTERRA_KAMU_DI_SINI":
-        return "❌ API Key Routerra belum diisi. Silakan edit kode di bagian ROUTERRA_API_KEY."
     
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     
