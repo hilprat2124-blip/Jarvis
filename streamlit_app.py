@@ -67,13 +67,44 @@ st.title("🔵 J.A.R.V.I.S — Quantum Dots")
 st.markdown("Kamera merekam **setiap 0.2 detik**. Klik **'Mulai Dengar'** sekali, mode obrolan suara akan **aktif terus** sampai Anda klik **'Stop Dengar'**.")
 
 # ============ WebRTC & Konstanta ============
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": [
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302",
-        "stun:stun.cloudflare.com:3478",
-    ]}]}
-)
+def _log(msg: str):
+    print(f"[JARVIS-PERSIST] {msg}", flush=True)
+
+def _secret(name: str) -> str:
+    val = os.environ.get(name, "")
+    if not val:
+        try:
+            val = st.secrets.get(name, "")
+        except Exception:
+            val = ""
+    return str(val) if val else ""
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_ice_servers():
+    """Streamlit Cloud tidak bisa WebRTC tanpa TURN server.
+    Prioritas: (1) Twilio, (2) TURN generik (Metered/coturn/dll), (3) STUN saja (sering gagal di cloud).
+    Return: (ice_servers, sumber)"""
+    stun = {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}
+
+    sid, tok = _secret("TWILIO_ACCOUNT_SID"), _secret("TWILIO_AUTH_TOKEN")
+    if sid and tok:
+        try:
+            from twilio.rest import Client
+            return Client(sid, tok).tokens.create().ice_servers, "Twilio TURN"
+        except Exception as e:
+            _log(f"Twilio gagal: {e}")
+
+    turn_urls = _secret("TURN_URLS")  # pisahkan dengan koma
+    if turn_urls:
+        urls = [u.strip() for u in turn_urls.split(",") if u.strip()]
+        return [stun, {"urls": urls,
+                       "username": _secret("TURN_USERNAME"),
+                       "credential": _secret("TURN_CREDENTIAL")}], "TURN kustom"
+
+    return [stun], "STUN saja"
+
+_ICE_SERVERS, ICE_SOURCE = get_ice_servers()
+RTC_CONFIGURATION = RTCConfiguration({"iceServers": _ICE_SERVERS})
 
 PINCH_ENTER = 40
 PINCH_EXIT = 60
@@ -113,8 +144,6 @@ SCRIPT_DIR = pathlib.Path(__file__).parent.absolute()
 MEMORY_FILE = str(SCRIPT_DIR / "jarvis_persistent_memory.json")
 CHAT_FILE = str(SCRIPT_DIR / "jarvis_chat_history.json")
 
-def _log(msg: str):
-    print(f"[JARVIS-PERSIST] {msg}", flush=True)
 
 def load_memory() -> list:
     if os.path.exists(MEMORY_FILE):
@@ -1324,8 +1353,13 @@ with col2:
             st.info("⏳ Kamera sedang dinyalakan... Jika browser meminta izin, klik **Allow / Izinkan**. "
                     "Jika tidak berhasil dalam beberapa detik, klik tombol START di sebelah kiri.")
             if time.time() - st.session_state.get("cam_requested_at", time.time()) > 15:
-                st.error("Kamera belum tersambung. Cek: (1) ikon kamera di address bar browser — pastikan diizinkan, "
-                         "(2) tidak ada aplikasi lain yang memakai webcam, (3) klik START secara manual lalu pilih perangkat via SELECT DEVICE.")
+                if ICE_SOURCE == "STUN saja":
+                    st.error("Kamera browser sudah menyala, tapi koneksi ke server gagal. Streamlit Cloud butuh **TURN server**. "
+                             "Isi `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` (atau `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`) "
+                             "di Settings → Secrets, lalu reboot app.")
+                else:
+                    st.error(f"Kamera belum tersambung meski memakai {ICE_SOURCE}. Coba klik STOP lalu START, "
+                             "ganti jaringan (mis. hotspot HP), atau cek kuota/kredensial TURN.")
         else:
             st.warning("⚪ Kamera dalam mode standby. Ucapkan 'nyalakan kamera' atau klik START.")
 
@@ -1539,3 +1573,4 @@ with st.sidebar:
     st.caption("• Voice Mode: Continuous Conversation")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
+    st.caption(f"• WebRTC: {ICE_SOURCE}")
