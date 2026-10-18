@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Exact Dual-Layer Wavy Rings)
+# JARVIS QUANTUM DOTS (Presisi seperti Gambar)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -722,26 +722,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let time = 0;
             let speakingIntensity = 0;
             let targetIntensity = 0;
-            let envelopeScale = 1.0;
-            let targetEnvelopeScale = 1.0;
+            let listeningScale = 1.0;
+            let targetListeningScale = 1.0;
             
-            const coreParticles = [];
-            for (let i = 0; i < 32; i++) {
-                const angle = Math.random() * Math.PI * 2;
-                const dist = Math.random() * 0.75;
-                coreParticles.push({
-                    angle: angle,
-                    dist: dist,
-                    speed: (Math.random() - 0.5) * 0.012,
-                    size: Math.random() * 1.6 + 0.8
-                });
-            }
-
             function resize() {
                 const rect = canvas.getBoundingClientRect();
-                const dpr = window.devicePixelRatio || 1;
-                W = canvas.width = rect.width * dpr;
-                H = canvas.height = rect.height * dpr;
+                W = canvas.width = rect.width * (window.devicePixelRatio || 1);
+                H = canvas.height = rect.height * (window.devicePixelRatio || 1);
                 cx = W / 2; cy = H / 2;
             }
             window.addEventListener('resize', resize);
@@ -754,7 +741,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     sourceNode = audioContext.createMediaElementSource(audio);
                     analyzer = audioContext.createAnalyser();
                     analyzer.fftSize = 256;
-                    analyzer.smoothingTimeConstant = 0.88;
+                    analyzer.smoothingTimeConstant = 0.8;
                     sourceNode.connect(analyzer);
                     analyzer.connect(audioContext.destination);
                     freqData = new Uint8Array(analyzer.frequencyBinCount);
@@ -771,173 +758,107 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             });
             
             audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
-
-            function drawCore(dpr) {
-                const rCore = Math.min(W, H) * 0.085;
+            
+            function drawInnerCore(scaleFactor) {
+                const rCore = Math.min(W, H) * 0.08 * scaleFactor;
                 
+                // Outer Wireframe Core Ring
                 ctx.save();
-                ctx.shadowBlur = 12;
-                ctx.shadowColor = 'rgba(0, 255, 220, 0.5)';
-                
-                // Ring Outer Core
-                ctx.beginPath();
-                ctx.arc(cx, cy, rCore * 1.12, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(0, 230, 210, 0.35)';
-                ctx.lineWidth = 1.0 * dpr;
-                ctx.stroke();
-
-                ctx.beginPath();
-                ctx.arc(cx, cy, rCore * 1.35, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(0, 200, 190, 0.2)';
-                ctx.lineWidth = 0.8 * dpr;
-                ctx.stroke();
-
                 ctx.beginPath();
                 ctx.arc(cx, cy, rCore, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(0, 255, 220, 0.85)';
-                ctx.lineWidth = 1.5 * dpr;
+                ctx.strokeStyle = 'rgba(0, 240, 220, 0.6)';
+                ctx.lineWidth = 1.5 * (window.devicePixelRatio || 1);
                 ctx.stroke();
                 
-                const gridStep = 5;
-                for (let i = -gridStep + 1; i < gridStep; i++) {
-                    const offset = (i / gridStep) * rCore;
-                    const h = Math.sqrt(Math.max(0, rCore * rCore - offset * offset));
+                // Geodesic / Wireframe Points
+                const numDots = 28;
+                for (let i = 0; i < numDots; i++) {
+                    const phi = Math.acos(-1 + (2 * i) / numDots);
+                    const theta = Math.sqrt(numDots * Math.PI) * phi + time * 0.001;
+                    const x = cx + rCore * Math.sin(phi) * Math.cos(theta);
+                    const y = cy + rCore * Math.sin(phi) * Math.sin(theta);
                     
                     ctx.beginPath();
-                    ctx.ellipse(cx, cy + offset * 0.4, h, h * 0.35, 0, 0, Math.PI * 2);
-                    ctx.strokeStyle = 'rgba(0, 240, 220, 0.15)';
-                    ctx.lineWidth = 0.6 * dpr;
-                    ctx.stroke();
-                }
-
-                coreParticles.forEach(p => {
-                    p.angle += p.speed;
-                    const px = cx + Math.cos(p.angle) * (rCore * p.dist);
-                    const py = cy + Math.sin(p.angle) * (rCore * p.dist);
-                    
-                    ctx.beginPath();
-                    ctx.arc(px, py, p.size * dpr, 0, Math.PI * 2);
-                    ctx.fillStyle = 'rgba(180, 255, 245, 0.95)';
+                    ctx.arc(x, y, 1.2 * (window.devicePixelRatio || 1), 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(120, 255, 240, 0.8)';
                     ctx.fill();
-                });
+                }
                 
+                // Concentric Ripple Ring Inside
+                ctx.beginPath();
+                ctx.arc(cx, cy, rCore * 1.45, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(0, 220, 200, 0.25)';
+                ctx.lineWidth = 1.0 * (window.devicePixelRatio || 1);
+                ctx.stroke();
                 ctx.restore();
             }
 
             function draw() {
                 ctx.clearRect(0, 0, W, H);
-                const dpr = window.devicePixelRatio || 1;
                 
                 if (currentState === 'speaking' && analyzer && freqData) {
                     analyzer.getByteFrequencyData(freqData);
                     let sum = 0;
                     for (let i = 0; i < freqData.length; i++) sum += freqData[i];
                     const avg = sum / freqData.length / 255;
-                    targetIntensity = avg * 2.5; 
-                    targetEnvelopeScale = 1.05;
+                    targetIntensity = avg * 2.8;
+                    targetListeningScale = 1.0;
                 } else if (currentState === 'listening' || currentState === 'thinking') {
                     targetIntensity = 0.0;
-                    targetEnvelopeScale = 1.35; // Membesar ketika mendengarkan
+                    targetListeningScale = 1.35; // Membesar ketika mendengarkan
                 } else {
-                    targetIntensity = 0.0; // Idle
-                    targetEnvelopeScale = 1.0;
+                    targetIntensity = 0.0; // Idle: mulus, tanpa gelombang
+                    targetListeningScale = 1.0;
                 }
                 
-                speakingIntensity += (targetIntensity - speakingIntensity) * 0.08;
-                envelopeScale += (targetEnvelopeScale - envelopeScale) * 0.05;
+                speakingIntensity += (targetIntensity - speakingIntensity) * 0.12;
+                listeningScale += (targetListeningScale - listeningScale) * 0.08;
                 
-                drawCore(dpr);
+                drawInnerCore(listeningScale);
                 
-                const baseR = Math.min(W, H) * 0.25 * envelopeScale;
-                const points = 240; // High resolution continuous loop
+                const dpr = window.devicePixelRatio || 1;
+                const baseR = Math.min(W, H) * 0.28 * listeningScale;
+                const numRings = 40;
+                const pointsPerRing = 120;
                 
+                // Outer Cyan Holographic Particle Field
                 ctx.save();
-                ctx.globalCompositeOperation = 'lighter';
-                
-                if (speakingIntensity < 0.02 && (currentState === 'idle' || currentState === 'listening' || currentState === 'thinking')) {
-                    if (currentState === 'idle') {
-                        // IDLE: Cincin mulus melingkar sempurna tanpa bergelombang
-                        for (let l = 0; l < 14; l++) {
-                            const rOffset = (l - 7) * (1.1 * dpr);
-                            ctx.beginPath();
-                            ctx.arc(cx, cy, baseR + rOffset, 0, Math.PI * 2);
-                            const alpha = 0.8 - Math.abs(l - 7) * 0.1;
-                            ctx.strokeStyle = `rgba(0, 245, 215, ${Math.max(0.08, alpha)})`;
-                            ctx.lineWidth = 1.2 * dpr;
-                            ctx.stroke();
-                        }
-                    } else {
-                        // LISTENING: Envelope mengembang halus 3D
-                        const numLayers = 45;
-                        for (let l = 0; l < numLayers; l++) {
-                            const layerNorm = (l / numLayers) - 0.5;
-                            const r = baseR + layerNorm * (24 * dpr);
-                            
-                            ctx.beginPath();
-                            for (let p = 0; p <= points; p++) {
-                                const angle = (p / points) * Math.PI * 2;
-                                const envWave = Math.sin(angle * 4 + time * 0.0018 + layerNorm * 2) * (14 * dpr)
-                                              + Math.cos(angle * 3 - time * 0.0012) * (7 * dpr);
-                                
-                                const x = cx + Math.cos(angle) * (r + envWave);
-                                const y = cy + Math.sin(angle) * (r + envWave);
-                                
-                                if (p === 0) ctx.moveTo(x, y);
-                                else ctx.lineTo(x, y);
+                for (let r = 0; r < numRings; r++) {
+                    const layerProgress = r / numRings; 
+                    const ringRadius = baseR + (layerProgress - 0.5) * (18 * dpr);
+                    
+                    ctx.beginPath();
+                    for (let p = 0; p <= pointsPerRing; p++) {
+                        const angle = (p / pointsPerRing) * Math.PI * 2;
+                        
+                        let wave = 0;
+                        if (speakingIntensity > 0.02) {
+                            // Gelombang aktif untuk mode speaking (sesuai referensi gambar)
+                            let freqIdx = 0;
+                            if (freqData) {
+                                freqIdx = Math.floor((p / pointsPerRing) * (freqData.length / 2));
+                                wave += (freqData[freqIdx] / 255) * (35 * dpr) * speakingIntensity;
                             }
-                            ctx.closePath();
-                            
-                            const alpha = (1.0 - Math.abs(layerNorm) * 2) * 0.38;
-                            ctx.strokeStyle = `rgba(0, 240, 210, ${alpha})`;
-                            ctx.lineWidth = 0.7 * dpr;
-                            ctx.stroke();
+                            wave += Math.sin(angle * 9 + time * 0.006 + r * 0.15) * (12 * dpr) * speakingIntensity;
+                            wave += Math.cos(angle * 15 - time * 0.004) * (8 * dpr) * speakingIntensity;
                         }
+                        
+                        const currentR = ringRadius + wave;
+                        const x = cx + Math.cos(angle) * currentR;
+                        const y = cy + Math.sin(angle) * currentR;
+                        
+                        if (p === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
                     }
-                } else {
-                    // SPEAKING: Dua Cincin Bergelombang Utama (Persis Gambar Referensi)
-                    const rings = [
-                        { radius: baseR * 1.0,  freqMult: 5, waveAmp: (18 * dpr), speed: 0.003, alpha: 0.85, layers: 12 },
-                        { radius: baseR * 0.82, freqMult: 4, waveAmp: (14 * dpr), speed: -0.002, alpha: 0.65, layers: 8 }
-                    ];
-
-                    rings.forEach((ringConfig, rIdx) => {
-                        for (let l = 0; l < ringConfig.layers; l++) {
-                            const layerOffset = (l - ringConfig.layers / 2) * (1.1 * dpr);
-                            const r = ringConfig.radius + layerOffset;
-
-                            ctx.beginPath();
-                            for (let p = 0; p <= points; p++) {
-                                const angle = (p / points) * Math.PI * 2;
-                                
-                                let audioMod = 0;
-                                if (freqData) {
-                                    const normP = p / points;
-                                    const symP = Math.sin(normP * Math.PI);
-                                    const freqIdx = Math.floor(symP * (freqData.length * 0.5));
-                                    audioMod = (freqData[freqIdx] / 255) * speakingIntensity;
-                                }
-
-                                // Kelengkungan gelombang teratur & kontinu melingkar (Smooth Sine Wave Ring)
-                                const wave = Math.sin(angle * ringConfig.freqMult + time * ringConfig.speed) 
-                                           * ringConfig.waveAmp 
-                                           * (0.6 + audioMod * 1.0);
-
-                                const x = cx + Math.cos(angle) * (r + wave);
-                                const y = cy + Math.sin(angle) * (r + wave);
-
-                                if (p === 0) ctx.moveTo(x, y);
-                                else ctx.lineTo(x, y);
-                            }
-                            ctx.closePath();
-
-                            const lineAlpha = ringConfig.alpha * (1.0 - Math.abs(l - ringConfig.layers / 2) / (ringConfig.layers / 2));
-                            ctx.strokeStyle = `rgba(0, 250, 220, ${Math.max(0.05, lineAlpha)})`;
-                            ctx.lineWidth = 1.0 * dpr;
-                            ctx.stroke();
-                        }
-                    });
+                    ctx.closePath();
+                    
+                    let alpha = 0.15 + (1.0 - Math.abs(layerProgress - 0.5) * 2) * 0.5;
+                    if (speakingIntensity > 0.02) alpha += speakingIntensity * 0.25;
+                    
+                    ctx.strokeStyle = 'rgba(0, 242, 210, ' + Math.min(alpha, 0.95) + ')';
+                    ctx.lineWidth = (0.8 + (1.0 - Math.abs(layerProgress - 0.5)) * 0.6) * dpr;
+                    ctx.stroke();
                 }
-                
                 ctx.restore();
 
                 time += 16;
