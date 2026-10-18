@@ -2,6 +2,7 @@ import av
 import cv2
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -38,7 +39,7 @@ try:
 except Exception:
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-# ============ MODEL CONFIG — hemat token untuk Free Tier ============
+# 🆕 MODEL CONFIG — hemat token untuk Free Tier
 JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
 JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
@@ -94,141 +95,6 @@ MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/han
 if not os.path.exists(MODEL_PATH):
     with st.spinner("📥 Mengunduh model AI..."):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-
-# ============================================================
-# 🆕 FUTURISTIC ORB ANIMATION
-# ============================================================
-def render_orb(state: str = "idle", size: int = 180):
-    """
-    Render futuristic AI orb.
-    state: "idle" | "listening" | "thinking" | "speaking"
-    """
-    palette = {
-        "idle":      {"c1": "#0a4a6b", "c2": "#00b4d8", "glow": "#00e5ff", "speed": "4s"},
-        "listening": {"c1": "#0077b6", "c2": "#00d9ff", "glow": "#00ffff", "speed": "1.2s"},
-        "thinking":  {"c1": "#a68a00", "c2": "#ffd60a", "glow": "#ffea00", "speed": "0.7s"},
-        "speaking":  {"c1": "#5a189a", "c2": "#00f5d4", "glow": "#00f5ff", "speed": "0.9s"},
-    }
-    p = palette.get(state, palette["idle"])
-    
-    html = f"""
-    <style>
-    @keyframes orb-pulse-{state} {{
-        0%   {{ transform: scale(0.92); filter: brightness(0.9); }}
-        50%  {{ transform: scale(1.08); filter: brightness(1.25); }}
-        100% {{ transform: scale(0.92); filter: brightness(0.9); }}
-    }}
-    @keyframes ring-spin-{state} {{
-        0%   {{ transform: rotate(0deg); }}
-        100% {{ transform: rotate(360deg); }}
-    }}
-    @keyframes ring-spin-rev-{state} {{
-        0%   {{ transform: rotate(360deg); }}
-        100% {{ transform: rotate(0deg); }}
-    }}
-    @keyframes wave-{state} {{
-        0%, 100% {{ opacity: 0.2; transform: scale(0.8); }}
-        50%      {{ opacity: 0.8; transform: scale(1.2); }}
-    }}
-    @keyframes glow-breathe-{state} {{
-        0%, 100% {{ box-shadow: 0 0 20px {p['glow']}, 0 0 40px {p['glow']}55; }}
-        50%      {{ box-shadow: 0 0 50px {p['glow']}, 0 0 90px {p['glow']}88; }}
-    }}
-    @keyframes particle-{state} {{
-        0%   {{ transform: rotate(0deg) translateX(70px) rotate(0deg); opacity: 0; }}
-        50%  {{ opacity: 1; }}
-        100% {{ transform: rotate(360deg) translateX(70px) rotate(-360deg); opacity: 0; }}
-    }}
-    
-    .jarvis-orb-wrapper-{state} {{
-        position: relative;
-        width: {size}px; height: {size}px;
-        margin: 10px auto;
-        display: flex; justify-content: center; align-items: center;
-    }}
-    
-    .jarvis-orb-core-{state} {{
-        width: {size*0.55}px; height: {size*0.55}px;
-        border-radius: 50%;
-        background: radial-gradient(circle at 30% 30%,
-            {p['glow']}ff 0%,
-            {p['c2']} 35%,
-            {p['c1']} 70%,
-            #000000 100%);
-        box-shadow: 0 0 30px {p['glow']}, 0 0 60px {p['glow']}88, 0 0 100px {p['glow']}44;
-        animation: orb-pulse-{state} {p['speed']} ease-in-out infinite, glow-breathe-{state} {p['speed']} ease-in-out infinite;
-        position: relative; z-index: 2;
-    }}
-    
-    .jarvis-orb-ring1-{state} {{
-        position: absolute;
-        width: {size*0.85}px; height: {size*0.85}px;
-        border-radius: 50%;
-        border: 2px solid {p['glow']}88;
-        border-top-color: {p['glow']};
-        border-right-color: transparent;
-        animation: ring-spin-{state} {p['speed']} linear infinite;
-        box-shadow: 0 0 15px {p['glow']}66;
-        z-index: 1;
-    }}
-    
-    .jarvis-orb-ring2-{state} {{
-        position: absolute;
-        width: {size}px; height: {size}px;
-        border-radius: 50%;
-        border: 1px dashed {p['c2']}aa;
-        animation: ring-spin-rev-{state} {p['speed']}1.5 linear infinite;
-        opacity: 0.7;
-        z-index: 0;
-    }}
-    
-    .jarvis-orb-particle-{state} {{
-        position: absolute;
-        width: 6px; height: 6px;
-        border-radius: 50%;
-        background: {p['glow']};
-        box-shadow: 0 0 10px {p['glow']}, 0 0 20px {p['glow']};
-        animation: particle-{state} {p['speed']}2 linear infinite;
-        z-index: 0;
-    }}
-    
-    .jarvis-orb-particle2-{state} {{
-        position: absolute;
-        width: 4px; height: 4px;
-        border-radius: 50%;
-        background: {p['c2']};
-        box-shadow: 0 0 8px {p['glow']};
-        animation: particle-{state} {p['speed']}1.7 linear infinite;
-        animation-delay: -1s;
-        z-index: 0;
-    }}
-    
-    .jarvis-orb-label-{state} {{
-        position: absolute;
-        bottom: -8px;
-        font-family: 'Courier New', monospace;
-        font-size: 10px;
-        letter-spacing: 3px;
-        color: {p['glow']};
-        text-shadow: 0 0 8px {p['glow']};
-        text-transform: uppercase;
-        opacity: 0.9;
-        animation: wave-{state} 2s ease-in-out infinite;
-        z-index: 3;
-    }}
-    </style>
-    
-    <div class="jarvis-orb-wrapper-{state}">
-        <div class="jarvis-orb-ring2-{state}"></div>
-        <div class="jarvis-orb-ring1-{state}"></div>
-        <div class="jarvis-orb-particle-{state}"></div>
-        <div class="jarvis-orb-particle2-{state}"></div>
-        <div class="jarvis-orb-core-{state}"></div>
-        <div class="jarvis-orb-label-{state}">{state.upper()}</div>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
-
 
 # ============================================================
 # 🆕 PERSISTENCE HELPERS
@@ -696,7 +562,7 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         _log(f"API ERROR: {err_str[:200]}")
         
         if _is_rate_limit_error(err_str):
-            _log("⚠️ Rate limit kena — fallback ke text-only")
+            _log("⚠️ Rate limit kena — fallback ke text-only + pangkas konteks")
             try:
                 fallback_msgs = [api_messages[0]]
                 for m in api_messages[1:]:
@@ -851,7 +717,330 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# 🧠 SYSTEM PROMPT
+# 🆕 JARVIS FUTURISTIC VOICE ORB
+# ============================================================
+def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
+    """
+    Render orb futuristik berdasarkan state:
+    - "idle":      diam, tenang, partikel orbit pelan
+    - "listening": user mengetik, denyut lambat, cincin berputar
+    - "thinking":  menunggu API, cincin berputar cepat
+    - "speaking":  Jarvis bicara, memancar mengikuti audio
+    """
+    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+            body {{
+                background: transparent;
+                overflow: hidden;
+                font-family: 'Courier New', monospace;
+            }}
+            .orb-container {{
+                position: relative;
+                width: 100%;
+                height: 380px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: radial-gradient(circle at center, rgba(0,20,40,0.3) 0%, transparent 70%);
+            }}
+            canvas {{
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+            }}
+            .status-text {{
+                position: absolute;
+                bottom: 18px;
+                color: #65eaff;
+                font-size: 11px;
+                letter-spacing: 6px;
+                text-shadow: 0 0 10px #00cfff, 0 0 20px #00cfff;
+                text-transform: uppercase;
+                animation: pulse-text 2s ease-in-out infinite;
+                z-index: 10;
+            }}
+            @keyframes pulse-text {{
+                0%, 100% {{ opacity: 0.5; }}
+                50% {{ opacity: 1; }}
+            }}
+            .play-btn {{
+                display: none;
+                position: absolute;
+                padding: 12px 24px;
+                border: 1px solid #37dfff;
+                border-radius: 24px;
+                background: rgba(6,20,33,0.9);
+                color: #8defff;
+                cursor: pointer;
+                z-index: 20;
+                font-family: 'Courier New', monospace;
+                font-size: 12px;
+                letter-spacing: 2px;
+                text-transform: uppercase;
+                box-shadow: 0 0 20px rgba(0,200,255,0.5);
+                transition: all 0.3s;
+            }}
+            .play-btn:hover {{
+                background: rgba(0,100,150,0.9);
+                box-shadow: 0 0 40px rgba(0,220,255,0.8);
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="orb-container">
+            <canvas id="orbCanvas"></canvas>
+            <button class="play-btn" id="playButton">▶ ACTIVATE VOICE</button>
+            <div class="status-text" id="statusText"></div>
+        </div>
+        <audio id="jarvisAudio" style="display:none;" preload="auto">
+            <source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3">
+        </audio>
+        <script>
+            const canvas = document.getElementById('orbCanvas');
+            const ctx = canvas.getContext('2d');
+            const audio = document.getElementById('jarvisAudio');
+            const playBtn = document.getElementById('playButton');
+            const statusText = document.getElementById('statusText');
+            
+            let W, H, cx, cy;
+            let analyzer = null;
+            let audioContext = null;
+            let sourceNode = null;
+            let freqData = null;
+            let state = "{state}";
+            let time = 0;
+            let particles = [];
+            let speakingIntensity = 0;
+            let targetIntensity = 0;
+            
+            function resize() {{
+                const rect = canvas.getBoundingClientRect();
+                W = canvas.width = rect.width * window.devicePixelRatio;
+                H = canvas.height = rect.height * window.devicePixelRatio;
+                ctx.scale(1, 1);
+                cx = W / 2;
+                cy = H / 2;
+            }}
+            window.addEventListener('resize', resize);
+            resize();
+            
+            // Initialize particles
+            for (let i = 0; i < 80; i++) {{
+                particles.push({{
+                    angle: Math.random() * Math.PI * 2,
+                    radius: 80 + Math.random() * 100,
+                    speed: 0.0005 + Math.random() * 0.002,
+                    size: 0.5 + Math.random() * 2,
+                    offset: Math.random() * Math.PI * 2,
+                }});
+            }}
+            
+            function initAudioAnalyzer() {{
+                if (audioContext) return;
+                try {{
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    sourceNode = audioContext.createMediaElementSource(audio);
+                    analyzer = audioContext.createAnalyser();
+                    analyzer.fftSize = 256;
+                    analyzer.smoothingTimeConstant = 0.85;
+                    sourceNode.connect(analyzer);
+                    analyzer.connect(audioContext.destination);
+                    freqData = new Uint8Array(analyzer.frequencyBinCount);
+                }} catch (e) {{
+                    console.log('Audio analyzer failed:', e);
+                }}
+            }}
+            
+            playBtn.addEventListener('click', async () => {{
+                initAudioAnalyzer();
+                if (audioContext && audioContext.state === 'suspended') {{
+                    await audioContext.resume();
+                }}
+                try {{
+                    await audio.play();
+                    playBtn.style.display = 'none';
+                    if (audioContext) audioContext.resume();
+                }} catch (e) {{
+                    statusText.textContent = 'AUDIO BLOCKED';
+                }}
+            }});
+            
+            audio.addEventListener('ended', () => {{
+                state = 'idle';
+                targetIntensity = 0;
+            }});
+            
+            function updateState() {{
+                const states = {{
+                    'idle': {{ color1: '0,180,255', color2: '0,80,180', text: 'J.A.R.V.I.S. // STANDBY' }},
+                    'listening': {{ color1: '0,255,200', color2: '0,150,120', text: '◉ LISTENING...' }},
+                    'thinking': {{ color1: '255,180,0', color2: '180,100,0', text: '◌ PROCESSING...' }},
+                    'speaking': {{ color1: '0,255,255', color2: '0,180,255', text: '◆ SPEAKING' }},
+                }};
+                const s = states[state] || states['idle'];
+                statusText.textContent = s.text;
+                return s;
+            }}
+            
+            function draw() {{
+                const s = updateState();
+                ctx.clearRect(0, 0, W, H);
+                
+                // Get audio intensity if speaking
+                if (state === 'speaking' && analyzer && freqData) {{
+                    analyzer.getByteFrequencyData(freqData);
+                    let sum = 0;
+                    for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+                    const avg = sum / freqData.length / 255;
+                    targetIntensity = avg * 2.5;
+                }} else if (state === 'listening') {{
+                    targetIntensity = 0.15 + Math.sin(time * 2) * 0.05;
+                }} else {{
+                    targetIntensity = 0.05;
+                }}
+                
+                speakingIntensity += (targetIntensity - speakingIntensity) * 0.15;
+                
+                const baseRadius = 70 * window.devicePixelRatio;
+                const waveRadius = baseRadius * (1 + speakingIntensity * 0.6);
+                const t = time * 0.001;
+                
+                // Outer glow rings
+                for (let r = 3; r >= 1; r--) {{
+                    const ringR = waveRadius * (1 + r * 0.35);
+                    const alpha = 0.08 / r;
+                    const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, ringR);
+                    gradient.addColorStop(0, `rgba(${{s.color1}},0)`);
+                    gradient.addColorStop(0.5, `rgba(${{s.color1}},${{alpha}})`);
+                    gradient.addColorStop(1, `rgba(${{s.color2}},0)`);
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+                    ctx.fill();
+                }}
+                
+                // Orbiting particles
+                particles.forEach(p => {{
+                    if (state === 'speaking') p.angle += p.speed * (1 + speakingIntensity * 3);
+                    else if (state === 'listening') p.angle += p.speed * 1.5;
+                    else p.angle += p.speed * 0.6;
+                    
+                    const rad = p.radius * window.devicePixelRatio * (1 + speakingIntensity * 0.4);
+                    const wave = Math.sin(t * 2 + p.offset) * 8 * (1 + speakingIntensity);
+                    const x = cx + Math.cos(p.angle) * (rad + wave);
+                    const y = cy + Math.sin(p.angle) * (rad + wave);
+                    
+                    const alpha = 0.3 + speakingIntensity * 0.7;
+                    ctx.fillStyle = `rgba(${{s.color1}},${{alpha}})`;
+                    ctx.shadowBlur = 8 + speakingIntensity * 12;
+                    ctx.shadowColor = `rgba(${{s.color1}},0.8)`;
+                    ctx.beginPath();
+                    ctx.arc(x, y, p.size * window.devicePixelRatio, 0, Math.PI * 2);
+                    ctx.fill();
+                }});
+                ctx.shadowBlur = 0;
+                
+                // Main orb core
+                const coreGradient = ctx.createRadialGradient(
+                    cx - waveRadius * 0.3, cy - waveRadius * 0.3, 0,
+                    cx, cy, waveRadius
+                );
+                coreGradient.addColorStop(0, `rgba(255,255,255,${0.6 + speakingIntensity * 0.4})`);
+                coreGradient.addColorStop(0.3, `rgba(${{s.color1}},${0.5 + speakingIntensity * 0.5})`);
+                coreGradient.addColorStop(0.7, `rgba(${{s.color2}},0.4)`);
+                coreGradient.addColorStop(1, `rgba(${{s.color2}},0)`);
+                ctx.fillStyle = coreGradient;
+                ctx.shadowBlur = 40 + speakingIntensity * 40;
+                ctx.shadowColor = `rgba(${{s.color1}},0.9)`;
+                ctx.beginPath();
+                ctx.arc(cx, cy, waveRadius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                
+                // Rotating rings (listening/thinking)
+                if (state === 'listening' || state === 'thinking') {{
+                    const ringCount = state === 'thinking' ? 3 : 2;
+                    for (let i = 0; i < ringCount; i++) {{
+                        const angle = t * (state === 'thinking' ? 3 : 1.5) + i * (Math.PI * 2 / ringCount);
+                        const ringR = waveRadius * 1.8;
+                        const segmentLen = Math.PI * 0.4;
+                        
+                        ctx.strokeStyle = `rgba(${{s.color1}},${0.6 - i * 0.15})`;
+                        ctx.lineWidth = 2 * window.devicePixelRatio;
+                        ctx.shadowBlur = 15;
+                        ctx.shadowColor = `rgba(${{s.color1}},0.8)`;
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, ringR, angle, angle + segmentLen);
+                        ctx.stroke();
+                    }}
+                    ctx.shadowBlur = 0;
+                }}
+                
+                // Audio frequency bars around circle (speaking)
+                if (state === 'speaking' && freqData) {{
+                    const barCount = 64;
+                    for (let i = 0; i < barCount; i++) {{
+                        const freqIdx = Math.floor(i * freqData.length / barCount);
+                        const val = freqData[freqIdx] / 255;
+                        const angle = (i / barCount) * Math.PI * 2 - Math.PI / 2;
+                        const barLen = 20 * window.devicePixelRatio * (1 + val * 3);
+                        
+                        const x1 = cx + Math.cos(angle) * waveRadius;
+                        const y1 = cy + Math.sin(angle) * waveRadius;
+                        const x2 = cx + Math.cos(angle) * (waveRadius + barLen);
+                        const y2 = cy + Math.sin(angle) * (waveRadius + barLen);
+                        
+                        ctx.strokeStyle = `rgba(${{s.color1}},${0.4 + val * 0.6})`;
+                        ctx.lineWidth = 2 * window.devicePixelRatio;
+                        ctx.shadowBlur = 10;
+                        ctx.shadowColor = `rgba(${{s.color1}},0.9)`;
+                        ctx.beginPath();
+                        ctx.moveTo(x1, y1);
+                        ctx.lineTo(x2, y2);
+                        ctx.stroke();
+                    }}
+                    ctx.shadowBlur = 0;
+                }}
+                
+                time += 16;
+                requestAnimationFrame(draw);
+            }}
+            
+            // Detect if audio needs manual activation
+            if (audio_b64_placeholder) {{
+                // Try autoplay
+                audio.play().then(() => {{
+                    initAudioAnalyzer();
+                    if (audioContext) audioContext.resume();
+                    state = 'speaking';
+                }}).catch(() => {{
+                    playBtn.style.display = 'block';
+                    state = 'speaking';
+                }});
+            }}
+            
+            draw();
+        </script>
+        <script>
+            // Fix placeholder injection
+            const audio_b64_placeholder = {str(bool(audio_b64)).lower()};
+        </script>
+    </body>
+    </html>
+    """.replace("{audio_b64_placeholder}", str(bool(audio_b64)).lower())
+    
+    components.html(html, height=380)
+
+# ============================================================
+# 🧠 SYSTEM PROMPT — NO FILLER + BRITISH ENGLISH
 # ============================================================
 SYSTEM_PROMPT = """
 You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
@@ -881,7 +1070,7 @@ Address the user as "Sir Lois" or "Sir".
 1. You are NOT a robot. You are deeply human, relaxed, but brilliant.
 2. Show human-like empathy through WORD CHOICE, not through filler sounds.
 3. Keep responses crisp and confident. Dry wit, no theatrical sighs.
-4. BREVITY: Keep replies SHORT — max 3-4 sentences unless the user asks for detail. This is critical for token budget.
+4. BREVITY: Keep replies SHORT — max 3-4 sentences unless the user asks for detail.
 
 [VISUAL RULE]
 You receive 2 sequential images from a live camera (flipbook style).
@@ -892,7 +1081,6 @@ If no images, answer from text alone.
 - Learn from prior conversations. Remember small details about Sir Lois.
 - If asked, answer that Sir Lois lives in Banten.
 - If a [PREVIOUS CONVERSATION CONTEXT] block is provided, TREAT IT AS YOUR OWN MEMORY.
-  Reference it naturally when relevant.
 
 [MATHEMATICS]
 - Use $ formula $ for inline and $$ formula $$ for block.
@@ -909,28 +1097,26 @@ If no images, answer from text alone.
 # ============================================================
 if "jarvis_messages" not in st.session_state:
     st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    _log("Session initialized FRESH (UI empty, memory from file)")
+    _log("Session initialized FRESH")
 
 if "memory_vault" not in st.session_state:
     st.session_state.memory_vault = load_memory()
 
-# 🆕 Orb state — default idle
 if "orb_state" not in st.session_state:
     st.session_state.orb_state = "idle"
 
+if "current_audio" not in st.session_state:
+    st.session_state.current_audio = None
+
 # ============================================================
-# 🎭 ORB DISPLAY — di atas, center
+# 🆕 ORB DI ATAS — state visual realtime
 # ============================================================
 orb_placeholder = st.empty()
-
-def update_orb(state: str):
-    """Update orb state dan render."""
-    st.session_state.orb_state = state
-    with orb_placeholder.container():
-        render_orb(state)
-
-# Render orb pertama kali
-update_orb(st.session_state.orb_state)
+with orb_placeholder.container():
+    render_jarvis_orb(
+        audio_bytes=st.session_state.current_audio,
+        state=st.session_state.orb_state,
+    )
 
 # ============================================================
 # 📹 LAYOUT KAMERA
@@ -970,14 +1156,19 @@ for msg in st.session_state.jarvis_messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_q = st.chat_input("Ask Jarvis...")
+user_q = st.chat_input("Ask Jarvis...", on_submit=None)
+
+# 🆕 Deteksi state listening via chat input focus
+if user_q is None and st.session_state.orb_state == "idle":
+    st.session_state.orb_state = "listening"
 
 if user_q:
-    # 🆕 Orb: listening → thinking
-    update_orb("listening")
-    time.sleep(0.3)  # biar animasi listening sempat terlihat
-    update_orb("thinking")
-
+    # User mengetik → thinking
+    st.session_state.orb_state = "thinking"
+    st.session_state.current_audio = None
+    with orb_placeholder.container():
+        render_jarvis_orb(audio_bytes=None, state="thinking")
+    
     has_img = False
     pil_imgs = []
 
@@ -1047,7 +1238,6 @@ if user_q:
                 api_messages.append({"role": m["role"], "content": m["content"]})
 
             api_messages.append(user_api_msg)
-
             _log(f"API CALL: {len(api_messages)} messages sent")
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
@@ -1064,38 +1254,14 @@ if user_q:
                 save_memory(st.session_state.memory_vault)
                 st.toast(f"🧠 New memory: {new_memory}")
 
-            # 🆕 Orb: speaking saat TTS
-            update_orb("speaking")
             with st.spinner("🎤 Preparing voice..."):
                 audio_bytes = generate_tts_edge(answer)
                 if audio_bytes:
-                    b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
-                    # 🆕 Audio + JS untuk kembali ke idle setelah selesai bicara
-                    audio_html = f'''
-                    <audio id="jarvis-audio" autoplay="true" style="display:none;">
-                        <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
-                    </audio>
-                    <script>
-                        const audioEl = document.getElementById("jarvis-audio");
-                        if (audioEl) {{
-                            audioEl.onended = function() {{
-                                // Signal ke Streamlit lewat URL param trick
-                                window.parent.postMessage({{type: "jarvis_speaking_done"}}, "*");
-                            }};
-                        }}
-                    </script>
-                    '''
-                    st.markdown(audio_html, unsafe_allow_html=True)
-
-                    # 🆕 Estimasi durasi audio untuk auto-reset orb state
-                    # (karena Streamlit tidak bisa listen event JS langsung)
-                    est_duration = max(1.5, len(answer) / 15.0)  # ~15 char/detik
-                    time.sleep(min(est_duration, 30))  # cap 30 detik max
-                    update_orb("idle")
-                else:
-                    update_orb("idle")
-        else:
-            update_orb("idle")
+                    # 🆕 Speaking state + audio ke orb
+                    st.session_state.current_audio = audio_bytes
+                    st.session_state.orb_state = "speaking"
+                    with orb_placeholder.container():
+                        render_jarvis_orb(audio_bytes=audio_bytes, state="speaking")
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
     save_chat_history(st.session_state.jarvis_messages)
@@ -1107,40 +1273,34 @@ with st.sidebar:
     st.header("ℹ️ Info")
 
     st.subheader("🧹 Chat Controls")
-    if st.button("🧹 Clear Chat View", help="Sembunyikan chat di layar, tapi Jarvis tetap ingat semuanya"):
+    if st.button("🧹 Clear Chat View"):
         st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        st.session_state.current_audio = None
+        st.session_state.orb_state = "idle"
         st.rerun()
 
-    if st.button("🗑️ Delete Chat History", help="Hapus permanen riwayat obrolan dari disk"):
+    if st.button("🗑️ Delete Chat History"):
         st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         save_chat_history([])
+        st.session_state.current_audio = None
+        st.session_state.orb_state = "idle"
         st.rerun()
 
     st.subheader("🧠 Memory Controls")
-    if st.button("🧠 Reset Long-Term Memory", help="Hapus memori fakta tentang Sir Lois"):
+    if st.button("🧠 Reset Long-Term Memory"):
         st.session_state.memory_vault = []
         save_memory([])
         st.rerun()
 
     st.markdown("---")
-    if st.button("💣 Reset ALL (Chat + Memory)", help="Hapus SEMUA data — Jarvis jadi amnesia total"):
+    if st.button("💣 Reset ALL"):
         st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         st.session_state.memory_vault = []
         save_chat_history([])
         save_memory([])
+        st.session_state.current_audio = None
+        st.session_state.orb_state = "idle"
         st.rerun()
-
-    st.markdown("---")
-
-    # 🆕 Orb state preview
-    st.subheader("🔵 Orb State Preview")
-    orb_preview_state = st.selectbox(
-        "Preview orb animation",
-        ["idle", "listening", "thinking", "speaking"],
-        index=["idle", "listening", "thinking", "speaking"].index(st.session_state.orb_state)
-    )
-    if st.button("Apply Orb Preview"):
-        update_orb(orb_preview_state)
 
     st.markdown("---")
 
@@ -1155,15 +1315,20 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption("Technology:")
+    st.caption("• Orb: Futuristic Wave Visualizer")
     st.caption("• Camera: 60 FPS")
     st.caption("• Buffer: 2 frames (0.2s each)")
     st.caption("• Vision Model: Qwen 3.8")
     st.caption("• Text Model: GPT-OSS-120B")
     st.caption("• Voice: British English (en-GB-Ryan)")
-    st.caption("• Orb States: 4 (idle/listen/think/speak)")
     st.caption("• Max Output: 300 tokens")
     st.caption("• Context: 6 turns")
     st.caption("• Image: 384px / Q45")
+    st.caption("• Fallback: ✅ (auto text-only)")
+    st.caption("• Self-Learning: ✅")
+    st.caption("• Persistence: ✅ (JSON)")
+    st.caption("• No Filler: ✅")
+    st.caption("• Orb States: idle/listening/thinking/speaking ✅")
 
     st.markdown("---")
     with st.expander("🔍 Debug Info", expanded=False):
@@ -1172,10 +1337,13 @@ with st.sidebar:
         st.caption(f"**MEMORY_FILE:** `{MEMORY_FILE}`")
         st.caption(f"**Chat file exists:** {os.path.exists(CHAT_FILE)}")
         st.caption(f"**Memory file exists:** {os.path.exists(MEMORY_FILE)}")
+        if os.path.exists(CHAT_FILE):
+            st.caption(f"**Chat file size:** {os.path.getsize(CHAT_FILE)} bytes")
+        if os.path.exists(MEMORY_FILE):
+            st.caption(f"**Memory file size:** {os.path.getsize(MEMORY_FILE)} bytes")
         st.caption(f"**Session messages:** {len(st.session_state.jarvis_messages)}")
         st.caption(f"**Memory vault:** {len(st.session_state.memory_vault)}")
-        st.caption(f"**Current orb:** `{st.session_state.orb_state}`")
-        
+        st.caption(f"**Orb state:** `{st.session_state.orb_state}`")
         if st.button("📂 Show File Contents"):
             st.json({
                 "chat_history": load_chat_history(),
