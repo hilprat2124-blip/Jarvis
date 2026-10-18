@@ -7,7 +7,7 @@ import re
 import json
 import pathlib
 import io
-import os  # <--- INI YANG TADI HILANG
+import os  # <--- Penting untuk load_memory
 import time
 from PIL import Image
 import streamlit.components.v1 as components
@@ -147,7 +147,9 @@ def _is_rate_limit_error(err_str: str) -> bool:
     return "413" in err or "rate_limit" in err or "request too large" in err or "tokens per minute" in err or "itpm" in err
 
 def ask_jarvis(api_messages: list, use_vision: bool) -> str:
-    if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall."
+    if not GROQ_AVAILABLE: 
+        return "❌ `groq` belum terinstall. Buka terminal, ketik: `pip install groq` lalu restart Streamlit."
+    
     client = Groq(api_key=GROQ_API_KEY)
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     try:
