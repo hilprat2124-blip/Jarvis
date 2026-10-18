@@ -1,11 +1,10 @@
 streamlit
 streamlit-webrtc
-mediapipe
-opencv-python-headless
 av
-Pillow
-openai
-edge-tts
-requests
+opencv-python-headless
 numpy
+mediapipe
+pillow
 groq
+edge-tts
+twilio
