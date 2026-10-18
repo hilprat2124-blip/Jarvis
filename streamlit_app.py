@@ -35,11 +35,20 @@ except ImportError:
     TTS_AVAILABLE = False
 
 # ============ KONFIGURASI GROQ API ============
-GROQ_API_KEY = "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"
+def _get_groq_key() -> str:
+    key = os.environ.get("GROQ_API_KEY", "")
+    if not key:
+        try:
+            key = st.secrets.get("GROQ_API_KEY", "")
+        except Exception:
+            key = ""
+    return key
 
-JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
-JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
-JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
+GROQ_API_KEY = _get_groq_key()
+
+JARVIS_VISION_MODEL = os.environ.get("JARVIS_VISION_MODEL", "qwen/qwen3.8-27b")
+JARVIS_TEXT_MODEL = os.environ.get("JARVIS_TEXT_MODEL", "openai/gpt-oss-120b")
+JARVIS_MEMORY_MODEL = os.environ.get("JARVIS_MEMORY_MODEL", "openai/gpt-oss-20b")
 
 MAX_OUTPUT_TOKENS = 300
 MAX_CONTEXT_TURNS = 6
@@ -143,7 +152,7 @@ def save_chat_history(messages: list):
                 continue
             content = m["content"]
             if isinstance(content, list):
-                texts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type"] == "text"]
+                texts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
                 content = " ".join(texts) if texts else "[image]"
             if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
                 content = content[:MAX_MSG_CHARS] + "..."
@@ -562,7 +571,7 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
                         if isinstance(m["content"], str):
                             text_msgs.append({"role": m["role"], "content": m["content"][:300]})
                         elif isinstance(m["content"], list):
-                            texts = [c.get("text", "") for c in m["content"] if isinstance(c, dict) and c.get("type"] == "text"]
+                            texts = [c.get("text", "") for c in m["content"] if isinstance(c, dict) and c.get("type") == "text"]
                             if texts:
                                 text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
                 
@@ -970,7 +979,8 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
             function sendToStreamlit(text) {
                 try {
                     const parentDoc = window.parent.document;
-                    const candidates = parentDoc.querySelectorAll('textarea, input[type="text"]');
+                    let candidates = parentDoc.querySelectorAll('[data-testid="stChatInput"] textarea');
+                    if (!candidates.length) candidates = parentDoc.querySelectorAll('textarea, input[type="text"]');
                     let target = null;
                     for (let el of candidates) {
                         if (el.offsetParent !== null && !el.disabled && !el.readOnly) {
@@ -1236,6 +1246,24 @@ if "conversation_mode" not in st.session_state:
 if "camera_active_state" not in st.session_state:
     st.session_state.camera_active_state = False
 
+# Kontrol kamera lewat suara: nonce mengganti key webrtc agar streamer dibuat ulang
+if "cam_nonce" not in st.session_state:
+    st.session_state.cam_nonce = 0
+if "cam_autostart" not in st.session_state:
+    st.session_state.cam_autostart = False
+
+CAMERA_ON_KEYWORDS = ["nyalain kamera", "nyalakan kamera", "hidupkan kamera", "buka kamera",
+                      "aktifkan kamera", "start kamera", "turn on the camera", "open the camera",
+                      "start the camera", "turn on camera"]
+CAMERA_OFF_KEYWORDS = ["matikan kamera", "matiin kamera", "tutup kamera", "stop kamera",
+                       "nonaktifkan kamera", "turn off the camera", "turn off camera", "close the camera"]
+
+def detect_camera_command(text: str):
+    t = text.lower()
+    if any(k in t for k in CAMERA_OFF_KEYWORDS): return "off"
+    if any(k in t for k in CAMERA_ON_KEYWORDS): return "on"
+    return None
+
 # ============================================================
 # ORB DI ATAS
 # ============================================================
@@ -1257,7 +1285,8 @@ with col1:
     
     # Jika perintah suara kamera aktif, kita berikan default active pada webrtc jika didukung
     ctx = webrtc_streamer(
-        key="hand-3d-tracker-smooth",
+        key=f"hand-3d-tracker-smooth-{st.session_state.cam_nonce}",
+        desired_playing_state=True if st.session_state.cam_autostart else None,
         video_processor_factory=Hand3DProcessor,
         rtc_configuration=RTC_CONFIGURATION,
         media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
@@ -1272,9 +1301,12 @@ with col2:
         if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
             st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame.")
     else:
-        st.warning("⚪ Kamera dalam mode standby.")
-        if st.session_state.camera_active_state:
-            st.info("💡 Sir, perintah suara mendeteksi kamera ingin dinyalakan. Silakan klik satu kali pada tombol START di sebelah kiri karena pembatasan keamanan browser.")
+        st.session_state.camera_active_state = False
+        if st.session_state.cam_autostart:
+            st.info("⏳ Kamera sedang dinyalakan... Jika browser meminta izin, klik **Allow / Izinkan**. "
+                    "Jika tidak berhasil dalam beberapa detik, klik tombol START di sebelah kiri.")
+        else:
+            st.warning("⚪ Kamera dalam mode standby. Ucapkan 'nyalakan kamera' atau klik START.")
 
     st.markdown("---")
     st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
@@ -1293,11 +1325,30 @@ for msg in st.session_state.jarvis_messages:
 
 user_q = st.chat_input("Ask Jarvis...")
 
-if user_q:
-    camera_keywords = ["nyalain kamera", "hidupkan kamera", "buka kamera", "aktifkan kamera", "start kamera", "nyalakan kamera"]
-    if any(kw in user_q.lower() for kw in camera_keywords):
-        st.session_state.camera_active_state = True
+cam_cmd = detect_camera_command(user_q) if user_q else None
 
+if user_q and cam_cmd:
+    if cam_cmd == "on" and ctx.state.playing:
+        reply = "The camera is already running, Sir."
+    elif cam_cmd == "off" and not ctx.state.playing and not st.session_state.cam_autostart:
+        reply = "The camera is already off, Sir."
+    elif cam_cmd == "on":
+        st.session_state.cam_nonce += 1
+        st.session_state.cam_autostart = True
+        reply = "Starting the camera now, Sir. Please allow camera access if your browser asks."
+    else:
+        st.session_state.cam_nonce += 1
+        st.session_state.cam_autostart = False
+        reply = "Camera switched off, Sir."
+
+    st.session_state.jarvis_messages.append({"role": "user", "content": user_q})
+    st.session_state.jarvis_messages.append({"role": "assistant", "content": reply})
+    save_chat_history(st.session_state.jarvis_messages)
+    st.session_state.orb_state = "idle"
+    st.session_state.current_audio = generate_tts_edge(reply)
+    st.rerun()
+
+elif user_q:
     st.session_state.orb_state = "listening"
     st.session_state.current_audio = None
     with orb_placeholder.container():
@@ -1318,7 +1369,7 @@ if user_q:
             pil_imgs.append(Image.fromarray(frame_rgb))
             has_img = True
     else:
-        st.warning("⚠️ Kamera belum menyala. Klik tombol START di kotak kamera di atas agar Jarvis bisa melihat.")
+        pass  # kamera mati -> model diberi tahu lewat system note di bawah
 
     if has_img:
         with st.expander("👁️ Apa yang dilihat Jarvis saat ini:", expanded=True):
@@ -1375,6 +1426,13 @@ if user_q:
             for m in ui_history:
                 api_messages.append({"role": m["role"], "content": m["content"]})
 
+            if not has_img:
+                api_messages.append({
+                    "role": "system",
+                    "content": "[CAMERA STATUS: OFF — no image available. You CANNOT see anything. "
+                               "Never claim the camera is activated, never describe a view, and never say the view is empty. "
+                               "If asked what you see, say the camera is off and ask Sir to say 'turn on the camera'.]"
+                })
             api_messages.append(user_api_msg)
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
