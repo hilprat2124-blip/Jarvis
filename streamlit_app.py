@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS FUTURISTIC VOICE ORB (ARC REACTOR STYLE)
+# JARVIS LIQUID ORB (Berdasarkan Referensi)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -689,20 +689,34 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     <head>
         <style>
             * { box-sizing: border-box; margin: 0; padding: 0; }
-            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; }
-            .orb-container { position: relative; width: 100%; height: 380px; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(0,20,40,0.3) 0%, transparent 70%); }
+            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; display: flex; justify-content: center; align-items: center; height: 100vh;}
+            .orb-container { position: relative; width: 100%; height: 380px; display: flex; align-items: center; justify-content: center; }
             canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-            .status-text { position: absolute; bottom: 30px; color: #65eaff; font-size: 12px; font-weight: bold; letter-spacing: 8px; text-shadow: 0 0 10px #00cfff, 0 0 20px #00cfff; text-transform: uppercase; animation: pulse-text 2s ease-in-out infinite; z-index: 10; }
-            @keyframes pulse-text { 0%, 100% { opacity: 0.6; transform: scale(0.98); } 50% { opacity: 1; transform: scale(1.02); } }
-            .play-btn { display: none; position: absolute; bottom: 70px; padding: 12px 24px; border: 1px solid #37dfff; border-radius: 24px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; z-index: 20; font-family: 'Courier New', monospace; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; box-shadow: 0 0 20px rgba(0,200,255,0.5); transition: all 0.3s; }
+            
+            /* Teks JARVIS di Tengah */
+            .jarvis-text {
+                position: absolute;
+                font-size: 42px;
+                font-weight: 900;
+                letter-spacing: 4px;
+                color: transparent;
+                -webkit-text-stroke: 1.5px rgba(0, 255, 200, 0.8);
+                text-shadow: 0 0 20px rgba(0, 255, 200, 0.6), inset 0 0 10px rgba(0, 255, 200, 0.5);
+                z-index: 10;
+                text-transform: uppercase;
+                opacity: 0.9;
+                user-select: none;
+            }
+
+            .play-btn { display: none; position: absolute; bottom: 20px; padding: 12px 24px; border: 1px solid #37dfff; border-radius: 24px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; z-index: 20; font-family: 'Courier New', monospace; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; box-shadow: 0 0 20px rgba(0,200,255,0.5); transition: all 0.3s; }
             .play-btn:hover { background: rgba(0,100,150,0.9); box-shadow: 0 0 40px rgba(0,220,255,0.8); }
         </style>
     </head>
     <body>
         <div class="orb-container">
             <canvas id="orbCanvas"></canvas>
+            <div class="jarvis-text">JARVIS</div>
             <button class="play-btn" id="playButton">▶ ACTIVATE VOICE</button>
-            <div class="status-text" id="statusText"></div>
         </div>
         <audio id="jarvisAudio" style="display:none;" preload="auto">
             <source src="data:audio/mp3;base64,__AUDIO_B64__" type="audio/mp3">
@@ -712,27 +726,34 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             const ctx = canvas.getContext('2d');
             const audio = document.getElementById('jarvisAudio');
             const playBtn = document.getElementById('playButton');
-            const statusText = document.getElementById('statusText');
             
             const HAS_AUDIO = __HAS_AUDIO__;
-            const INITIAL_STATE = "__STATE__";
             
             let W, H, cx, cy;
             let analyzer = null;
             let audioContext = null;
             let sourceNode = null;
             let freqData = null;
-            let currentState = INITIAL_STATE;
+            let currentState = "__STATE__";
             let time = 0;
             let speakingIntensity = 0;
             let targetIntensity = 0;
             let fakePulse = 0;
             
+            // Titik-titik untuk liquid ring
+            const points = 120;
+            let radii = new Array(points).fill(0);
+            let velocities = new Array(points).fill(0);
+            
             function resize() {
                 const rect = canvas.getBoundingClientRect();
                 W = canvas.width = rect.width * window.devicePixelRatio;
                 H = canvas.height = rect.height * window.devicePixelRatio;
-                cx = W / 2; cy = H / 2 - 15;
+                cx = W / 2; cy = H / 2;
+                
+                // Scale font size based on screen
+                const textEl = document.querySelector('.jarvis-text');
+                textEl.style.fontSize = Math.min(W * 0.1, 50) + 'px';
             }
             window.addEventListener('resize', resize);
             resize();
@@ -758,157 +779,138 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     await audio.play();
                     playBtn.style.display = 'none';
                     if (audioContext) audioContext.resume();
-                } catch (e) { statusText.textContent = 'AUDIO BLOCKED'; }
+                } catch (e) { console.log('Audio blocked'); }
             });
             
             audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
             
-            function updateStateDisplay() {
-                const states = {
-                    'idle': { color1: '0,180,255', color2: '0,80,180', text: 'JARVIS // STANDBY' },
-                    'listening': { color1: '0,255,200', color2: '0,150,120', text: 'JARVIS // LISTENING' },
-                    'thinking': { color1: '255,180,0', color2: '180,100,0', text: 'JARVIS // PROCESSING' },
-                    'speaking': { color1: '0,255,255', color2: '0,180,255', text: 'JARVIS // SPEAKING' },
-                };
-                const s = states[currentState] || states['idle'];
-                statusText.textContent = s.text;
-                return s;
-            }
-            
-            // Helper to draw a triangle (Arc Reactor core)
-            function drawTriangle(cx, cy, size, angleOffset) {
-                ctx.beginPath();
-                for (let i = 0; i < 3; i++) {
-                    const angle = angleOffset + i * (Math.PI * 2 / 3);
-                    const x = cx + Math.cos(angle) * size;
-                    const y = cy + Math.sin(angle) * size;
-                    if (i === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                }
-                ctx.closePath();
-            }
-
             function draw() {
-                const s = updateStateDisplay();
                 ctx.clearRect(0, 0, W, H);
                 
+                // State management
                 if (currentState === 'speaking' && analyzer && freqData) {
                     analyzer.getByteFrequencyData(freqData);
                     let sum = 0;
                     for (let i = 0; i < freqData.length; i++) sum += freqData[i];
                     const avg = sum / freqData.length / 255;
-                    targetIntensity = avg * 2.5;
+                    targetIntensity = avg * 3;
                     
                     if (avg < 0.05) {
                         fakePulse += 0.1;
                         targetIntensity = 0.2 + Math.sin(fakePulse) * 0.15;
                     }
                 } else if (currentState === 'listening') {
-                    targetIntensity = 0.15 + Math.sin(time * 2) * 0.05;
+                    targetIntensity = 0.2 + Math.sin(time * 2) * 0.1;
                 } else {
                     targetIntensity = 0.05;
                 }
                 
                 speakingIntensity += (targetIntensity - speakingIntensity) * 0.15;
-                const baseRadius = 60 * window.devicePixelRatio;
-                const waveRadius = baseRadius * (1 + speakingIntensity * 0.3);
+                
+                const baseRadius = Math.min(W, H) * 0.22;
+                const waveRadius = baseRadius * (1 + speakingIntensity * 0.4);
                 const t = time * 0.001;
                 
-                // 1. Glow Latar
-                for (let r = 3; r >= 1; r--) {
-                    const ringR = waveRadius * (1 + r * 0.4);
-                    const alpha = 0.1 / r;
-                    const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, ringR);
-                    gradient.addColorStop(0, 'rgba(' + s.color1 + ',0)');
-                    gradient.addColorStop(0.5, 'rgba(' + s.color1 + ',' + alpha + ')');
-                    gradient.addColorStop(1, 'rgba(' + s.color2 + ',0)');
-                    ctx.fillStyle = gradient;
-                    ctx.beginPath();
-                    ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
-                    ctx.fill();
+                // Warna dasar
+                const c1 = '0, 255, 200'; // Cyan terang
+                const c2 = '0, 100, 150'; // Biru gelap
+
+                // 1. Gambar Inti (Core) di belakang teks
+                const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, waveRadius * 0.6);
+                grad.addColorStop(0, 'rgba(0, 255, 200, 0.4)');
+                grad.addColorStop(0.7, 'rgba(0, 150, 200, 0.1)');
+                grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(cx, cy, waveRadius * 0.8, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 2. Liquid Ring (Garis bergelombang)
+                // Update nilai radius tiap titik
+                for (let i = 0; i < points; i++) {
+                    const angle = (i / points) * Math.PI * 2;
+                    
+                    // Base wave
+                    let targetR = waveRadius;
+                    
+                    // Audio reaction
+                    if (freqData && currentState === 'speaking') {
+                        const halfIdx = i < points/2 ? i : points - 1 - i;
+                        const freqIdx = Math.floor(halfIdx * freqData.length / (points / 2));
+                        const val = freqData[freqIdx] / 255;
+                        targetR += val * baseRadius * 0.5;
+                    }
+                    
+                    // Noise / Liquid feel
+                    targetR += Math.sin(angle * 6 + t * 3) * (baseRadius * 0.05);
+                    targetR += Math.sin(angle * 12 - t * 2) * (baseRadius * 0.02);
+                    
+                    // Spring physics untuk gerakan halus
+                    const force = targetR - radii[i];
+                    velocities[i] += force * 0.05;
+                    velocities[i] *= 0.85; // Damping
+                    radii[i] += velocities[i];
                 }
                 
-                // 2. Cincin Equalizer Audio (360 derajat) - Desain Teknis
-                if (currentState === 'speaking' && freqData) {
-                    const barCount = 60; 
-                    for (let i = 0; i < barCount; i++) {
-                        // Hanya gambar di setengah lingkaran lalu di-mirror
-                        const halfIndex = i < barCount / 2 ? i : barCount - 1 - i;
-                        const freqIdx = Math.floor(halfIndex * freqData.length / (barCount / 2));
-                        let val = freqData[freqIdx] / 255;
+                // Gambar garis luar
+                ctx.beginPath();
+                for (let i = 0; i <= points; i++) {
+                    const angle = (i % points / points) * Math.PI * 2;
+                    const r = radii[i % points];
+                    const x = cx + Math.cos(angle) * r;
+                    const y = cy + Math.sin(angle) * r;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else {
+                        // Gunakan quadratic curve untuk smoothing antar titik
+                        const prevAngle = ((i - 1) % points / points) * Math.PI * 2;
+                        const prevR = radii[(i - 1) % points];
+                        const prevX = cx + Math.cos(prevAngle) * prevR;
+                        const prevY = cy + Math.sin(prevAngle) * prevR;
                         
-                        if (val < 0.05) val = 0.1 + Math.sin(time * 0.005 + i) * 0.1;
-                        
-                        const angle = (i / barCount) * Math.PI * 2 - Math.PI / 2;
-                        const barLen = 10 * window.devicePixelRatio * (1 + val * 3);
-                        const startOffset = waveRadius + (8 * window.devicePixelRatio); 
-                        
-                        const x1 = cx + Math.cos(angle) * startOffset;
-                        const y1 = cy + Math.sin(angle) * startOffset;
-                        const x2 = cx + Math.cos(angle) * (startOffset + barLen);
-                        const y2 = cy + Math.sin(angle) * (startOffset + barLen);
-                        
-                        ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.4 + val * 0.6) + ')';
-                        ctx.lineWidth = 1.5 * window.devicePixelRatio;
-                        ctx.beginPath();
-                        ctx.moveTo(x1, y1);
-                        ctx.lineTo(x2, y2);
-                        ctx.stroke();
+                        const midX = (prevX + x) / 2;
+                        const midY = (prevY + y) / 2;
+                        ctx.quadraticCurveTo(prevX, prevY, midX, midY);
                     }
                 }
+                ctx.closePath();
                 
-                // 3. Cincin Luar Statis (Garis Teknis)
-                ctx.strokeStyle = 'rgba(' + s.color1 + ', 0.3)';
-                ctx.lineWidth = 1 * window.devicePixelRatio;
-                ctx.beginPath();
-                ctx.arc(cx, cy, waveRadius + 12 * window.devicePixelRatio, 0, Math.PI * 2);
+                // Efek glow & fill
+                ctx.shadowBlur = 30 + speakingIntensity * 40;
+                ctx.shadowColor = 'rgba(' + c1 + ', 0.8)';
+                ctx.strokeStyle = 'rgba(' + c1 + ', 0.9)';
+                ctx.lineWidth = 2 * window.devicePixelRatio;
                 ctx.stroke();
-
-                // 4. Cincin Segmen Berputar
-                const ringSegments = 12;
-                for (let i = 0; i < ringSegments; i++) {
-                    const angle = t * (currentState === 'thinking' ? 3 : 1) + i * (Math.PI * 2 / ringSegments);
-                    const segLen = Math.PI * 0.08;
-                    ctx.strokeStyle = 'rgba(' + s.color1 + ', 0.6)';
-                    ctx.lineWidth = 2 * window.devicePixelRatio;
+                
+                // Isi ring dengan warna transparan
+                const ringGrad = ctx.createRadialGradient(cx, cy, waveRadius * 0.5, cx, cy, waveRadius * 1.2);
+                ringGrad.addColorStop(0, 'rgba(' + c1 + ', 0)');
+                ringGrad.addColorStop(1, 'rgba(' + c1 + ', 0.15)');
+                ctx.fillStyle = ringGrad;
+                ctx.fill();
+                
+                // 3. Inner tech rings (Cincin dalem)
+                ctx.shadowBlur = 0;
+                for (let r = 1; r <= 3; r++) {
                     ctx.beginPath();
-                    ctx.arc(cx, cy, waveRadius + 20 * window.devicePixelRatio, angle, angle + segLen);
+                    ctx.arc(cx, cy, waveRadius * 0.4 + (r * 15 * window.devicePixelRatio), 0, Math.PI * 2);
+                    ctx.strokeStyle = 'rgba(' + c1 + ', ' + (0.2 / r) + ')';
+                    ctx.lineWidth = 1 * window.devicePixelRatio;
                     ctx.stroke();
                 }
 
-                // 5. Inti Orb (Core) - Desain Segitiga Arc Reactor
-                ctx.save();
-                ctx.translate(cx, cy);
-                ctx.rotate(t * 0.5); // Rotasi lambat segitiga
-                
-                // Gambar glow segitiga
-                ctx.shadowBlur = 40 + speakingIntensity * 40;
-                ctx.shadowColor = 'rgba(' + s.color1 + ',0.8)';
-                ctx.fillStyle = 'rgba(' + s.color1 + ', 0.2)';
-                drawTriangle(0, 0, waveRadius * 0.8, 0);
-                ctx.fill();
-                
-                // Garis tepi segitiga
-                ctx.strokeStyle = 'rgba(' + s.color1 + ', 0.9)';
-                ctx.lineWidth = 2 * window.devicePixelRatio;
-                drawTriangle(0, 0, waveRadius * 0.8, 0);
-                ctx.stroke();
-                
-                // Gambar segitiga dalam
-                ctx.fillStyle = 'rgba(255,255,255, 0.6)';
-                drawTriangle(0, 0, waveRadius * 0.5, Math.PI);
-                ctx.fill();
-                
-                ctx.restore();
-
-                // 6. Lingkaran Inti Tengah
-                const coreGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, waveRadius * 0.3);
-                coreGradient.addColorStop(0, 'rgba(255,255,255,' + (0.8 + speakingIntensity * 0.2) + ')');
-                coreGradient.addColorStop(1, 'rgba(' + s.color1 + ',0)');
-                ctx.fillStyle = coreGradient;
-                ctx.beginPath();
-                ctx.arc(cx, cy, waveRadius * 0.3, 0, Math.PI * 2);
-                ctx.fill();
+                // 4. Partikel debu luar
+                for (let i = 0; i < 30; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = waveRadius * (1.2 + Math.random() * 0.8);
+                    const px = cx + Math.cos(angle) * dist;
+                    const py = cy + Math.sin(angle) * dist;
+                    const size = (Math.random() * 2) * window.devicePixelRatio;
+                    
+                    ctx.fillStyle = 'rgba(' + c1 + ', ' + (Math.random() * 0.5) + ')';
+                    ctx.beginPath();
+                    ctx.arc(px, py, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
 
                 time += 16;
                 requestAnimationFrame(draw);
@@ -1192,7 +1194,7 @@ with st.sidebar:
     if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
     
     st.caption("Technology:")
-    st.caption("• Orb: Arc Reactor Style")
+    st.caption("• Orb: Liquid Metal / Iron Man Style")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
     st.caption("• Vision Model: Qwen 3.8")
