@@ -172,6 +172,26 @@ def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
     return "\n".join(lines)
 
 # ============================================================
+# DETEKSI INTENT KAMERA
+# ============================================================
+CAM_ON_PATTERNS = [
+    r"\b(on|turn\s+on|open|activate|enable|start|nyalakan|buka|aktifkan|hidupkan|nyala)\s+(the\s+|ur\s+|your\s+|my\s+)?(cam|camera|kamera|webcam|video)\b",
+    r"\b(cam|camera|kamera)\s+(on|nyala|aktif|hidup)\b",
+    r"\b(on\s*cam|turn\s+on\s+cam|buka\s*kamera|nyalakan\s*kamera|aktifkan\s*kamera|hidupkan\s*kamera)\b",
+    r"\bcan\s+you\s+(turn\s+on|open|activate|start)\s+(the\s+|your\s+)?(cam|camera|webcam)\b",
+]
+
+def is_camera_on_command(text: str) -> bool:
+    if not text:
+        return False
+    t = text.lower().strip()
+    t = strip_filler_words(t)
+    for pat in CAM_ON_PATTERNS:
+        if re.search(pat, t, flags=re.IGNORECASE):
+            return True
+    return False
+
+# ============================================================
 # KELAS KAMERA — SILENT VISUAL MEMORY
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
@@ -677,6 +697,75 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
+# CAMERA AUTO-START TRIGGER (JS HELPER)
+# ============================================================
+def render_camera_autostart_trigger():
+    """
+    Render helper HTML invisible yang akan mencoba klik tombol START
+    di dalam iframe webrtc_streamer Streamlit.
+    """
+    html = r"""
+    <!DOCTYPE html>
+    <html><head><style>body{margin:0;background:transparent;height:0;overflow:hidden;}</style></head>
+    <body>
+    <script>
+    (function autoStartCamera() {
+        const parentDoc = window.parent.document;
+
+        function findStartButton(root) {
+            const buttons = root.querySelectorAll('button');
+            for (const b of buttons) {
+                const txt = (b.innerText || b.textContent || '').trim().toUpperCase();
+                if (txt === 'START' || txt.startsWith('START') || txt.includes('START')) {
+                    if (txt.includes('SELECT') || txt.includes('DEVICE')) continue;
+                    return b;
+                }
+            }
+            return null;
+        }
+
+        function tryClickStart() {
+            const iframes = parentDoc.querySelectorAll('iframe');
+            for (const iframe of iframes) {
+                try {
+                    if (!iframe.offsetParent && iframe.offsetWidth === 0) continue;
+                    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                    if (!doc) continue;
+
+                    let btn = findStartButton(doc);
+                    if (!btn) {
+                        const hosts = doc.querySelectorAll('*');
+                        for (const host of hosts) {
+                            if (host.shadowRoot) {
+                                btn = findStartButton(host.shadowRoot);
+                                if (btn) break;
+                            }
+                        }
+                    }
+                    if (btn) {
+                        btn.click();
+                        return true;
+                    }
+                } catch (e) { /* cross-origin, skip */ }
+            }
+            return false;
+        }
+
+        let attempts = 0;
+        const maxAttempts = 12;
+        const interval = setInterval(() => {
+            attempts++;
+            if (tryClickStart() || attempts >= maxAttempts) {
+                clearInterval(interval);
+            }
+        }, 500);
+    })();
+    </script>
+    </body></html>
+    """
+    components.html(html, height=0, width=0)
+
+# ============================================================
 # JARVIS ORB — CONTINUOUS MODE FIXED
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False):
@@ -684,7 +773,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
     has_audio = "true" if audio_bytes else "false"
     conv_mode_js = "true" if conversation_mode else "false"
     
-    # Estimasi durasi audio (MP3 ~128kbps ≈ 16KB/detik) sebagai fallback resume timer
     est_duration_ms = 0
     if audio_bytes:
         est_duration_ms = max(3000, int(len(audio_bytes) / 16))
@@ -767,7 +855,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
             window.addEventListener('resize', resize);
             resize();
             
-            // ============ LOCALSTORAGE HELPERS ============
             function getConvMode() {
                 try {
                     const v = window.parent.localStorage.getItem('jarvis_conversation_mode');
@@ -804,7 +891,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 } catch (e) { console.log('Audio blocked'); }
             });
 
-            // ============ SPEECH RECOGNITION ============
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             let recognition = null;
             let isListeningActive = false;
@@ -913,11 +999,9 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 }, 350);
             }
 
-            // 🔑 Fungsi utama: selalu cek localStorage & paksa isListeningActive=true
             function resumeListeningAfterResponse() {
                 if (userStoppedManually) return;
                 
-                // Cek localStorage — kalau user sudah stop manual, jangan resume
                 const convActive = getConvMode();
                 if (!convActive) {
                     transcriptHint.innerText = '🔴 Mode obrolan dimatikan.';
@@ -927,7 +1011,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                     return;
                 }
 
-                // 🔑 PAKSA aktif meskipun iframe baru reset state
                 isSendingToStreamlit = false;
                 isListeningActive = true;
                 committedTranscript = '';
@@ -1030,13 +1113,10 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 }
             }
 
-            // ============ AUDIO PLAYBACK & AUTO-RESUME ============
             function scheduleResumeAfterAudio(estimatedMs) {
                 if (resumeTimer) clearTimeout(resumeTimer);
-                // Tambah buffer 1500ms untuk network/render
                 resumeTimer = setTimeout(() => {
                     if (!audio.paused && !audio.ended) {
-                        // Audio masih main — tunggu ended event
                         return;
                     }
                     resumeListeningAfterResponse();
@@ -1046,7 +1126,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
             audio.addEventListener('ended', () => {
                 currentState = 'idle';
                 targetIntensity = 0;
-                // Resume setelah audio selesai + buffer kecil
                 setTimeout(resumeListeningAfterResponse, 600);
             });
 
@@ -1164,16 +1243,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 requestAnimationFrame(draw);
             }
             
-            // ============ INIT ============
             const convActiveOnLoad = getConvMode();
             
             if (HAS_AUDIO) {
-                // Mode speaking: tombol disembunyikan
                 micBtn.style.display = 'none';
                 playBtn.style.display = 'none';
                 currentState = 'speaking';
                 
-                // Set isListeningActive agar saat audio.ended resume tahu harus lanjut
                 if (convActiveOnLoad) {
                     isListeningActive = true;
                 }
@@ -1182,13 +1258,10 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 audio.play().then(() => {
                     if (audioContext) audioContext.resume();
                 }).catch(() => {
-                    // Autoplay blocked — tampilkan tombol play
                     playBtn.style.display = 'block';
-                    // Fallback: schedule resume by estimate anyway
                     scheduleResumeAfterAudio(EST_DURATION_MS);
                 });
             } else {
-                // No audio: kalau mode obrolan aktif, langsung start listening
                 if (convActiveOnLoad) {
                     setTimeout(() => {
                         resumeListeningAfterResponse();
@@ -1251,6 +1324,16 @@ You are connected to a LIVE camera. The image provided is exactly what the camer
 Describe what is in the image clearly. If you see a person, an object, or a hand gesture, mention it.
 If the image is black/empty, say you cannot see anything clearly.
 
+[CAMERA CONTROL]
+- The system has an AUTO-CAMERA feature. If Sir Lois says "on cam", "turn on the cam",
+  "nyalakan kamera", "buka kamera", or similar — the system will AUTOMATICALLY press
+  the START button on the camera widget.
+- When that happens, you should acknowledge briefly and confidently. Examples:
+  "Camera activating now, Sir." / "Bringing the camera online, Sir." / "Visual sensors
+  engaged, Sir."
+- NEVER say you cannot control the camera. NEVER tell the user to click START manually
+  unless the auto-start banner appears in the UI.
+
 [MATHEMATICS]
 - Use $formula$ for inline and $$formula$$ for block.
 - FORBIDDEN to use square brackets [ ].
@@ -1278,6 +1361,9 @@ if "current_audio" not in st.session_state:
 if "conversation_mode" not in st.session_state:
     st.session_state.conversation_mode = False
 
+if "needs_cam_start" not in st.session_state:
+    st.session_state.needs_cam_start = False
+
 # ============================================================
 # ORB DI ATAS
 # ============================================================
@@ -1304,12 +1390,34 @@ with col1:
         async_processing=True,
     )
 
+    # === AUTO-START CAMERA SUPPORT ===
+    if st.session_state.get("needs_cam_start", False) and not ctx.state.playing:
+        st.markdown(
+            """
+            <div style="padding:16px;border:2px solid #ff4b4b;border-radius:12px;
+                        background:rgba(255,75,75,0.08);text-align:center;margin-top:10px;">
+                <div style="font-size:16px;color:#ff4b4b;font-weight:bold;margin-bottom:8px;">
+                    🔴 Jarvis mendeteksi perintah menyalakan kamera
+                </div>
+                <div style="font-size:13px;color:#888;">
+                    Auto-click sedang mencoba menekan tombol <b>START</b> merah di atas.
+                    Jika kamera belum aktif dalam 3 detik, klik tombol <b>START</b> secara manual.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        render_camera_autostart_trigger()
+
 with col2:
     st.subheader("ℹ️ Status Visual")
     if ctx.state.playing:
         st.success("🟢 Kamera aktif")
         if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
             st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame.")
+        # Reset flag karena kamera sudah nyala
+        if st.session_state.get("needs_cam_start", False):
+            st.session_state.needs_cam_start = False
     else:
         st.info("⚪ Klik **START** untuk mulai")
     st.markdown("---")
@@ -1330,6 +1438,11 @@ for msg in st.session_state.jarvis_messages:
 user_q = st.chat_input("Ask Jarvis...")
 
 if user_q:
+    # === DETEKSI PERINTAH ON CAM ===
+    if is_camera_on_command(user_q):
+        st.session_state["needs_cam_start"] = True
+        st.toast("🎥 Perintah nyalakan kamera terdeteksi — menyalakan kamera...", icon="🔴")
+
     st.session_state.orb_state = "listening"
     st.session_state.current_audio = None
     with orb_placeholder.container():
@@ -1350,7 +1463,11 @@ if user_q:
             pil_imgs.append(Image.fromarray(frame_rgb))
             has_img = True
     else:
-        st.warning("⚠️ Kamera belum menyala. Klik START di atas agar Jarvis bisa melihat!")
+        # Kalau user minta nyalakan kamera, beri pesan berbeda
+        if is_camera_on_command(user_q):
+            st.warning("🎥 Menyalakan kamera... Jika belum aktif dalam beberapa detik, klik tombol **START** merah di atas secara manual.")
+        else:
+            st.warning("⚠️ Kamera belum menyala. Klik START di atas agar Jarvis bisa melihat!")
 
     if has_img:
         with st.expander("👁️ Apa yang dilihat Jarvis saat ini:", expanded=True):
@@ -1438,6 +1555,10 @@ if user_q:
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
     save_chat_history(st.session_state.jarvis_messages)
 
+    # Reset flag supaya banner tidak persist setelah selesai
+    if st.session_state.get("needs_cam_start", False) and ctx.state.playing:
+        st.session_state.needs_cam_start = False
+
 # ============================================================
 # SIDEBAR
 # ============================================================
@@ -1469,6 +1590,7 @@ with st.sidebar:
         st.session_state.current_audio = None
         st.session_state.orb_state = "idle"
         st.session_state.conversation_mode = False
+        st.session_state.needs_cam_start = False
         st.rerun()
 
     st.markdown("---")
@@ -1487,3 +1609,4 @@ with st.sidebar:
     st.caption("• Voice Mode: Continuous Conversation")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
+    st.caption("• 🎥 Auto-Start Cam: ON")
