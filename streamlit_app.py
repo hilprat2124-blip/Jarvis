@@ -55,7 +55,7 @@ VOICE_PITCH = "-3Hz"
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="J.A.R.V.I.S - Quantum Dots", page_icon="🔵", layout="wide")
 st.title("🔵 J.A.R.V.I.S — Quantum Dots")
-st.markdown("Kamera merekam **setiap 0.2 detik**. Klik **'Mulai Dengar'** sekali, dan mode obrolan suara akan **aktif terus** sampai Anda klik **'Stop Dengar'**.")
+st.markdown("Kamera merekam **setiap 0.2 detik**. Klik **'Mulai Dengar'** sekali, mode obrolan suara akan **aktif terus** sampai Anda klik **'Stop Dengar'**.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -677,11 +677,12 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Continuous Conversation Mode)
+# JARVIS QUANTUM DOTS — FLUENT + CONTINUOUS + TOMBOL AUTO-HIDE
 # ============================================================
-def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
+def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
     has_audio = "true" if audio_bytes else "false"
+    conv_mode_js = "true" if conversation_mode else "false"
     
     html_template = r"""
     <!DOCTYPE html>
@@ -723,6 +724,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             const transcriptHint = document.getElementById('transcriptHint');
             
             const HAS_AUDIO = __HAS_AUDIO__;
+            const INITIAL_CONV_MODE = __CONV_MODE__;
             let currentState = "__STATE__";
             
             let W, H, cx, cy;
@@ -782,21 +784,20 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 } catch (e) { console.log('Audio blocked'); }
             });
 
-            // ============ SPEECH RECOGNITION — CONTINUOUS CONVERSATION MODE ============
+            // ============ SPEECH RECOGNITION — FLUENT + CONTINUOUS ============
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             let recognition = null;
-            let isListeningActive = false;
+            let isListeningActive = INITIAL_CONV_MODE;
             let isRecognitionRunning = false;
             let silenceTimer = null;
             let committedTranscript = '';
             let interimTranscript = '';
-            let commandSent = false;
-            let userStoppedManually = false;
             let isSendingToStreamlit = false;
+            let userStoppedManually = false;
 
             const SILENCE_TIMEOUT_MS = 1500;
-            const RESTART_DELAY_MS = 150;
-            const RESUME_AFTER_RESPONSE_MS = 2500;
+            const RESTART_DELAY_MS = 100;
+            const RESUME_AFTER_RESPONSE_MS = 800;
 
             if (SpeechRecognition) {
                 recognition = new SpeechRecognition();
@@ -809,6 +810,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     isRecognitionRunning = true;
                     micBtn.classList.add('listening');
                     micBtn.innerText = '⏹️ STOP DENGAR';
+                    micBtn.style.display = 'block';  // tampilkan saat listening
                     transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
                 };
 
@@ -836,10 +838,9 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         transcriptHint.innerText = `Mendengar: "${combined}"`;
                     }
 
-                    if (newFinal.trim()) {
-                        if (silenceTimer) clearTimeout(silenceTimer);
-                        silenceTimer = setTimeout(finalizeAndSend, SILENCE_TIMEOUT_MS);
-                    }
+                    // 🔑 Reset timer SETIAP onresult (final + interim) → mic ikuti bicara cepat
+                    if (silenceTimer) clearTimeout(silenceTimer);
+                    silenceTimer = setTimeout(finalizeAndSend, SILENCE_TIMEOUT_MS);
                 };
 
                 recognition.onerror = (event) => {
@@ -850,6 +851,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         transcriptHint.innerText = '❌ Izin mikrofon ditolak. Klik ikon 🔒 di address bar.';
                         micBtn.classList.remove('listening');
                         micBtn.innerText = '🎙️ MULAI DENGAR';
+                        micBtn.style.display = 'block';
                         return;
                     }
                     if (event.error === 'network') {
@@ -861,7 +863,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
 
                 recognition.onend = () => {
                     isRecognitionRunning = false;
-
+                    // Auto-restart jika masih mode obrolan & bukan karena kirim
                     if (isListeningActive && !userStoppedManually && !isSendingToStreamlit) {
                         setTimeout(() => {
                             if (isListeningActive && !isRecognitionRunning && !isSendingToStreamlit) {
@@ -880,12 +882,15 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             }
 
             function finalizeAndSend() {
-                if (commandSent || isSendingToStreamlit) return;
+                if (isSendingToStreamlit) return;
                 const text = (committedTranscript + ' ' + interimTranscript).replace(/\s+/g, ' ').trim();
                 if (!text) return;
 
                 isSendingToStreamlit = true;
                 transcriptHint.innerText = `📤 Mengirim: "${text}"`;
+
+                // Sembunyikan tombol saat kirim & menunggu Jarvis
+                micBtn.style.display = 'none';
 
                 if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
                 try { recognition.stop(); } catch(e) {}
@@ -897,17 +902,14 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
 
             function resumeListeningAfterResponse() {
                 if (userStoppedManually) return;
-                try {
-                    const wasActive = window.parent.localStorage.getItem('jarvis_conversation_mode') === '1';
-                    if (!wasActive) return;
-                } catch(e) { return; }
+                if (!isListeningActive) return;
 
                 isSendingToStreamlit = false;
-                commandSent = false;
                 committedTranscript = '';
                 interimTranscript = '';
-                isListeningActive = true;
 
+                // Tampilkan tombol lagi
+                micBtn.style.display = 'block';
                 micBtn.classList.add('listening');
                 micBtn.innerText = '⏹️ STOP DENGAR';
                 transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
@@ -921,7 +923,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 if (!recognition) return;
                 if (isListeningActive) return;
 
-                commandSent = false;
                 userStoppedManually = false;
                 isSendingToStreamlit = false;
                 committedTranscript = '';
@@ -950,6 +951,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
 
                 micBtn.classList.remove('listening');
                 micBtn.innerText = '🎙️ MULAI DENGAR';
+                micBtn.style.display = 'block';
                 try { recognition.stop(); } catch(e) {}
             }
 
@@ -1000,11 +1002,34 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 }
             }
 
-            // Auto-resume mode obrolan setelah Jarvis selesai bicara
+            // Sembunyikan tombol saat Jarvis bicara, tampilkan lagi setelah selesai
+            function hideMicButtonDuringSpeaking() {
+                if (currentState === 'speaking') {
+                    micBtn.style.display = 'none';
+                    playBtn.style.display = 'none';
+                }
+            }
+
+            function showMicButtonAfterSpeaking() {
+                if (currentState !== 'speaking') {
+                    if (isListeningActive) {
+                        micBtn.style.display = 'block';
+                        micBtn.classList.add('listening');
+                        micBtn.innerText = '⏹️ STOP DENGAR';
+                    } else {
+                        micBtn.style.display = 'block';
+                        micBtn.classList.remove('listening');
+                        micBtn.innerText = '🎙️ MULAI DENGAR';
+                    }
+                }
+            }
+
             audio.addEventListener('ended', () => {
                 currentState = 'idle';
                 targetIntensity = 0;
-                if (typeof resumeListeningAfterResponse === 'function') {
+                showMicButtonAfterSpeaking();
+                // Auto-resume mode obrolan setelah Jarvis selesai bicara
+                if (isListeningActive && !userStoppedManually) {
                     setTimeout(resumeListeningAfterResponse, RESUME_AFTER_RESPONSE_MS);
                 }
             });
@@ -1118,7 +1143,10 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 requestAnimationFrame(draw);
             }
             
+            // ============ INISIALISASI ============
             if (HAS_AUDIO) {
+                // Jarvis baru selesai memproses → sembunyikan tombol selama speaking
+                hideMicButtonDuringSpeaking();
                 initAudioAnalyzer();
                 audio.play().then(() => {
                     if (audioContext) audioContext.resume();
@@ -1128,18 +1156,23 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     currentState = 'speaking';
                 });
             } else {
-                // Tidak ada audio baru — kalau mode obrolan masih aktif di localStorage,
-                // auto-resume listening (ini terjadi setelah Streamlit rerun)
+                // Tidak ada audio → cek localStorage apakah mode obrolan masih aktif
+                let wasActive = INITIAL_CONV_MODE;
                 try {
-                    const wasActive = window.parent.localStorage.getItem('jarvis_conversation_mode') === '1';
-                    if (wasActive) {
-                        setTimeout(() => {
-                            if (typeof resumeListeningAfterResponse === 'function') {
-                                resumeListeningAfterResponse();
-                            }
-                        }, 800);
-                    }
+                    wasActive = window.parent.localStorage.getItem('jarvis_conversation_mode') === '1';
                 } catch(e) {}
+                
+                if (wasActive) {
+                    isListeningActive = true;
+                    // Auto-start listening setelah iframe load
+                    setTimeout(() => {
+                        if (typeof recognition !== 'undefined' && recognition && !isRecognitionRunning) {
+                            try { recognition.start(); } catch(e) {
+                                setTimeout(() => { try { recognition.start(); } catch(_) {} }, 300);
+                            }
+                        }
+                    }, 500);
+                }
             }
             
             draw();
@@ -1152,6 +1185,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
         html_template
         .replace("__AUDIO_B64__", audio_b64)
         .replace("__HAS_AUDIO__", has_audio)
+        .replace("__CONV_MODE__", conv_mode_js)
         .replace("__STATE__", state)
     )
     
@@ -1216,6 +1250,9 @@ if "orb_state" not in st.session_state:
 if "current_audio" not in st.session_state:
     st.session_state.current_audio = None
 
+if "conversation_mode" not in st.session_state:
+    st.session_state.conversation_mode = False
+
 # ============================================================
 # ORB DI ATAS
 # ============================================================
@@ -1224,6 +1261,7 @@ with orb_placeholder.container():
     render_jarvis_orb(
         audio_bytes=st.session_state.current_audio,
         state=st.session_state.orb_state,
+        conversation_mode=st.session_state.conversation_mode,
     )
 
 # ============================================================
@@ -1257,7 +1295,7 @@ with col2:
 # ============================================================
 st.markdown("---")
 st.header("💬 Speak with Jarvis")
-st.caption("Klik **'Mulai Dengar'** sekali → mode obrolan suara aktif terus. Bicara → diam 1.5 detik → auto kirim. Klik **'Stop Dengar'** untuk mematikan.")
+st.caption("Klik **'Mulai Dengar'** sekali → mode obrolan suara aktif terus. Bicara → diam 1.5 detik → auto kirim. Tombol akan hilang saat Jarvis bicara, muncul lagi setelah selesai.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
@@ -1270,7 +1308,11 @@ if user_q:
     st.session_state.orb_state = "listening"
     st.session_state.current_audio = None
     with orb_placeholder.container():
-        render_jarvis_orb(audio_bytes=None, state="listening")
+        render_jarvis_orb(
+            audio_bytes=None,
+            state="listening",
+            conversation_mode=st.session_state.conversation_mode,
+        )
     
     has_img = False
     pil_imgs = []
@@ -1362,7 +1404,11 @@ if user_q:
                     st.session_state.current_audio = audio_bytes
                     st.session_state.orb_state = "speaking"
                     with orb_placeholder.container():
-                        render_jarvis_orb(audio_bytes=audio_bytes, state="speaking")
+                        render_jarvis_orb(
+                            audio_bytes=audio_bytes,
+                            state="speaking",
+                            conversation_mode=st.session_state.conversation_mode,
+                        )
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
     save_chat_history(st.session_state.jarvis_messages)
@@ -1397,6 +1443,7 @@ with st.sidebar:
         save_memory([])
         st.session_state.current_audio = None
         st.session_state.orb_state = "idle"
+        st.session_state.conversation_mode = False
         st.rerun()
 
     st.markdown("---")
