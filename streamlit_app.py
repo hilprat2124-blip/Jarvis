@@ -20,12 +20,12 @@ from PIL import Image
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
-# ============ AI: OpenRouter (OpenAI Compatible) ============
+# ============ AI: Groq (Cloud) ============
 try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
+    from groq import Groq
+    GROQ_AVAILABLE = True
 except ImportError:
-    OPENAI_AVAILABLE = False
+    GROQ_AVAILABLE = False
 
 # ============ AI: Edge-TTS ============
 try:
@@ -34,15 +34,16 @@ try:
 except ImportError:
     TTS_AVAILABLE = False
 
-# ============ KONFIGURASI OPENROUTER API ============
-OPENROUTER_API_KEY = "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"
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+# ============ KONFIGURASI GROQ API ============
+# API Key Groq milikmu
+GROQ_API_KEY = "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"
 
-# 🆕 MENGGUNAKAN MODEL YANG LEBIH STABIL
-JARVIS_VISION_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
-JARVIS_TEXT_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
+# Model Groq
+JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
+JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
+JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
 
-MAX_OUTPUT_TOKENS = 300
+MAX_OUTPUT_TOKENS = 300 # Dikunci kecil agar hemat token gratis
 MAX_CONTEXT_TURNS = 6
 MAX_MSG_CHARS = 400
 MAX_FRAMES_FOR_VISION = 1 
@@ -54,9 +55,9 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - OpenRouter Vision", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — OpenRouter Vision")
-st.markdown("Jarvis sekarang menggunakan OpenRouter API.")
+st.set_page_config(page_title="J.A.R.V.I.S - Groq Vision", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — Groq Vision")
+st.markdown("Jarvis sekarang menggunakan Groq API.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -508,7 +509,7 @@ class Hand3DProcessor(VideoProcessorBase):
         except: pass
 
 # ============================================================
-# HELPER JARVIS (OPENROUTER API)
+# HELPER JARVIS (GROQ API)
 # ============================================================
 def image_to_base64(pil_img: Image.Image, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY) -> str:
     img = pil_img.copy()
@@ -517,17 +518,24 @@ def image_to_base64(pil_img: Image.Image, max_size=IMAGE_MAX_SIZE, quality=IMAGE
     img.save(buf, format="JPEG", quality=quality)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
+def _is_rate_limit_error(err_str: str) -> bool:
+    err = err_str.lower()
+    return (
+        "413" in err
+        or "rate_limit" in err
+        or "request too large" in err
+        or "tokens per minute" in err
+        or "itpm" in err
+    )
+
 def ask_jarvis(api_messages: list, use_vision: bool) -> str:
-    if not OPENAI_AVAILABLE: return "❌ `openai` belum terinstall. Jalankan: pip install openai"
+    if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall. Jalankan: pip install groq"
+    if not GROQ_API_KEY:
+        return "❌ API Key Groq belum diisi. Silakan edit kode di bagian GROQ_API_KEY."
     
+    client = Groq(api_key=GROQ_API_KEY)
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
-    
     try:
-        client = OpenAI(
-            api_key=OPENROUTER_API_KEY,
-            base_url=OPENROUTER_BASE_URL
-        )
-        
         resp = client.chat.completions.create(
             model=model,
             messages=api_messages,
@@ -539,8 +547,41 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         return resp.choices[0].message.content
     except Exception as e:
         err_str = str(e)
-        _log(f"OPENROUTER API ERROR: {err_str[:200]}")
-        return f"❌ Error Jarvis (OpenRouter): {err_str[:300]}"
+        _log(f"GROQ API ERROR: {err_str[:200]}")
+        
+        if _is_rate_limit_error(err_str):
+            _log("⚠️ Rate limit kena — fallback ke text-only")
+            try:
+                fallback_msgs = [api_messages[0]]
+                for m in api_messages[1:]:
+                    if m["role"] == "system" and isinstance(m["content"], str):
+                        if "LONG-TERM MEMORY" in m["content"]:
+                            fallback_msgs.append(m)
+                
+                text_msgs = []
+                for m in api_messages:
+                    if m["role"] in ("user", "assistant"):
+                        if isinstance(m["content"], str):
+                            text_msgs.append({"role": m["role"], "content": m["content"][:300]})
+                        elif isinstance(m["content"], list):
+                            texts = [c.get("text", "") for c in m["content"] if c.get("type") == "text"]
+                            if texts:
+                                text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
+                
+                fallback_msgs.extend(text_msgs[-4:])
+                
+                resp = client.chat.completions.create(
+                    model=JARVIS_TEXT_MODEL,
+                    messages=fallback_msgs,
+                    temperature=0.7,
+                    max_tokens=200,
+                )
+                answer = resp.choices[0].message.content
+                return f"{answer}\n\n*(Sir, I had to switch to text-only mode due to token limits.)*"
+            except Exception as e2:
+                return "Sir, my cognitive buffer is momentarily saturated. Please wait a minute and try a shorter question."
+        
+        return f"❌ Error Jarvis (Groq): {err_str[:300]}"
 
 def sanitize_latex(text: str) -> str:
     if not text: return text
@@ -582,12 +623,9 @@ def strip_repetitive_greeting(text: str, history: list) -> str:
     return text
 
 def extract_memory(user_text: str, ai_text: str) -> str | None:
-    if not OPENAI_AVAILABLE or not OPENROUTER_API_KEY: return None
+    if not GROQ_AVAILABLE or not GROQ_API_KEY: return None
     try:
-        client = OpenAI(
-            api_key=OPENROUTER_API_KEY,
-            base_url=OPENROUTER_BASE_URL
-        )
+        client = Groq(api_key=GROQ_API_KEY)
         prompt = f"""
         Analyse this conversation. Is there any important fact about Sir Lois 
         worth remembering? If none, reply "NONE". If yes, write ONE short memory sentence IN ENGLISH (max 15 words).
@@ -595,7 +633,7 @@ def extract_memory(user_text: str, ai_text: str) -> str | None:
         AI: {ai_text[:300]}
         """
         resp = client.chat.completions.create(
-            model=JARVIS_TEXT_MODEL,
+            model=JARVIS_MEMORY_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=40, temperature=0.1
         )
@@ -1168,7 +1206,7 @@ with st.sidebar:
     st.caption("Technology:")
     st.caption("• Orb: Futuristic Wave")
     st.caption("• Vision: Live Camera Grab")
-    st.caption("• API: OpenRouter")
-    st.caption("• Vision Model: NVIDIA Nemotron")
+    st.caption("• API: Groq")
+    st.caption("• Vision Model: Qwen 3.8")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
