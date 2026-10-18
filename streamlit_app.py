@@ -181,6 +181,22 @@ CAM_ON_PATTERNS = [
     r"\bcan\s+you\s+(turn\s+on|open|activate|start)\s+(the\s+|your\s+)?(cam|camera|webcam)\b",
 ]
 
+def strip_filler_words(text: str) -> str:
+    if not text: return text
+    filler_patterns = [
+        r'^\s*(Aaa+h+|Ahh+|Ah+|Hmm+m*|Hm+|Uhh+|Umm+|Erm+|Er+|Hehehe+|Hehe+|Haha+|Hah+|Ugh+|Pfft+|Ohh+|Ooh+)[\s,\.\!\?…—\-]*',
+    ]
+    for _ in range(3):
+        old = text
+        for pattern in filler_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
+        if text == old: break
+    text = re.sub(r'[\s,]+(Aaa+h+|Ahh+|Hmm+m*|Uhh+|Umm+|Erm+|Hehehe+|Hehe+|Haha+|Ugh+)[\s,\.\!\?…]*', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'^\s*Well\s*[\.,…—\-]+\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+', ' ', text).strip()
+    if text and text[0].islower(): text = text[0].upper() + text[1:]
+    return text
+
 def is_camera_on_command(text: str) -> bool:
     if not text:
         return False
@@ -609,22 +625,6 @@ def sanitize_latex(text: str) -> str:
     text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
     return text.strip()
 
-def strip_filler_words(text: str) -> str:
-    if not text: return text
-    filler_patterns = [
-        r'^\s*(Aaa+h+|Ahh+|Ah+|Hmm+m*|Hm+|Uhh+|Umm+|Erm+|Er+|Hehehe+|Hehe+|Haha+|Hah+|Ugh+|Pfft+|Ohh+|Ooh+)[\s,\.\!\?…—\-]*',
-    ]
-    for _ in range(3):
-        old = text
-        for pattern in filler_patterns:
-            text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
-        if text == old: break
-    text = re.sub(r'[\s,]+(Aaa+h+|Ahh+|Hmm+m*|Uhh+|Umm+|Erm+|Hehehe+|Hehe+|Haha+|Ugh+)[\s,\.\!\?…]*', ' ', text, flags=re.IGNORECASE)
-    text = re.sub(r'^\s*Well\s*[\.,…—\-]+\s*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'\s+', ' ', text).strip()
-    if text and text[0].islower(): text = text[0].upper() + text[1:]
-    return text
-
 def strip_repetitive_greeting(text: str, history: list) -> str:
     if not text: return text
     past_greetings = 0
@@ -695,75 +695,6 @@ def generate_tts_edge(text: str) -> bytes | None:
     except Exception as e:
         st.error(f"Gagal generate suara: {e}")
         return None
-
-# ============================================================
-# CAMERA AUTO-START TRIGGER (JS HELPER)
-# ============================================================
-def render_camera_autostart_trigger():
-    """
-    Render helper HTML invisible yang akan mencoba klik tombol START
-    di dalam iframe webrtc_streamer Streamlit.
-    """
-    html = r"""
-    <!DOCTYPE html>
-    <html><head><style>body{margin:0;background:transparent;height:0;overflow:hidden;}</style></head>
-    <body>
-    <script>
-    (function autoStartCamera() {
-        const parentDoc = window.parent.document;
-
-        function findStartButton(root) {
-            const buttons = root.querySelectorAll('button');
-            for (const b of buttons) {
-                const txt = (b.innerText || b.textContent || '').trim().toUpperCase();
-                if (txt === 'START' || txt.startsWith('START') || txt.includes('START')) {
-                    if (txt.includes('SELECT') || txt.includes('DEVICE')) continue;
-                    return b;
-                }
-            }
-            return null;
-        }
-
-        function tryClickStart() {
-            const iframes = parentDoc.querySelectorAll('iframe');
-            for (const iframe of iframes) {
-                try {
-                    if (!iframe.offsetParent && iframe.offsetWidth === 0) continue;
-                    const doc = iframe.contentDocument || iframe.contentWindow?.document;
-                    if (!doc) continue;
-
-                    let btn = findStartButton(doc);
-                    if (!btn) {
-                        const hosts = doc.querySelectorAll('*');
-                        for (const host of hosts) {
-                            if (host.shadowRoot) {
-                                btn = findStartButton(host.shadowRoot);
-                                if (btn) break;
-                            }
-                        }
-                    }
-                    if (btn) {
-                        btn.click();
-                        return true;
-                    }
-                } catch (e) { /* cross-origin, skip */ }
-            }
-            return false;
-        }
-
-        let attempts = 0;
-        const maxAttempts = 12;
-        const interval = setInterval(() => {
-            attempts++;
-            if (tryClickStart() || attempts >= maxAttempts) {
-                clearInterval(interval);
-            }
-        }, 500);
-    })();
-    </script>
-    </body></html>
-    """
-    components.html(html, height=0, width=0)
 
 # ============================================================
 # JARVIS ORB — CONTINUOUS MODE FIXED
@@ -1326,13 +1257,11 @@ If the image is black/empty, say you cannot see anything clearly.
 
 [CAMERA CONTROL]
 - The system has an AUTO-CAMERA feature. If Sir Lois says "on cam", "turn on the cam",
-  "nyalakan kamera", "buka kamera", or similar — the system will AUTOMATICALLY press
-  the START button on the camera widget.
-- When that happens, you should acknowledge briefly and confidently. Examples:
-  "Camera activating now, Sir." / "Bringing the camera online, Sir." / "Visual sensors
-  engaged, Sir."
-- NEVER say you cannot control the camera. NEVER tell the user to click START manually
-  unless the auto-start banner appears in the UI.
+  "nyalakan kamera", "buka kamera", or similar — the system AUTOMATICALLY presses the
+  START button on the camera widget and forces the camera stream to begin.
+- When that happens, acknowledge briefly and confidently. Examples:
+  "Camera activating now, Sir." / "Bringing the camera online, Sir." / "Visual sensors engaged, Sir."
+- NEVER say you cannot control the camera. NEVER tell the user to click START manually.
 
 [MATHEMATICS]
 - Use $formula$ for inline and $$formula$$ for block.
@@ -1382,32 +1311,23 @@ col1, col2 = st.columns([2, 1])
 
 with col1:
     st.subheader("📹 Kamera (Live)")
+
+    # === AUTO-START CAMERA via desired_playing_state ===
+    # True  = paksa nyala (dari intent "on cam")
+    # None  = biarkan user kontrol manual (default)
+    _desired = True if st.session_state.get("needs_cam_start", False) else None
+
     ctx = webrtc_streamer(
         key="hand-3d-tracker-smooth",
         video_processor_factory=Hand3DProcessor,
         rtc_configuration=RTC_CONFIGURATION,
         media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
         async_processing=True,
+        desired_playing_state=_desired,   # ⬅️ AUTO-START (official feature)
     )
 
-    # === AUTO-START CAMERA SUPPORT ===
     if st.session_state.get("needs_cam_start", False) and not ctx.state.playing:
-        st.markdown(
-            """
-            <div style="padding:16px;border:2px solid #ff4b4b;border-radius:12px;
-                        background:rgba(255,75,75,0.08);text-align:center;margin-top:10px;">
-                <div style="font-size:16px;color:#ff4b4b;font-weight:bold;margin-bottom:8px;">
-                    🔴 Jarvis mendeteksi perintah menyalakan kamera
-                </div>
-                <div style="font-size:13px;color:#888;">
-                    Auto-click sedang mencoba menekan tombol <b>START</b> merah di atas.
-                    Jika kamera belum aktif dalam 3 detik, klik tombol <b>START</b> secara manual.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        render_camera_autostart_trigger()
+        st.info("🎥 Menyalakan kamera... izinkan akses kamera di browser jika muncul prompt.")
 
 with col2:
     st.subheader("ℹ️ Status Visual")
@@ -1415,7 +1335,7 @@ with col2:
         st.success("🟢 Kamera aktif")
         if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
             st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame.")
-        # Reset flag karena kamera sudah nyala
+        # Reset flag setelah kamera benar-benar nyala
         if st.session_state.get("needs_cam_start", False):
             st.session_state.needs_cam_start = False
     else:
@@ -1463,9 +1383,8 @@ if user_q:
             pil_imgs.append(Image.fromarray(frame_rgb))
             has_img = True
     else:
-        # Kalau user minta nyalakan kamera, beri pesan berbeda
         if is_camera_on_command(user_q):
-            st.warning("🎥 Menyalakan kamera... Jika belum aktif dalam beberapa detik, klik tombol **START** merah di atas secara manual.")
+            st.warning("🎥 Menyalakan kamera... izinkan akses kamera di browser jika diminta.")
         else:
             st.warning("⚠️ Kamera belum menyala. Klik START di atas agar Jarvis bisa melihat!")
 
@@ -1555,10 +1474,6 @@ if user_q:
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
     save_chat_history(st.session_state.jarvis_messages)
 
-    # Reset flag supaya banner tidak persist setelah selesai
-    if st.session_state.get("needs_cam_start", False) and ctx.state.playing:
-        st.session_state.needs_cam_start = False
-
 # ============================================================
 # SIDEBAR
 # ============================================================
@@ -1609,4 +1524,4 @@ with st.sidebar:
     st.caption("• Voice Mode: Continuous Conversation")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
-    st.caption("• 🎥 Auto-Start Cam: ON")
+    st.caption("• 🎥 Auto-Start Cam: ON (desired_playing_state)")
