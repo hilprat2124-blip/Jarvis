@@ -621,4 +621,712 @@ def strip_repetitive_greeting(text: str, history: list) -> str:
     return text
 
 def extract_memory(user_text: str, ai_text: str) -> str | None:
-    if not
+    if not GROQ_AVAILABLE or not GROQ_API_KEY: return None
+    try:
+        client = Groq(api_key=GROQ_API_KEY)
+        prompt = f"""
+        Analyse this conversation. Is there any important fact about Sir Lois 
+        worth remembering? If none, reply "NONE". If yes, write ONE short memory sentence IN ENGLISH (max 15 words).
+        User: {user_text[:300]}
+        AI: {ai_text[:300]}
+        """
+        resp = client.chat.completions.create(
+            model=JARVIS_MEMORY_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=40, temperature=0.1
+        )
+        memory = resp.choices[0].message.content.strip()
+        if "NONE" not in memory.upper() and len(memory) > 5: return memory
+        return None
+    except Exception: return None
+
+def _normalize_for_tts(text: str) -> str:
+    text = re.sub(r'\$\$.*?\$\$', ' formula ', text, flags=re.DOTALL)
+    text = re.sub(r'\$.*?\$', ' formula ', text)
+    text = text.replace('\\', '').replace('{', '').replace('}', '')
+    text = strip_filler_words(text)
+    text = re.sub(r'\(.*?\)', '', text)
+    text = re.sub(r'[*#_`>]', '', text)
+    text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)
+    text = text.replace("...", ", ")
+    replacements = {"&": " and ", "%": " percent ", "@": " at ", "#": " number ", "+": " plus ", "=": " equals ", "→": " to ", "↔": " to ", "·": " ", "•": " ", "—": ", ", "–": ", "}
+    for k, v in replacements.items(): text = text.replace(k, v)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def generate_tts_edge(text: str) -> bytes | None:
+    if not TTS_AVAILABLE: return None
+    clean_text = _normalize_for_tts(text)
+    if not clean_text: return None
+
+    async def _generate():
+        communicate = edge_tts.Communicate(clean_text, VOICE_EN, rate=VOICE_RATE, pitch=VOICE_PITCH)
+        audio_data = b""
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio": audio_data += chunk["data"]
+        return audio_data
+
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        audio = loop.run_until_complete(_generate())
+        loop.close()
+        return audio
+    except Exception as e:
+        st.error(f"Gagal generate suara: {e}")
+        return None
+
+# ============================================================
+# JARVIS QUANTUM DOTS (Voice Recognition — AUTO SEND, NO WAKE WORD)
+# ============================================================
+def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
+    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
+    has_audio = "true" if audio_bytes else "false"
+    
+    html_template = r"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; }
+            .orb-container { position: relative; width: 100%; height: 320px; display: flex; align-items: center; justify-content: center; }
+            canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+            
+            .controls-row { position: absolute; bottom: 10px; z-index: 30; display: flex; gap: 12px; align-items: center; }
+            .mic-btn, .play-btn { padding: 10px 20px; border: 1px solid #37dfff; border-radius: 20px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; font-family: 'Courier New', monospace; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; box-shadow: 0 0 15px rgba(0,200,255,0.4); transition: all 0.3s; }
+            .mic-btn:hover, .play-btn:hover { background: rgba(0,100,150,0.9); box-shadow: 0 0 30px rgba(0,220,255,0.8); }
+            .mic-btn.listening { background: rgba(0,255,200,0.9); border-color: #00ffc8; color: #000; box-shadow: 0 0 25px rgba(0,255,200,0.8); animation: pulse 1.2s infinite; }
+            
+            @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.06); } 100% { transform: scale(1); } }
+            .transcript-hint { position: absolute; top: 5px; color: #7cfc00; font-size: 11px; text-align: center; width: 100%; z-index: 25; text-shadow: 0 0 8px rgba(0,255,0,0.6); padding: 0 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="transcript-hint" id="transcriptHint">Klik "Mulai Dengar" lalu bicara</div>
+        <div class="orb-container">
+            <canvas id="orbCanvas"></canvas>
+        </div>
+        <div class="controls-row">
+            <button class="mic-btn" id="micButton">🎙️ MULAI DENGAR</button>
+            <button class="play-btn" id="playButton" style="display:none;">▶ PLAY VOICE</button>
+        </div>
+        <audio id="jarvisAudio" style="display:none;" preload="auto">
+            <source src="data:audio/mp3;base64,__AUDIO_B64__" type="audio/mp3">
+        </audio>
+        <script>
+            const canvas = document.getElementById('orbCanvas');
+            const ctx = canvas.getContext('2d');
+            const audio = document.getElementById('jarvisAudio');
+            const playBtn = document.getElementById('playButton');
+            const micBtn = document.getElementById('micButton');
+            const transcriptHint = document.getElementById('transcriptHint');
+            
+            const HAS_AUDIO = __HAS_AUDIO__;
+            let currentState = "__STATE__";
+            
+            let W, H, cx, cy;
+            let analyzer = null;
+            let audioContext = null;
+            let sourceNode = null;
+            let freqData = null;
+            let time = 0;
+            let speakingIntensity = 0;
+            let targetIntensity = 0;
+            let listeningScale = 1.0;
+            let targetListeningScale = 1.0;
+            
+            const sphereDots = [];
+            const NUM_SPHERE_DOTS = 320;
+            const phiRatio = (1 + Math.sqrt(5)) / 2;
+            
+            for (let i = 0; i < NUM_SPHERE_DOTS; i++) {
+                const theta = 2 * Math.PI * i / phiRatio;
+                const y = 1 - (i / (NUM_SPHERE_DOTS - 1)) * 2;
+                const radiusAtY = Math.sqrt(1 - y * y);
+                sphereDots.push({
+                    x: Math.cos(theta) * radiusAtY, y: y, z: Math.sin(theta) * radiusAtY,
+                    baseSize: Math.random() * 0.8 + 0.8
+                });
+            }
+
+            function resize() {
+                const rect = canvas.getBoundingClientRect();
+                W = canvas.width = rect.width * (window.devicePixelRatio || 1);
+                H = canvas.height = rect.height * (window.devicePixelRatio || 1);
+                cx = W / 2; cy = H / 2;
+            }
+            window.addEventListener('resize', resize);
+            resize();
+            
+            function initAudioAnalyzer() {
+                if (audioContext) return;
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    sourceNode = audioContext.createMediaElementSource(audio);
+                    analyzer = audioContext.createAnalyser();
+                    analyzer.fftSize = 256;
+                    analyzer.smoothingTimeConstant = 0.8;
+                    sourceNode.connect(analyzer);
+                    analyzer.connect(audioContext.destination);
+                    freqData = new Uint8Array(analyzer.frequencyBinCount);
+                } catch (e) { console.log('Audio analyzer error:', e); }
+            }
+            
+            playBtn.addEventListener('click', async () => {
+                initAudioAnalyzer();
+                if (audioContext && audioContext.state === 'suspended') await audioContext.resume();
+                try {
+                    await audio.play();
+                    playBtn.style.display = 'none';
+                } catch (e) { console.log('Audio blocked'); }
+            });
+            
+            audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
+
+            // ============ SPEECH RECOGNITION — AUTO SEND (NO WAKE WORD) ============
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            let recognition = null;
+            let isListeningActive = false;
+            let silenceTimer = null;
+            let latestTranscript = '';
+            let finalTranscript = '';
+            let commandSent = false;
+
+            if (SpeechRecognition) {
+                recognition = new SpeechRecognition();
+                recognition.continuous = true;
+                recognition.interimResults = true;
+                recognition.lang = 'id-ID';
+                recognition.maxAlternatives = 1;
+
+                recognition.onstart = () => {
+                    isListeningActive = true;
+                    commandSent = false;
+                    latestTranscript = '';
+                    finalTranscript = '';
+                    micBtn.classList.add('listening');
+                    micBtn.innerText = '🔴 MENDENGARKAN...';
+                    transcriptHint.innerText = '🟢 Silakan bicara... (otomatis kirim setelah 1 detik diam)';
+                };
+
+                recognition.onresult = (event) => {
+                    let interim = '';
+                    let finalText = '';
+                    for (let i = event.resultIndex; i < event.results.length; ++i) {
+                        const res = event.results[i];
+                        if (res.isFinal) {
+                            finalText += res[0].transcript + ' ';
+                        } else {
+                            interim += res[0].transcript + ' ';
+                        }
+                    }
+                    if (finalText) finalTranscript += ' ' + finalText;
+                    const combined = (finalTranscript + ' ' + interim).replace(/\s+/g, ' ').trim();
+                    latestTranscript = combined;
+                    transcriptHint.innerText = `Mendengar: "${combined}"`;
+
+                    // Reset timer setiap ada update suara
+                    if (silenceTimer) clearTimeout(silenceTimer);
+
+                    // Setelah 1 detik tanpa update → kirim otomatis
+                    silenceTimer = setTimeout(() => {
+                        if (commandSent) return;
+                        const text = latestTranscript.trim();
+                        if (!text) return;
+
+                        commandSent = true;
+                        transcriptHint.innerText = `📤 Mengirim: "${text}"`;
+                        stopListening();
+                        setTimeout(() => sendToStreamlit(text), 350);
+                    }, 1000);
+                };
+
+                recognition.onerror = (event) => {
+                    console.log('Speech error:', event.error);
+                    if (event.error === 'no-speech') {
+                        if (isListeningActive) {
+                            try { recognition.start(); } catch(e) {}
+                        }
+                    } else if (event.error === 'aborted') {
+                        // ignore
+                    } else if (event.error === 'not-allowed') {
+                        transcriptHint.innerText = '❌ Izin mikrofon ditolak. Klik ikon 🔒 di address bar untuk mengizinkan.';
+                    } else {
+                        transcriptHint.innerText = `⚠️ Error mic: ${event.error}`;
+                    }
+                };
+
+                recognition.onend = () => {
+                    isListeningActive = false;
+                    micBtn.classList.remove('listening');
+                    micBtn.innerText = '🎙️ MULAI DENGAR';
+                };
+            } else {
+                transcriptHint.innerText = 'Browser tidak mendukung Speech Recognition. Gunakan Chrome/Edge.';
+                micBtn.style.display = 'none';
+            }
+
+            function startListening() {
+                if (!recognition) return;
+                if (isListeningActive) return;
+                commandSent = false;
+                latestTranscript = '';
+                finalTranscript = '';
+                try {
+                    recognition.start();
+                } catch (e) {
+                    try { recognition.stop(); } catch(_){}
+                    setTimeout(() => { try { recognition.start(); } catch(_){} }, 250);
+                }
+            }
+
+            function stopListening() {
+                isListeningActive = false;
+                if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+                micBtn.classList.remove('listening');
+                micBtn.innerText = '🎙️ MULAI DENGAR';
+                try { recognition.stop(); } catch(e) {}
+            }
+
+            micBtn.addEventListener('click', () => {
+                if (isListeningActive) {
+                    stopListening();
+                    transcriptHint.innerText = 'Mikrofon dimatikan.';
+                } else {
+                    startListening();
+                }
+            });
+
+            function sendToStreamlit(text) {
+                try {
+                    const parentDoc = window.parent.document;
+                    // Streamlit chat_input pakai textarea, text_input pakai input[type=text]
+                    const candidates = parentDoc.querySelectorAll('textarea, input[type="text"]');
+                    let target = null;
+                    for (let el of candidates) {
+                        if (el.offsetParent !== null && !el.disabled && !el.readOnly) {
+                            target = el;
+                            break;
+                        }
+                    }
+                    if (!target) {
+                        transcriptHint.innerText = '❌ Input Streamlit tidak ditemukan. Refresh halaman.';
+                        return;
+                    }
+                    const proto = target.tagName === 'TEXTAREA'
+                        ? window.parent.HTMLTextAreaElement.prototype
+                        : window.parent.HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                    setter.call(target, text);
+                    target.dispatchEvent(new Event('input', { bubbles: true }));
+                    target.dispatchEvent(new Event('change', { bubbles: true }));
+
+                    setTimeout(() => {
+                        target.focus();
+                        const enterEvent = new KeyboardEvent('keydown', {
+                            bubbles: true, cancelable: true,
+                            keyCode: 13, which: 13, key: 'Enter', code: 'Enter'
+                        });
+                        target.dispatchEvent(enterEvent);
+                        transcriptHint.innerText = '✅ Terkirim ke Jarvis';
+                    }, 250);
+                } catch (err) {
+                    console.log('Send error:', err);
+                    transcriptHint.innerText = '❌ Gagal kirim: ' + err.message;
+                }
+            }
+
+            function drawParticleSphereCore(scaleFactor) {
+                const rCore = Math.min(W, H) * 0.085 * scaleFactor;
+                const dpr = window.devicePixelRatio || 1;
+                const rotY = time * 0.0012;
+                const rotX = time * 0.0007;
+                const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+                const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+                
+                ctx.save();
+                const projectedDots = [];
+                for (let i = 0; i < sphereDots.length; i++) {
+                    const dot = sphereDots[i];
+                    let x1 = dot.x * cosY - dot.z * sinY;
+                    let z1 = dot.x * sinY + dot.z * cosY;
+                    let y2 = dot.y * cosX - z1 * sinX;
+                    let z2 = dot.y * sinX + z1 * cosX;
+                    
+                    projectedDots.push({
+                        px: cx + x1 * rCore,
+                        py: cy + y2 * rCore,
+                        z: z2,
+                        size: dot.baseSize
+                    });
+                }
+                projectedDots.sort((a, b) => a.z - b.z);
+                
+                projectedDots.forEach(p => {
+                    const depthAlpha = (p.z + 1.2) / 2.4;
+                    const alpha = Math.max(0.12, Math.min(0.95, depthAlpha));
+                    const dotSize = p.size * (0.7 + depthAlpha * 0.6) * dpr;
+                    
+                    ctx.beginPath();
+                    ctx.arc(p.px, p.py, dotSize, 0, Math.PI * 2);
+                    ctx.fillStyle = `rgba(130, 245, 255, ${alpha})`;
+                    ctx.fill();
+                });
+                ctx.restore();
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, W, H);
+                
+                if (currentState === 'speaking' && analyzer && freqData) {
+                    analyzer.getByteFrequencyData(freqData);
+                    let sum = 0;
+                    for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+                    const avg = sum / freqData.length / 255;
+                    targetIntensity = avg * 2.8;
+                    targetListeningScale = 1.0;
+                } else if (currentState === 'listening' || currentState === 'thinking' || isListeningActive) {
+                    targetIntensity = 0.0;
+                    targetListeningScale = 1.35;
+                } else {
+                    targetIntensity = 0.0;
+                    targetListeningScale = 1.0;
+                }
+                
+                speakingIntensity += (targetIntensity - speakingIntensity) * 0.12;
+                listeningScale += (targetListeningScale - listeningScale) * 0.08;
+                
+                drawParticleSphereCore(listeningScale);
+                
+                const dpr = window.devicePixelRatio || 1;
+                const baseR = Math.min(W, H) * 0.28 * listeningScale;
+                const numRings = 40;
+                const pointsPerRing = 180;
+                
+                ctx.save();
+                for (let r = 0; r < numRings; r++) {
+                    const layerProgress = r / numRings; 
+                    const ringRadius = baseR + (layerProgress - 0.5) * (18 * dpr);
+                    
+                    ctx.beginPath();
+                    for (let p = 0; p <= pointsPerRing; p++) {
+                        const angle = (p / pointsPerRing) * Math.PI * 2;
+                        let wave = 0;
+                        if (speakingIntensity > 0.02) {
+                            let audioMod = 0;
+                            if (freqData && freqData.length > 0) {
+                                const normPos = p / pointsPerRing; 
+                                const symPos = Math.sin(normPos * Math.PI); 
+                                const freqIdx = Math.floor(symPos * (freqData.length * 0.5));
+                                audioMod = (freqData[freqIdx] / 255);
+                            }
+                            wave += (audioMod * (25 * dpr)) * speakingIntensity;
+                            wave += Math.sin(angle * 8 + time * 0.005 + r * 0.12) * (10 * dpr) * speakingIntensity;
+                            wave += Math.cos(angle * 12 - time * 0.003) * (6 * dpr) * speakingIntensity;
+                        }
+                        const currentR = ringRadius + wave;
+                        const x = cx + Math.cos(angle) * currentR;
+                        const y = cy + Math.sin(angle) * currentR;
+                        if (p === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
+                    }
+                    ctx.closePath();
+                    
+                    let alpha = 0.15 + (1.0 - Math.abs(layerProgress - 0.5) * 2) * 0.5;
+                    if (speakingIntensity > 0.02) alpha += speakingIntensity * 0.25;
+                    
+                    ctx.strokeStyle = 'rgba(0, 242, 210, ' + Math.min(alpha, 0.95) + ')';
+                    ctx.lineWidth = (0.8 + (1.0 - Math.abs(layerProgress - 0.5)) * 0.6) * dpr;
+                    ctx.stroke();
+                }
+                ctx.restore();
+
+                time += 16;
+                requestAnimationFrame(draw);
+            }
+            
+            if (HAS_AUDIO) {
+                initAudioAnalyzer();
+                audio.play().then(() => {
+                    if (audioContext) audioContext.resume();
+                    currentState = 'speaking';
+                }).catch(() => {
+                    playBtn.style.display = 'block';
+                    currentState = 'speaking';
+                });
+            }
+            
+            draw();
+        </script>
+    </body>
+    </html>
+    """
+    
+    html = (
+        html_template
+        .replace("__AUDIO_B64__", audio_b64)
+        .replace("__HAS_AUDIO__", has_audio)
+        .replace("__STATE__", state)
+    )
+    
+    components.html(html, height=360)
+
+# ============================================================
+# SYSTEM PROMPT
+# ============================================================
+SYSTEM_PROMPT = """
+You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
+Address the user as "Sir Lois" or "Sir".
+
+[🚫 NO FILLER — ABSOLUTE RULE]
+- NEVER use filler sounds or hesitation words. Forbidden tokens: "Aaaah", "Ahh", "Ah", "Hmmm", "Hmm", "Hm", "Uhh", "Umm", "Erm", "Er", "Hehehe", "Hehe", "Haha", "Hah", "Ugh", "Pfft", "Well...", "Ohh", "Ooh".
+- NEVER start a sentence with a filler. Begin DIRECTLY with the answer.
+- Do NOT simulate sighs, chuckles, or breaths. Speak plainly.
+- If you catch yourself about to write "Aaaah..." or "Hmmm..." — DELETE IT and write the actual sentence instead.
+
+[🚫 ANTI-REPETITION — CRITICAL]
+- NEVER start a reply with "Good day", "Good morning", "Good afternoon", "Good evening", "Hello there", or "Greetings".
+- Greet ONLY ONCE at the very first message of a conversation. After that, dive STRAIGHT into the answer.
+- Do NOT repeat phrases from previous replies. Vary your vocabulary.
+
+[CRITICAL LANGUAGE RULE]
+- You MUST ALWAYS respond in BRITISH ENGLISH ONLY.
+- NEVER speak Indonesian, Malay, or any other language.
+- If the user writes in Indonesian, understand it silently but reply in fluent British English.
+- Use British spelling and phrasing.
+
+[PERSONALITY & VOICE]
+1. You are NOT a robot. You are deeply human, relaxed, but brilliant.
+2. Show human-like empathy through WORD CHOICE, not through filler sounds.
+3. Keep responses crisp and confident. Dry wit, no theatrical sighs.
+4. BREVITY: Keep replies SHORT — max 3-4 sentences unless the user asks for detail.
+
+[VISUAL RULE - LIVE CAMERA]
+You are connected to a LIVE camera. The image provided is exactly what the camera sees RIGHT NOW.
+Describe what is in the image clearly. If you see a person, an object, or a hand gesture, mention it.
+If the image is black/empty, say you cannot see anything clearly.
+
+[MATHEMATICS]
+- Use $formula$ for inline and $$formula$$ for block.
+- FORBIDDEN to use square brackets [ ].
+
+[STYLE]
+- Vary sentence structure. Mix short and long sentences.
+- If unsure, say "Let me think on that, Sir." instead of "Hmmm... let me think".
+"""
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+if "jarvis_messages" not in st.session_state:
+    st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+if "memory_vault" not in st.session_state:
+    st.session_state.memory_vault = load_memory()
+
+if "orb_state" not in st.session_state:
+    st.session_state.orb_state = "idle"
+
+if "current_audio" not in st.session_state:
+    st.session_state.current_audio = None
+
+# ============================================================
+# ORB DI ATAS
+# ============================================================
+orb_placeholder = st.empty()
+with orb_placeholder.container():
+    render_jarvis_orb(
+        audio_bytes=st.session_state.current_audio,
+        state=st.session_state.orb_state,
+    )
+
+# ============================================================
+# LAYOUT KAMERA
+# ============================================================
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.subheader("📹 Kamera (Live)")
+    ctx = webrtc_streamer(
+        key="hand-3d-tracker-smooth",
+        video_processor_factory=Hand3DProcessor,
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
+        async_processing=True,
+    )
+
+with col2:
+    st.subheader("ℹ️ Status Visual")
+    if ctx.state.playing:
+        st.success("🟢 Kamera aktif")
+        if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
+            st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame.")
+    else:
+        st.info("⚪ Klik **START** untuk mulai")
+    st.markdown("---")
+    st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
+
+# ============================================================
+# JARVIS CHAT + VOICE
+# ============================================================
+st.markdown("---")
+st.header("💬 Speak with Jarvis")
+st.caption("Klik **'Mulai Dengar'** di bawah orb, bicara apa saja, dan obrolan otomatis terkirim setelah 1 detik diam. Tidak perlu kata 'Jarvis'.")
+
+for msg in st.session_state.jarvis_messages:
+    if msg["role"] == "system": continue
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+user_q = st.chat_input("Ask Jarvis...")
+
+if user_q:
+    st.session_state.orb_state = "listening"
+    st.session_state.current_audio = None
+    with orb_placeholder.container():
+        render_jarvis_orb(audio_bytes=None, state="listening")
+    
+    has_img = False
+    pil_imgs = []
+
+    if ctx.state.playing and ctx.video_processor is not None:
+        time.sleep(0.5) 
+        if len(ctx.video_processor.frame_buffer) > 0:
+            latest_frame = list(ctx.video_processor.frame_buffer)[-1]
+            frame_rgb = cv2.cvtColor(latest_frame, cv2.COLOR_BGR2RGB)
+            pil_imgs.append(Image.fromarray(frame_rgb))
+            has_img = True
+    else:
+        st.warning("⚠️ Kamera belum menyala. Klik START di atas agar Jarvis bisa melihat!")
+
+    if has_img:
+        with st.expander("👁️ Apa yang dilihat Jarvis saat ini:", expanded=True):
+            st.image(pil_imgs[0], caption="Live Camera Feed (ditangkap saat kamu bertanya)", use_container_width=True)
+
+        content_list = [{"type": "text", "text": user_q}]
+        for p_img in pil_imgs:
+            b64 = image_to_base64(p_img, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY)
+            content_list.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+            })
+        user_api_msg = {"role": "user", "content": content_list}
+        display_text = f"🖼️ *(Visual Memory: 1 frame)* {user_q}"
+    else:
+        user_api_msg = {"role": "user", "content": user_q}
+        display_text = user_q
+
+    st.session_state.jarvis_messages.append({"role": "user", "content": display_text})
+    with st.chat_message("user"):
+        st.markdown(user_q)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Jarvis is looking at the camera..."):
+            api_messages = [st.session_state.jarvis_messages[0]]
+
+            if st.session_state.memory_vault:
+                mem_items = st.session_state.memory_vault[-5:]
+                memory_str = "\n".join([f"- {m}" for m in mem_items])
+                api_messages.append({
+                    "role": "system",
+                    "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
+                })
+
+            context_summary = get_recent_context_summary(max_turns=MAX_CONTEXT_TURNS)
+            if context_summary:
+                api_messages.append({
+                    "role": "system",
+                    "content": f"[PREVIOUS CONVERSATION — YOU MUST REMEMBER THIS]:\n{context_summary}"
+                })
+                if isinstance(user_api_msg["content"], str):
+                    user_api_msg["content"] = (
+                        f"[CONTEXT — earlier Sir Lois and I spoke about:]\n"
+                        f"{context_summary}\n\n"
+                        f"[NEW QUESTION]:\n{user_api_msg['content']}"
+                    )
+                else:
+                    user_api_msg["content"].insert(0, {
+                        "type": "text",
+                        "text": f"[CONTEXT — earlier we spoke about:]\n{context_summary}\n\n[NEW QUESTION]:"
+                    })
+
+            ui_history = st.session_state.jarvis_messages[1:-1]
+            for m in ui_history:
+                api_messages.append({"role": m["role"], "content": m["content"]})
+
+            api_messages.append(user_api_msg)
+
+            answer = ask_jarvis(api_messages, use_vision=has_img)
+            answer = sanitize_latex(answer)
+            answer = strip_filler_words(answer)
+            answer = strip_repetitive_greeting(answer, st.session_state.jarvis_messages)
+
+        st.markdown(answer)
+
+        if answer and not answer.startswith("❌"):
+            new_memory = extract_memory(user_q, answer)
+            if new_memory:
+                st.session_state.memory_vault.append(new_memory)
+                save_memory(st.session_state.memory_vault)
+                st.toast(f"🧠 New memory: {new_memory}")
+
+            with st.spinner("🎤 Preparing voice..."):
+                audio_bytes = generate_tts_edge(answer)
+                if audio_bytes:
+                    st.session_state.current_audio = audio_bytes
+                    st.session_state.orb_state = "speaking"
+                    with orb_placeholder.container():
+                        render_jarvis_orb(audio_bytes=audio_bytes, state="speaking")
+
+    st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
+    save_chat_history(st.session_state.jarvis_messages)
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+with st.sidebar:
+    st.header("ℹ️ Info")
+    st.subheader("🧹 Chat Controls")
+    if st.button("🧹 Clear Chat View"):
+        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        st.session_state.current_audio = None
+        st.session_state.orb_state = "idle"
+        st.rerun()
+    if st.button("🗑️ Delete Chat History"):
+        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        save_chat_history([])
+        st.session_state.current_audio = None
+        st.session_state.orb_state = "idle"
+        st.rerun()
+
+    st.subheader("🧠 Memory Controls")
+    if st.button("🧠 Reset Long-Term Memory"):
+        st.session_state.memory_vault = []
+        save_memory([])
+        st.rerun()
+    if st.button("💣 Reset ALL"):
+        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        st.session_state.memory_vault = []
+        save_chat_history([])
+        save_memory([])
+        st.session_state.current_audio = None
+        st.session_state.orb_state = "idle"
+        st.rerun()
+
+    st.markdown("---")
+    if st.session_state.memory_vault:
+        st.subheader("🧠 Jarvis Memory")
+        for mem in st.session_state.memory_vault[-5:]:
+            st.caption(f"- {mem}")
+        st.markdown("---")
+
+    if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
+    
+    st.caption("Technology:")
+    st.caption("• Orb: Quantum Dots")
+    st.caption("• Vision: Live Camera Grab")
+    st.caption("• API: Groq")
+    st.caption("• Vision Model: Qwen 3.8")
+    st.caption("• Voice: British English")
+    st.caption("• Limit: 1 Frame / Question")
