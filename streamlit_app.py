@@ -18,7 +18,7 @@ import pathlib
 import collections
 from PIL import Image
 
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase, RTCConfiguration
 
 # ============ AI: Groq (Cloud) ============
 try:
@@ -174,55 +174,6 @@ def is_camera_on_command(text: str) -> bool:
     for pat in CAM_ON_PATTERNS:
         if re.search(pat, t, flags=re.IGNORECASE): return True
     return False
-
-# ============================================================
-# JS AUTO-CLICKER (MENEKAN TOMBOL START ASLI WEBRTC)
-# ============================================================
-def trigger_auto_click_start():
-    """Menyuntikkan Javascript untuk menekan tombol START merah di iframe WebRTC."""
-    html = """
-    <script>
-    (function() {
-        const pDoc = window.parent.document;
-        let clicked = false;
-        let attempts = 0;
-        
-        // Coba klik setiap 200ms hingga 15 kali (3 detik)
-        const interval = setInterval(() => {
-            attempts++;
-            // Cari semua iframe di halaman Streamlit
-            const iframes = pDoc.querySelectorAll('iframe');
-            
-            for (let iframe of iframes) {
-                try {
-                    const doc = iframe.contentDocument || iframe.contentWindow.document;
-                    if (!doc) continue;
-                    
-                    // Cari tombol dengan teks "START"
-                    const buttons = doc.querySelectorAll('button');
-                    for (let btn of buttons) {
-                        const text = (btn.innerText || btn.textContent || '').trim().toUpperCase();
-                        if (text === 'START' || text.startsWith('START')) {
-                            btn.click();
-                            clicked = true;
-                            console.log("[JARVIS] Auto-clicked WebRTC START button!");
-                            break;
-                        }
-                    }
-                } catch(e) {
-                    // Abaikan error cross-origin jika ada
-                }
-                if (clicked) break;
-            }
-            
-            if (clicked || attempts > 15) {
-                clearInterval(interval);
-            }
-        }, 200);
-    })();
-    </script>
-    """
-    components.html(html, height=0, width=0)
 
 # ============================================================
 # KELAS KAMERA
@@ -783,8 +734,8 @@ if "current_audio" not in st.session_state:
     st.session_state.current_audio = None
 if "conversation_mode" not in st.session_state:
     st.session_state.conversation_mode = False
-if "force_cam_on" not in st.session_state:
-    st.session_state.force_cam_on = False
+if "camera_running" not in st.session_state:
+    st.session_state.camera_running = False
 
 # ============================================================
 # ORB DI ATAS
@@ -805,24 +756,31 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("📹 Kamera (Live)")
     
-    # --- TOMBOL KONTROL KAMERA MANUAL ---
-    if st.button("🔴 KLIK DISINI JIKA KAMERA BELUM NYALA", use_container_width=True):
-        trigger_auto_click_start()
-        st.rerun()
+    # --- TOMBOL KONTROL KAMERA MANUAL (BERHASIL 100%) ---
+    if not st.session_state.camera_running:
+        if st.button("🔴 KLIK DISINI UNTUK MENYALAKAN KAMERA", use_container_width=True):
+            st.session_state.camera_running = True
+            st.rerun()
+    else:
+        if st.button("⏹️ MATIKAN KAMERA", use_container_width=True):
+            st.session_state.camera_running = False
+            st.rerun()
             
-    # Render WebRTC
+    # Render WebRTC dengan desired_playing_state
     ctx = webrtc_streamer(
         key="hand-3d-tracker-smooth",
+        mode=WebRtcMode.SENDRECV,
         video_processor_factory=Hand3DProcessor,
         rtc_configuration=RTC_CONFIGURATION,
         media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
         async_processing=True,
-        desired_playing_state=True if st.session_state.force_cam_on else None
+        desired_playing_state=True if st.session_state.camera_running else False
     )
     
-    # Tempatkan script auto-clicker tepat di bawah WebRTC
-    if st.session_state.force_cam_on and not ctx.state.playing:
-        trigger_auto_click_start()
+    # Sinkronisasi state jika kamera dimatikan manual lewat UI WebRTC
+    if not ctx.state.playing and st.session_state.camera_running:
+        st.session_state.camera_running = False
+        st.rerun()
 
 with col2:
     st.subheader("ℹ️ Status Visual")
@@ -852,8 +810,8 @@ user_q = st.chat_input("Ask Jarvis...")
 if user_q:
     # === DETEKSI PERINTAH ON CAM ===
     if is_camera_on_command(user_q):
-        st.session_state.force_cam_on = True
-        st.toast("🎥 Perintah nyalakan kamera terdeteksi — Menjalankan Auto-Clicker...", icon="🔴")
+        st.session_state.camera_running = True
+        st.toast("🎥 Perintah nyalakan kamera terdeteksi — Menyalakan kamera...", icon="🔴")
         time.sleep(1)
         st.rerun()
 
@@ -878,7 +836,7 @@ if user_q:
             has_img = True
     else:
         if is_camera_on_command(user_q):
-            st.warning("🎥 Auto-Clicker sedang berjalan. Jika kamera belum nyala, klik tombol merah di atas.")
+            st.warning("🎥 Menyalakan kamera... izinkan akses kamera di browser jika diminta.")
         else:
             st.warning("⚠️ Kamera belum menyala. Klik START di atas agar Jarvis bisa melihat!")
 
@@ -976,7 +934,7 @@ with st.sidebar:
         st.session_state.current_audio = None
         st.session_state.orb_state = "idle"
         st.session_state.conversation_mode = False
-        st.session_state.force_cam_on = False
+        st.session_state.camera_running = False
         st.rerun()
 
     st.markdown("---")
@@ -995,4 +953,4 @@ with st.sidebar:
     st.caption("• Voice Mode: Continuous Conversation")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
-    st.caption("• 🎥 Auto-Start Cam: JS Clicker")
+    st.caption("• 🎥 Auto-Start Cam: Native Toggle")
