@@ -53,8 +53,8 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Clean Core", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Clean Core")
+st.set_page_config(page_title="J.A.R.V.I.S - Fluid Core", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — Fluid Core")
 st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya.")
 
 # ============ WebRTC & Konstanta ============
@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS CLEAN SMOOTH ORB
+# JARVIS FLUID CORE ORB (No Bug, Clean, Gradients)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -725,6 +725,19 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let listeningScale = 1.0;
             let targetListeningScale = 1.0;
             
+            // Pre-generate inner sphere particles (bintang)
+            const coreDots = [];
+            for(let i=0; i<60; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const rad = Math.random() * 0.8; // 0 to 1
+                coreDots.push({
+                    angle: angle,
+                    rad: rad,
+                    speed: (Math.random() - 0.5) * 0.02,
+                    size: Math.random() * 1.5 + 0.5
+                });
+            }
+            
             function resize() {
                 const rect = canvas.getBoundingClientRect();
                 W = canvas.width = rect.width * (window.devicePixelRatio || 1);
@@ -759,40 +772,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             
             audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
             
-            function drawInnerCore(scaleFactor) {
-                const rCore = Math.min(W, H) * 0.08 * scaleFactor;
-                
-                // Outer Wireframe Core Ring
-                ctx.save();
-                ctx.beginPath();
-                ctx.arc(cx, cy, rCore, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(0, 240, 220, 0.6)';
-                ctx.lineWidth = 1.5 * (window.devicePixelRatio || 1);
-                ctx.stroke();
-                
-                // Geodesic / Wireframe Points
-                const numDots = 28;
-                for (let i = 0; i < numDots; i++) {
-                    const phi = Math.acos(-1 + (2 * i) / numDots);
-                    const theta = Math.sqrt(numDots * Math.PI) * phi + time * 0.001;
-                    const x = cx + rCore * Math.sin(phi) * Math.cos(theta);
-                    const y = cy + rCore * Math.sin(phi) * Math.sin(theta);
-                    
-                    ctx.beginPath();
-                    ctx.arc(x, y, 1.2 * (window.devicePixelRatio || 1), 0, Math.PI * 2);
-                    ctx.fillStyle = 'rgba(120, 255, 240, 0.8)';
-                    ctx.fill();
-                }
-                
-                // Concentric Ripple Ring Inside
-                ctx.beginPath();
-                ctx.arc(cx, cy, rCore * 1.45, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(0, 220, 200, 0.25)';
-                ctx.lineWidth = 1.0 * (window.devicePixelRatio || 1);
-                ctx.stroke();
-                ctx.restore();
-            }
-
             function draw() {
                 ctx.clearRect(0, 0, W, H);
                 
@@ -801,65 +780,117 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     let sum = 0;
                     for (let i = 0; i < freqData.length; i++) sum += freqData[i];
                     const avg = sum / freqData.length / 255;
-                    targetIntensity = avg * 2.8;
+                    targetIntensity = avg * 3.5;
                     targetListeningScale = 1.0;
                 } else if (currentState === 'listening' || currentState === 'thinking') {
                     targetIntensity = 0.0;
-                    targetListeningScale = 1.35; // Membesar ketika mendengarkan
+                    targetListeningScale = 1.2; 
                 } else {
-                    targetIntensity = 0.0; // Idle: mulus, tanpa gelombang
+                    targetIntensity = 0.0; 
                     targetListeningScale = 1.0;
                 }
                 
-                speakingIntensity += (targetIntensity - speakingIntensity) * 0.12;
+                speakingIntensity += (targetIntensity - speakingIntensity) * 0.15;
                 listeningScale += (targetListeningScale - listeningScale) * 0.08;
                 
-                drawInnerCore(listeningScale);
-                
                 const dpr = window.devicePixelRatio || 1;
-                const baseR = Math.min(W, H) * 0.28 * listeningScale;
-                const numRings = 40;
-                const pointsPerRing = 120;
+                const baseR = Math.min(W, H) * 0.22 * listeningScale;
                 
-                // Outer Cyan Holographic Particle Field
-                ctx.save();
-                for (let r = 0; r < numRings; r++) {
-                    const layerProgress = r / numRings; 
-                    const ringRadius = baseR + (layerProgress - 0.5) * (18 * dpr);
+                // 1. Gambar Outer Fluid Ring (Gelombang Aurora)
+                // Kita gambar beberapa lapis untuk membuat efek 3D tebal
+                const layers = 15;
+                const points = 120;
+                
+                // Simpan posisi titik untuk lapisan luar agar konsisten
+                let outerPoints = [];
+                for(let i=0; i<points; i++) {
+                    const angle = (i / points) * Math.PI * 2;
+                    let wave = 0;
+                    
+                    if (speakingIntensity > 0.01) {
+                        // Reaksi suara
+                        if(freqData) {
+                            const freqIdx = Math.floor((i/points) * (freqData.length * 0.6));
+                            wave += (freqData[freqIdx]/255) * 60 * dpr * speakingIntensity;
+                        }
+                        // Gelombang berjalan
+                        wave += Math.sin(angle * 7 + time * 0.003) * 15 * dpr * speakingIntensity;
+                        wave += Math.cos(angle * 11 - time * 0.002) * 10 * dpr * speakingIntensity;
+                    } else {
+                        // Idle: Gelombang sangat halus bernafas
+                        wave += Math.sin(angle * 5 + time * 0.001) * 2 * dpr;
+                        wave += Math.cos(angle * 8 - time * 0.001) * 1.5 * dpr;
+                    }
+                    
+                    const r = baseR + wave;
+                    outerPoints.push({ x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r });
+                }
+                
+                // Gambar lapisan-lapisan (gradien tebal tipis)
+                for(let l=0; l<layers; l++) {
+                    const progress = l / layers; // 0 to 1
+                    const thickness = 30 * dpr; // Ketebalan maksimal
+                    
+                    // Skala ke dalam sedikit untuk membuat volume
+                    const scale = 1.0 - (progress * (thickness / baseR));
                     
                     ctx.beginPath();
-                    for (let p = 0; p <= pointsPerRing; p++) {
-                        const angle = (p / pointsPerRing) * Math.PI * 2;
+                    for(let i=0; i<points; i++) {
+                        const p = outerPoints[i];
+                        // Tarik titik ke arah tengah berdasarkan progress
+                        const tx = cx + (p.x - cx) * scale;
+                        const ty = cy + (p.y - cy) * scale;
                         
-                        let wave = 0;
-                        if (speakingIntensity > 0.02) {
-                            // Gelombang aktif untuk mode speaking (sesuai referensi gambar)
-                            let freqIdx = 0;
-                            if (freqData) {
-                                freqIdx = Math.floor((p / pointsPerRing) * (freqData.length / 2));
-                                wave += (freqData[freqIdx] / 255) * (35 * dpr) * speakingIntensity;
-                            }
-                            wave += Math.sin(angle * 9 + time * 0.006 + r * 0.15) * (12 * dpr) * speakingIntensity;
-                            wave += Math.cos(angle * 15 - time * 0.004) * (8 * dpr) * speakingIntensity;
-                        }
-                        
-                        const currentR = ringRadius + wave;
-                        const x = cx + Math.cos(angle) * currentR;
-                        const y = cy + Math.sin(angle) * currentR;
-                        
-                        if (p === 0) ctx.moveTo(x, y);
-                        else ctx.lineTo(x, y);
+                        if(i===0) ctx.moveTo(tx, ty);
+                        else ctx.lineTo(tx, ty);
                     }
                     ctx.closePath();
                     
-                    let alpha = 0.15 + (1.0 - Math.abs(layerProgress - 0.5) * 2) * 0.5;
-                    if (speakingIntensity > 0.02) alpha += speakingIntensity * 0.25;
-                    
-                    ctx.strokeStyle = 'rgba(0, 242, 210, ' + Math.min(alpha, 0.95) + ')';
-                    ctx.lineWidth = (0.8 + (1.0 - Math.abs(layerProgress - 0.5)) * 0.6) * dpr;
-                    ctx.stroke();
+                    // Warna gradien (Hijau Cyan ke Transparan)
+                    const alpha = (1 - progress) * 0.4; 
+                    ctx.fillStyle = 'rgba(0, 255, 200, ' + alpha + ')';
+                    ctx.fill();
                 }
-                ctx.restore();
+                
+                // Gambar garis tepi luar yang sangat tajam (cyan terang)
+                ctx.beginPath();
+                for(let i=0; i<points; i++) {
+                    const p = outerPoints[i];
+                    if(i===0) ctx.moveTo(p.x, p.y);
+                    else ctx.lineTo(p.x, p.y);
+                }
+                ctx.closePath();
+                ctx.strokeStyle = 'rgba(100, 255, 230, 0.9)';
+                ctx.lineWidth = 2 * dpr;
+                ctx.stroke();
+
+                // 2. Inner Core Circle (Lingkaran tipis)
+                const innerRadius = baseR * 0.65;
+                ctx.beginPath();
+                ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(0, 255, 200, 0.3)';
+                ctx.lineWidth = 1 * dpr;
+                ctx.stroke();
+
+                // 3. Core Particles (Bintang di dalam)
+                for(let i=0; i<coreDots.length; i++) {
+                    const p = coreDots[i];
+                    p.angle += p.speed; // Rotasi
+                    
+                    const r = p.rad * innerRadius;
+                    const x = cx + Math.cos(p.angle) * r;
+                    const y = cy + Math.sin(p.angle) * r;
+                    
+                    // Kalkulasi 3D sederhana (kedipan bintang)
+                    const depth = (Math.sin(p.angle) + 1) / 2; // 0 to 1
+                    const alpha = 0.2 + depth * 0.8;
+                    const size = p.size * depth * dpr;
+                    
+                    ctx.beginPath();
+                    ctx.arc(x, y, size, 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(150, 255, 240, ' + alpha + ')';
+                    ctx.fill();
+                }
 
                 time += 16;
                 requestAnimationFrame(draw);
@@ -1143,7 +1174,7 @@ with st.sidebar:
     if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
     
     st.caption("Technology:")
-    st.caption("• Orb: Clean Smooth Core")
+    st.caption("• Orb: Fluid Core Aurora")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
     st.caption("• Vision Model: Qwen 3.8")
