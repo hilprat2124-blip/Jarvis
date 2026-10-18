@@ -20,7 +20,7 @@ from PIL import Image
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
-# ============ AI: Groq ============
+# ============ AI: Groq (Cloud) ============
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
@@ -34,12 +34,10 @@ try:
 except ImportError:
     TTS_AVAILABLE = False
 
-try:
-    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-except Exception:
-    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+# ============ KONFIGURASI GROQ API ============
+# API Key yang kamu berikan
+GROQ_API_KEY = "sk-yCKwxnRa5da3fQw674SDtSRzyT9ZzVpEqZx1l7BdH1yqlGio"
 
-# ============ MODEL CONFIG ============
 JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
 JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
@@ -47,7 +45,7 @@ JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
 MAX_OUTPUT_TOKENS = 300
 MAX_CONTEXT_TURNS = 6
 MAX_MSG_CHARS = 400
-# 🆕 Gunakan 1 frame agar hemat token
+# Gunakan 1 frame agar hemat token
 MAX_FRAMES_FOR_VISION = 1 
 IMAGE_MAX_SIZE = 384
 IMAGE_QUALITY = 45
@@ -57,9 +55,9 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Live Vision", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Live Vision")
-st.markdown("Jarvis sekarang bisa melihat **feed kamera secara langsung** saat kamu bertanya.")
+st.set_page_config(page_title="J.A.R.V.I.S - Cloud Vision", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — Cloud Vision (Groq)")
+st.markdown("Jarvis sekarang menggunakan Groq API dengan key milikmu.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -111,29 +109,40 @@ def load_memory() -> list:
     if os.path.exists(MEMORY_FILE):
         try:
             with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except: return []
+                data = json.load(f)
+                _log(f"LOADED memory: {len(data)} items")
+                return data
+        except Exception as e:
+            _log(f"ERROR loading memory: {e}")
+            return []
     return []
 
 def save_memory(memory_list: list):
     try:
         with open(MEMORY_FILE, "w", encoding="utf-8") as f:
             json.dump(memory_list, f, ensure_ascii=False, indent=2)
-    except: pass
+        _log(f"SAVED memory: {len(memory_list)} items")
+    except Exception as e:
+        _log(f"ERROR saving memory: {e}")
 
 def load_chat_history() -> list:
     if os.path.exists(CHAT_FILE):
         try:
             with open(CHAT_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except: return []
+                data = json.load(f)
+                _log(f"LOADED chat: {len(data)} messages")
+                return data
+        except Exception as e:
+            _log(f"ERROR loading chat: {e}")
+            return []
     return []
 
 def save_chat_history(messages: list):
     try:
         clean_msgs = []
         for m in messages:
-            if m["role"] == "system": continue
+            if m["role"] == "system":
+                continue
             content = m["content"]
             if isinstance(content, list):
                 texts = [c["text"] for c in content if c.get("type") == "text"]
@@ -143,19 +152,25 @@ def save_chat_history(messages: list):
             clean_msgs.append({"role": m["role"], "content": content})
         with open(CHAT_FILE, "w", encoding="utf-8") as f:
             json.dump(clean_msgs, f, ensure_ascii=False, indent=2)
-    except: pass
+        _log(f"SAVED chat: {len(clean_msgs)} messages")
+    except Exception as e:
+        _log(f"ERROR saving chat: {e}")
 
 def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
     history = load_chat_history()
-    if not history: return ""
+    if not history:
+        return ""
     recent = history[-max_turns * 2:]
     lines = []
     for m in recent:
         role = "Sir Lois" if m["role"] == "user" else "Jarvis"
         content = m["content"]
+        if isinstance(content, list):
+            content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
         if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
             content = content[:MAX_MSG_CHARS] + "..."
         lines.append(f"{role}: {content}")
+    _log(f"CONTEXT BUILT: {len(recent)} messages")
     return "\n".join(lines)
 
 # ============================================================
@@ -494,7 +509,7 @@ class Hand3DProcessor(VideoProcessorBase):
         except: pass
 
 # ============================================================
-# HELPER JARVIS
+# HELPER JARVIS (GROQ API)
 # ============================================================
 def image_to_base64(pil_img: Image.Image, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY) -> str:
     img = pil_img.copy()
@@ -514,8 +529,7 @@ def _is_rate_limit_error(err_str: str) -> bool:
     )
 
 def ask_jarvis(api_messages: list, use_vision: bool) -> str:
-    if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall."
-    if not GROQ_API_KEY: return "❌ GROQ_API_KEY belum diset."
+    if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall. Jalankan: pip install groq"
     
     client = Groq(api_key=GROQ_API_KEY)
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
@@ -607,7 +621,7 @@ def strip_repetitive_greeting(text: str, history: list) -> str:
     return text
 
 def extract_memory(user_text: str, ai_text: str) -> str | None:
-    if not GROQ_AVAILABLE or not GROQ_API_KEY: return None
+    if not GROQ_AVAILABLE: return None
     try:
         client = Groq(api_key=GROQ_API_KEY)
         prompt = f"""
@@ -971,11 +985,6 @@ You are connected to a LIVE camera. The image provided is exactly what the camer
 Describe what is in the image clearly. If you see a person, an object, or a hand gesture, mention it.
 If the image is black/empty, say you cannot see anything clearly.
 
-[MEMORY & IDENTITY]
-- Learn from prior conversations. Remember small details about Sir Lois.
-- If asked, answer that Sir Lois lives in Banten.
-- If a [PREVIOUS CONVERSATION CONTEXT] block is provided, TREAT IT AS YOUR OWN MEMORY.
-
 [MATHEMATICS]
 - Use $ formula $ for inline and $$ formula $$ for block.
 - FORBIDDEN to use square brackets [ ].
@@ -1059,13 +1068,9 @@ if user_q:
     has_img = False
     pil_imgs = []
 
-    # 🆕 AMBIL GAMBAR LANGSUNG DARI KAMERA SAAT INI JUGA
     if ctx.state.playing and ctx.video_processor is not None:
-        # Beri waktu 0.5 detik agar kamera menangkap frame terbaru
         time.sleep(0.5) 
-        
         if len(ctx.video_processor.frame_buffer) > 0:
-            # Ambil frame paling baru (ujung kanan deque)
             latest_frame = list(ctx.video_processor.frame_buffer)[-1]
             frame_rgb = cv2.cvtColor(latest_frame, cv2.COLOR_BGR2RGB)
             pil_imgs.append(Image.fromarray(frame_rgb))
@@ -1074,7 +1079,6 @@ if user_q:
         st.warning("⚠️ Kamera belum menyala. Klik START di atas agar Jarvis bisa melihat!")
 
     if has_img:
-        # Tampilkan gambar yang dilihat Jarvis ke User
         with st.expander("👁️ Apa yang dilihat Jarvis saat ini:", expanded=True):
             st.image(pil_imgs[0], caption="Live Camera Feed (ditangkap saat kamu bertanya)", use_container_width=True)
 
@@ -1130,7 +1134,6 @@ if user_q:
                 api_messages.append({"role": m["role"], "content": m["content"]})
 
             api_messages.append(user_api_msg)
-            _log(f"API CALL: {len(api_messages)} messages sent")
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
             answer = sanitize_latex(answer)
@@ -1201,6 +1204,7 @@ with st.sidebar:
     st.caption("Technology:")
     st.caption("• Orb: Futuristic Wave")
     st.caption("• Vision: Live Camera Grab")
+    st.caption("• API: Groq Cloud (Custom Key)")
     st.caption("• Vision Model: Qwen 3.8")
     st.caption("• Text Model: GPT-OSS-120B")
     st.caption("• Voice: British English")
