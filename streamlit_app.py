@@ -677,14 +677,13 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS ORB — CONTINUOUS MODE FIXED
+# JARVIS ORB — CONTINUOUS MODE FIXED WITH AUTO-CLICK CAMERA
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
     has_audio = "true" if audio_bytes else "false"
     conv_mode_js = "true" if conversation_mode else "false"
     
-    # Estimasi durasi audio (MP3 ~128kbps ≈ 16KB/detik) sebagai fallback resume timer
     est_duration_ms = 0
     if audio_bytes:
         est_duration_ms = max(3000, int(len(audio_bytes) / 16))
@@ -767,7 +766,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
             window.addEventListener('resize', resize);
             resize();
             
-            // ============ LOCALSTORAGE HELPERS ============
             function getConvMode() {
                 try {
                     const v = window.parent.localStorage.getItem('jarvis_conversation_mode');
@@ -780,6 +778,24 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 } catch(e) {}
             }
             
+            // ============ AUTO CLICKER KAMERA ============
+            function triggerCameraAutoClick() {
+                try {
+                    const parentDoc = window.parent.document;
+                    const buttons = parentDoc.querySelectorAll('button');
+                    for (let btn of buttons) {
+                        // Mencari tombol 'START' (atau tombol utama berwarna merah di streamlit-webrtc)
+                        if (btn.innerText.trim().toUpperCase() === 'START') {
+                            btn.click();
+                            console.log('JARVIS: Auto-clicked camera START button.');
+                            break;
+                        }
+                    }
+                } catch (e) {
+                    console.log('Auto-click camera error:', e);
+                }
+            }
+
             function initAudioAnalyzer() {
                 if (audioContext) return;
                 try {
@@ -804,7 +820,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 } catch (e) { console.log('Audio blocked'); }
             });
 
-            // ============ SPEECH RECOGNITION ============
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             let recognition = null;
             let isListeningActive = false;
@@ -863,12 +878,11 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 };
 
                 recognition.onerror = (event) => {
-                    console.log('Speech error:', event.error);
                     if (event.error === 'no-speech' || event.error === 'aborted') return;
                     if (event.error === 'not-allowed') {
                         isListeningActive = false;
                         setConvMode(false);
-                        transcriptHint.innerText = '❌ Izin mikrofon ditolak. Klik ikon 🔒 di address bar.';
+                        transcriptHint.innerText = '❌ Izin mikrofon ditolak.';
                         micBtn.classList.remove('listening');
                         micBtn.innerText = '🎙️ MULAI DENGAR';
                         micBtn.style.display = 'block';
@@ -881,18 +895,11 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                     if (isListeningActive && !userStoppedManually && !isSendingToStreamlit) {
                         setTimeout(() => {
                             if (isListeningActive && !isRecognitionRunning && !isSendingToStreamlit) {
-                                try {
-                                    recognition.start();
-                                } catch (e) {
-                                    setTimeout(() => { try { recognition.start(); } catch(_) {} }, 300);
-                                }
+                                try { recognition.start(); } catch (e) {}
                             }
                         }, RESTART_DELAY_MS);
                     }
                 };
-            } else {
-                transcriptHint.innerText = 'Browser tidak mendukung Speech Recognition. Gunakan Chrome/Edge.';
-                micBtn.style.display = 'none';
             }
 
             function finalizeAndSend() {
@@ -902,22 +909,16 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
 
                 isSendingToStreamlit = true;
                 transcriptHint.innerText = `📤 Mengirim: "${text}"`;
-
                 micBtn.style.display = 'none';
 
                 if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
                 try { recognition.stop(); } catch(e) {}
 
-                setTimeout(() => {
-                    sendToStreamlit(text);
-                }, 350);
+                setTimeout(() => { sendToStreamlit(text); }, 350);
             }
 
-            // 🔑 Fungsi utama: selalu cek localStorage & paksa isListeningActive=true
             function resumeListeningAfterResponse() {
                 if (userStoppedManually) return;
-                
-                // Cek localStorage — kalau user sudah stop manual, jangan resume
                 const convActive = getConvMode();
                 if (!convActive) {
                     transcriptHint.innerText = '🔴 Mode obrolan dimatikan.';
@@ -927,7 +928,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                     return;
                 }
 
-                // 🔑 PAKSA aktif meskipun iframe baru reset state
                 isSendingToStreamlit = false;
                 isListeningActive = true;
                 committedTranscript = '';
@@ -939,11 +939,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
 
                 if (!isRecognitionRunning) {
-                    try { 
-                        recognition.start(); 
-                    } catch(e) {
-                        setTimeout(() => { try { recognition.start(); } catch(_) {} }, 300);
-                    }
+                    try { recognition.start(); } catch(e) {}
                 }
             }
 
@@ -960,9 +956,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
 
                 if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
 
-                try {
-                    recognition.start();
-                } catch (e) {
+                try { recognition.start(); } catch (e) {
                     try { recognition.stop(); } catch(_){}
                     setTimeout(() => { try { recognition.start(); } catch(_) {} }, 250);
                 }
@@ -976,7 +970,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
 
                 setConvMode(false);
-
                 micBtn.classList.remove('listening');
                 micBtn.innerText = '🎙️ MULAI DENGAR';
                 micBtn.style.display = 'block';
@@ -1003,10 +996,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                             break;
                         }
                     }
-                    if (!target) {
-                        transcriptHint.innerText = '❌ Input Streamlit tidak ditemukan. Refresh halaman.';
-                        return;
-                    }
+                    if (!target) return;
                     const proto = target.tagName === 'TEXTAREA'
                         ? window.parent.HTMLTextAreaElement.prototype
                         : window.parent.HTMLInputElement.prototype;
@@ -1022,23 +1012,14 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                             keyCode: 13, which: 13, key: 'Enter', code: 'Enter'
                         });
                         target.dispatchEvent(enterEvent);
-                        transcriptHint.innerText = '✅ Terkirim — menunggu Jarvis...';
                     }, 250);
-                } catch (err) {
-                    console.log('Send error:', err);
-                    transcriptHint.innerText = '❌ Gagal kirim: ' + err.message;
-                }
+                } catch (err) { console.log('Send error:', err); }
             }
 
-            // ============ AUDIO PLAYBACK & AUTO-RESUME ============
             function scheduleResumeAfterAudio(estimatedMs) {
                 if (resumeTimer) clearTimeout(resumeTimer);
-                // Tambah buffer 1500ms untuk network/render
                 resumeTimer = setTimeout(() => {
-                    if (!audio.paused && !audio.ended) {
-                        // Audio masih main — tunggu ended event
-                        return;
-                    }
+                    if (!audio.paused && !audio.ended) return;
                     resumeListeningAfterResponse();
                 }, estimatedMs + 1500);
             }
@@ -1046,12 +1027,15 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
             audio.addEventListener('ended', () => {
                 currentState = 'idle';
                 targetIntensity = 0;
-                // Resume setelah audio selesai + buffer kecil
+                
+                // 🚀 Panggil auto-clicker kamera ketika respons suara selesai
+                triggerCameraAutoClick();
+
                 setTimeout(resumeListeningAfterResponse, 600);
             });
 
             audio.addEventListener('error', () => {
-                console.log('Audio error — fallback resume by timer');
+                triggerCameraAutoClick();
                 scheduleResumeAfterAudio(EST_DURATION_MS);
             });
 
@@ -1164,16 +1148,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 requestAnimationFrame(draw);
             }
             
-            // ============ INIT ============
             const convActiveOnLoad = getConvMode();
             
             if (HAS_AUDIO) {
-                // Mode speaking: tombol disembunyikan
                 micBtn.style.display = 'none';
                 playBtn.style.display = 'none';
                 currentState = 'speaking';
                 
-                // Set isListeningActive agar saat audio.ended resume tahu harus lanjut
                 if (convActiveOnLoad) {
                     isListeningActive = true;
                 }
@@ -1182,13 +1163,11 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 audio.play().then(() => {
                     if (audioContext) audioContext.resume();
                 }).catch(() => {
-                    // Autoplay blocked — tampilkan tombol play
                     playBtn.style.display = 'block';
-                    // Fallback: schedule resume by estimate anyway
+                    triggerCameraAutoClick();
                     scheduleResumeAfterAudio(EST_DURATION_MS);
                 });
             } else {
-                // No audio: kalau mode obrolan aktif, langsung start listening
                 if (convActiveOnLoad) {
                     setTimeout(() => {
                         resumeListeningAfterResponse();
