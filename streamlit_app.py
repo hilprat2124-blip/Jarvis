@@ -7,8 +7,10 @@ import re
 import json
 import pathlib
 import io
+import os  # <--- INI YANG TADI HILANG
 import time
 from PIL import Image
+import streamlit.components.v1 as components
 
 # ============ AI: Groq (Cloud) ============
 try:
@@ -236,10 +238,8 @@ def generate_tts_edge(text: str) -> bytes | None:
     except: return None
 
 # ============================================================
-# JARVIS ORB (SUARA & ANIMASI)
+# JARVIS ORB
 # ============================================================
-import streamlit.components.v1 as components
-
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
     has_audio = "true" if audio_bytes else "false"
@@ -404,7 +404,7 @@ with col2:
         st.info("⚪ Kamera mati / Belum ambil gambar")
     st.markdown("---")
     st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
-    st.info("Catatan: Jika tombol kamera bawaan tidak muncul, pastikan Anda membuka Streamlit di `http://localhost:8501`, bukan lewat IP address/Ngrok.")
+    st.info("Catatan: Jika kotak kamera tidak muncul, pastikan Anda membuka Streamlit di `http://localhost:8501`, bukan lewat IP address/Ngrok.")
 
 # ============================================================
 # JARVIS CHAT + VOICE
