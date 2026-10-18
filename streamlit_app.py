@@ -55,7 +55,7 @@ VOICE_PITCH = "-3Hz"
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="J.A.R.V.I.S - Quantum Dots", page_icon="🔵", layout="wide")
 st.title("🔵 J.A.R.V.I.S — Quantum Dots")
-st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya.")
+st.markdown("Kamera merekam **setiap 0.2 detik**. Ucapkan **'Jarvis'** untuk mulai berbicara.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Fibonacci Particle Sphere Core)
+# JARVIS QUANTUM DOTS (Fibonacci Particle Sphere Core + Voice Control)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -689,18 +689,27 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     <head>
         <style>
             * { box-sizing: border-box; margin: 0; padding: 0; }
-            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; display: flex; justify-content: center; align-items: center; height: 100vh; }
-            .orb-container { position: relative; width: 100%; height: 380px; display: flex; align-items: center; justify-content: center; }
+            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; }
+            .orb-container { position: relative; width: 100%; height: 320px; display: flex; align-items: center; justify-content: center; }
             canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
             
-            .play-btn { display: none; position: absolute; bottom: 20px; padding: 12px 24px; border: 1px solid #37dfff; border-radius: 24px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; z-index: 20; font-family: 'Courier New', monospace; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; box-shadow: 0 0 20px rgba(0,200,255,0.5); transition: all 0.3s; }
-            .play-btn:hover { background: rgba(0,100,150,0.9); box-shadow: 0 0 40px rgba(0,220,255,0.8); }
+            .controls-row { position: absolute; bottom: 10px; z-index: 30; display: flex; gap: 12px; align-items: center; }
+            .mic-btn, .play-btn { padding: 10px 20px; border: 1px solid #37dfff; border-radius: 20px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; font-family: 'Courier New', monospace; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; box-shadow: 0 0 15px rgba(0,200,255,0.4); transition: all 0.3s; }
+            .mic-btn:hover, .play-btn:hover { background: rgba(0,100,150,0.9); box-shadow: 0 0 30px rgba(0,220,255,0.8); }
+            .mic-btn.listening { background: rgba(255,50,50,0.8); border-color: #ff6b6b; color: #fff; box-shadow: 0 0 25px rgba(255,0,0,0.8); animation: pulse 1.5s infinite; }
+            
+            @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+            .transcript-hint { position: absolute; top: 5px; color: #7cfc00; font-size: 11px; text-align: center; width: 100%; z-index: 25; text-shadow: 0 0 8px rgba(0,255,0,0.6); }
         </style>
     </head>
     <body>
+        <div class="transcript-hint" id="transcriptHint">Ucapkan "Jarvis..." atau klik mikrofon</div>
         <div class="orb-container">
             <canvas id="orbCanvas"></canvas>
-            <button class="play-btn" id="playButton">▶ ACTIVATE VOICE</button>
+        </div>
+        <div class="controls-row">
+            <button class="mic-btn" id="micButton">🎙️ LISTEN JARVIS</button>
+            <button class="play-btn" id="playButton" style="display:none;">▶ PLAY VOICE</button>
         </div>
         <audio id="jarvisAudio" style="display:none;" preload="auto">
             <source src="data:audio/mp3;base64,__AUDIO_B64__" type="audio/mp3">
@@ -710,6 +719,8 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             const ctx = canvas.getContext('2d');
             const audio = document.getElementById('jarvisAudio');
             const playBtn = document.getElementById('playButton');
+            const micBtn = document.getElementById('micButton');
+            const transcriptHint = document.getElementById('transcriptHint');
             
             const HAS_AUDIO = __HAS_AUDIO__;
             let currentState = "__STATE__";
@@ -725,20 +736,16 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let listeningScale = 1.0;
             let targetListeningScale = 1.0;
             
-            // Inisialisasi Titik Bola Partikel 3D (Fibonacci Sphere)
             const sphereDots = [];
             const NUM_SPHERE_DOTS = 320;
-            const phiRatio = (1 + Math.sqrt(5)) / 2; // Golden Ratio
+            const phiRatio = (1 + Math.sqrt(5)) / 2;
             
             for (let i = 0; i < NUM_SPHERE_DOTS; i++) {
                 const theta = 2 * Math.PI * i / phiRatio;
-                const y = 1 - (i / (NUM_SPHERE_DOTS - 1)) * 2; // -1 to 1
+                const y = 1 - (i / (NUM_SPHERE_DOTS - 1)) * 2;
                 const radiusAtY = Math.sqrt(1 - y * y);
-                const x = Math.cos(theta) * radiusAtY;
-                const z = Math.sin(theta) * radiusAtY;
-                
                 sphereDots.push({
-                    x: x, y: y, z: z,
+                    x: Math.cos(theta) * radiusAtY, y: y, z: Math.sin(theta) * radiusAtY,
                     baseSize: Math.random() * 0.8 + 0.8
                 });
             }
@@ -776,30 +783,134 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             });
             
             audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
+
+            // Speech Recognition (Web Speech API)
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            let recognition = null;
+            let isListeningActive = false;
+
+            if (SpeechRecognition) {
+                recognition = new SpeechRecognition();
+                recognition.continuous = false;
+                recognition.interimResults = true;
+                recognition.lang = 'id-ID'; // Bisa mendeteksi bahasa Indonesia & Inggris
+
+                recognition.onstart = () => {
+                    isListeningActive = true;
+                    micBtn.classList.add('listening');
+                    micBtn.innerText = '🔴 MENDENGARKAN...';
+                    transcriptHint.innerText = 'Mendengarkan suara Anda... (Ucapkan "Jarvis")';
+                };
+
+                recognition.onresult = (event) => {
+                    let interim = '';
+                    let final = '';
+                    for (let i = event.resultIndex; i < event.results.length; ++i) {
+                        if (event.results[i].isFinal) {
+                            final += event.results[i][0].transcript;
+                        } else {
+                            interim += event.results[i][0].transcript;
+                        }
+                    }
+                    const text = final || interim;
+                    if (text) {
+                        transcriptHint.innerText = `"${text}"`;
+                    }
+                    
+                    if (final) {
+                        const lower = final.toLowerCase();
+                        // Cek apakah mengandung kata "jarvis"
+                        if (lower.includes('jarvis')) {
+                            stopListening();
+                            transcriptHint.innerText = `Memproses: "${final}"`;
+                            sendToStreamlit(final);
+                        }
+                    }
+                };
+
+                recognition.onerror = (event) => {
+                    console.log('Speech error:', event.error);
+                    stopListening();
+                };
+
+                recognition.onend = () => {
+                    stopListening();
+                };
+            } else {
+                transcriptHint.innerText = 'Browser tidak mendukung Speech Recognition.';
+                micBtn.style.display = 'none';
+            }
+
+            function startListening() {
+                if (recognition && !isListeningActive) {
+                    try { recognition.start(); } catch(e) {}
+                }
+            }
+
+            function stopListening() {
+                isListeningActive = false;
+                micBtn.classList.remove('listening');
+                micBtn.innerText = '🎙️ LISTEN JARVIS';
+                try { recognition.stop(); } catch(e) {}
+            }
+
+            micBtn.addEventListener('click', () => {
+                if (isListeningActive) stopListening();
+                else startListening();
+            });
+
+            // Auto Continuous Hotword Listening Loop
+            function startContinuousListening() {
+                if (recognition && !isListeningActive) {
+                    try { recognition.start(); } catch(e) {}
+                }
+            }
             
-            // Draw 3D Particle Sphere Core (Persis seperti Gambar Referensi)
+            // Auto restart recognition jika berhenti (agar selalu standby mendengar "Jarvis")
+            if (recognition) {
+                recognition.onend = () => {
+                    isListeningActive = false;
+                    micBtn.classList.remove('listening');
+                    micBtn.innerText = '🎙️ LISTEN JARVIS';
+                    setTimeout(() => { startContinuousListening(); }, 1000);
+                };
+            }
+
+            function sendToStreamlit(text) {
+                const parentDoc = window.parent.document;
+                const textInputs = parentDoc.querySelectorAll('input[type="text"]');
+                for (let input of textInputs) {
+                    if (input.placeholder && input.placeholder.includes('Ask Jarvis')) {
+                        nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, "value").set;
+                        nativeInputValueSetter.call(input, text);
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        
+                        // Cari dan klik tombol enter / submit
+                        setTimeout(() => {
+                            const enterEvent = new KeyboardEvent('keydown', {
+                                bubbles: true, cancelable: true, keyCode: 13, key: 'Enter'
+                            });
+                            input.dispatchEvent(enterEvent);
+                        }, 200);
+                        break;
+                    }
+                }
+            }
+
             function drawParticleSphereCore(scaleFactor) {
                 const rCore = Math.min(W, H) * 0.085 * scaleFactor;
                 const dpr = window.devicePixelRatio || 1;
-                
-                // Rotasi Bola 3D
                 const rotY = time * 0.0012;
                 const rotX = time * 0.0007;
                 const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
                 const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
                 
                 ctx.save();
-                
-                // Urutkan titik berdasarkan koordinat Z (Depth Sorting)
                 const projectedDots = [];
                 for (let i = 0; i < sphereDots.length; i++) {
                     const dot = sphereDots[i];
-                    
-                    // Rotasi Y
                     let x1 = dot.x * cosY - dot.z * sinY;
                     let z1 = dot.x * sinY + dot.z * cosY;
-                    
-                    // Rotasi X
                     let y2 = dot.y * cosX - z1 * sinX;
                     let z2 = dot.y * sinX + z1 * cosX;
                     
@@ -810,12 +921,10 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         size: dot.baseSize
                     });
                 }
-                
                 projectedDots.sort((a, b) => a.z - b.z);
                 
-                // Gambar setiap titik partikel
                 projectedDots.forEach(p => {
-                    const depthAlpha = (p.z + 1.2) / 2.4; // 0.1 s/d 1.0
+                    const depthAlpha = (p.z + 1.2) / 2.4;
                     const alpha = Math.max(0.12, Math.min(0.95, depthAlpha));
                     const dotSize = p.size * (0.7 + depthAlpha * 0.6) * dpr;
                     
@@ -824,7 +933,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     ctx.fillStyle = `rgba(130, 245, 255, ${alpha})`;
                     ctx.fill();
                 });
-                
                 ctx.restore();
             }
 
@@ -838,7 +946,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     const avg = sum / freqData.length / 255;
                     targetIntensity = avg * 2.8;
                     targetListeningScale = 1.0;
-                } else if (currentState === 'listening' || currentState === 'thinking') {
+                } else if (currentState === 'listening' || currentState === 'thinking' || isListeningActive) {
                     targetIntensity = 0.0;
                     targetListeningScale = 1.35;
                 } else {
@@ -849,7 +957,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 speakingIntensity += (targetIntensity - speakingIntensity) * 0.12;
                 listeningScale += (targetListeningScale - listeningScale) * 0.08;
                 
-                // Gambar Bola Partikel Tengah
                 drawParticleSphereCore(listeningScale);
                 
                 const dpr = window.devicePixelRatio || 1;
@@ -857,7 +964,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 const numRings = 40;
                 const pointsPerRing = 180;
                 
-                // Gambar Lingkaran Gelombang Luar
                 ctx.save();
                 for (let r = 0; r < numRings; r++) {
                     const layerProgress = r / numRings; 
@@ -866,7 +972,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     ctx.beginPath();
                     for (let p = 0; p <= pointsPerRing; p++) {
                         const angle = (p / pointsPerRing) * Math.PI * 2;
-                        
                         let wave = 0;
                         if (speakingIntensity > 0.02) {
                             let audioMod = 0;
@@ -876,16 +981,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                                 const freqIdx = Math.floor(symPos * (freqData.length * 0.5));
                                 audioMod = (freqData[freqIdx] / 255);
                             }
-
                             wave += (audioMod * (25 * dpr)) * speakingIntensity;
                             wave += Math.sin(angle * 8 + time * 0.005 + r * 0.12) * (10 * dpr) * speakingIntensity;
                             wave += Math.cos(angle * 12 - time * 0.003) * (6 * dpr) * speakingIntensity;
                         }
-                        
                         const currentR = ringRadius + wave;
                         const x = cx + Math.cos(angle) * currentR;
                         const y = cy + Math.sin(angle) * currentR;
-                        
                         if (p === 0) ctx.moveTo(x, y);
                         else ctx.lineTo(x, y);
                     }
@@ -915,6 +1017,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 });
             }
             
+            setTimeout(() => { startContinuousListening(); }, 1500);
             draw();
         </script>
     </body>
@@ -928,7 +1031,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
         .replace("__STATE__", state)
     )
     
-    components.html(html, height=380)
+    components.html(html, height=360)
 
 # ============================================================
 # SYSTEM PROMPT
@@ -1030,7 +1133,7 @@ with col2:
 # ============================================================
 st.markdown("---")
 st.header("💬 Speak with Jarvis")
-st.caption("Ask in any language — Jarvis always replies in British English.")
+st.caption("Ucapkan **'Jarvis'** atau ketik pertanyaan Anda di bawah.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
