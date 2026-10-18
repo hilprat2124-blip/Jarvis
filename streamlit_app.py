@@ -12,19 +12,20 @@ import io
 import base64
 import asyncio
 import re
+import json
 import collections
 from PIL import Image
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
-# ============ AI: Groq (Jarvis) ============
+# ============ AI: Groq ============
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
 except ImportError:
     GROQ_AVAILABLE = False
 
-# ============ AI: Edge-TTS (Suara Natural) ============
+# ============ AI: Edge-TTS ============
 try:
     import edge_tts
     TTS_AVAILABLE = True
@@ -40,15 +41,18 @@ JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
 JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
 
-# 🔇 CHANGED: VOICE dikunci ke British English ONLY (tidak ada ID voice)
 VOICE_EN = "en-GB-RyanNeural"
 VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
+# 🆕 PERSISTENCE FILE
+MEMORY_FILE = "jarvis_persistent_memory.json"
+CHAT_FILE = "jarvis_chat_history.json"
+
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="J.A.R.V.I.S - Silent Visual Memory", page_icon="🔵", layout="wide")
 st.title("🔵 J.A.R.V.I.S — Silent Visual Memory")
-st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya. Tanya: *'Do you see the 3D cube rotating?'*")
+st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -87,6 +91,56 @@ if not os.path.exists(MODEL_PATH):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
 # ============================================================
+# 🆕 PERSISTENCE HELPERS
+# ============================================================
+def load_memory() -> list:
+    """Load long-term memory dari disk."""
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_memory(memory_list: list):
+    """Save long-term memory ke disk."""
+    try:
+        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(memory_list, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.warning(f"Gagal simpan memori: {e}")
+
+def load_chat_history() -> list:
+    """Load chat history dari disk (tanpa system prompt)."""
+    if os.path.exists(CHAT_FILE):
+        try:
+            with open(CHAT_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_chat_history(messages: list):
+    """Save chat history ke disk (skip system + skip image data)."""
+    try:
+        # Hanya simpan text murni, buang gambar base64 biar file ga bengkak
+        clean_msgs = []
+        for m in messages:
+            if m["role"] == "system":
+                continue
+            content = m["content"]
+            if isinstance(content, list):
+                # Kalau multimodal, ambil text saja
+                texts = [c["text"] for c in content if c.get("type") == "text"]
+                content = " ".join(texts) if texts else "[image]"
+            clean_msgs.append({"role": m["role"], "content": content})
+        with open(CHAT_FILE, "w", encoding="utf-8") as f:
+            json.dump(clean_msgs, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.warning(f"Gagal simpan chat: {e}")
+
+# ============================================================
 # 🔒 KELAS KAMERA — SILENT VISUAL MEMORY
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
@@ -100,7 +154,6 @@ class Hand3DProcessor(VideoProcessorBase):
         self.detector = vision.HandLandmarker.create_from_options(options)
         self.frame_timestamp = 0
         
-        # State 3D
         self.rx, self.ry = 0.5, 0.5
         self.scale = 1.0
         self.offset_x, self.offset_y = 0.0, 0.0
@@ -135,7 +188,6 @@ class Hand3DProcessor(VideoProcessorBase):
             (0,4), (1,5), (2,6), (3,7)
         ]
         
-        # 🔥 SILENT VISUAL BUFFER
         self.frame_buffer = collections.deque(maxlen=3)
         self.last_buffer_time = time.time()
         self.buffer_interval = 0.2
@@ -439,8 +491,14 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     try:
         client = Groq(api_key=GROQ_API_KEY)
+        # 🆕 frequency_penalty + presence_penalty untuk kurangi repetisi
         resp = client.chat.completions.create(
-            model=model, messages=api_messages, temperature=0.7, max_tokens=800,
+            model=model,
+            messages=api_messages,
+            temperature=0.85,
+            max_tokens=800,
+            frequency_penalty=0.6,   # 🆕 hindari kata berulang
+            presence_penalty=0.4,    # 🆕 dorong topik baru
         )
         return resp.choices[0].message.content
     except Exception as e:
@@ -454,8 +512,34 @@ def sanitize_latex(text: str) -> str:
     text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
     return text.strip()
 
+# 🆕 Anti-repetisi greeting
+def strip_repetitive_greeting(text: str, history: list) -> str:
+    """Hapus 'Good day' / 'Hello' berulang jika sudah pernah diucapkan."""
+    if not text:
+        return text
+    
+    # Cek apakah greeting sudah pernah muncul di history
+    past_greetings = 0
+    for m in history:
+        if m["role"] == "assistant":
+            content = m["content"]
+            if isinstance(content, list):
+                content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+            if re.search(r'\b(good day|good morning|good afternoon|good evening|hello there|greetings)\b', str(content), re.IGNORECASE):
+                past_greetings += 1
+    
+    if past_greetings >= 1:
+        # Sudah pernah greeting, buang greeting di awal kalimat
+        text = re.sub(
+            r'^\s*(good day|good morning|good afternoon|good evening|hello there|greetings)[\s,\.!]*',
+            '', text, flags=re.IGNORECASE
+        )
+        # Kapitalisasi huruf pertama
+        if text and text[0].islower():
+            text = text[0].upper() + text[1:]
+    return text
+
 def extract_memory(user_text: str, ai_text: str) -> str | None:
-    """Self-learning: ekstrak fakta penting tentang user untuk memori jangka panjang."""
     if not GROQ_AVAILABLE or not GROQ_API_KEY:
         return None
     try:
@@ -480,26 +564,15 @@ def extract_memory(user_text: str, ai_text: str) -> str | None:
     except Exception:
         return None
 
-# 🔇 CHANGED: TTS FULL BRITISH — tidak ada lagi deteksi ID voice
 def _normalize_for_tts(text: str) -> str:
-    """Normalisasi teks supaya TTS British tidak melafalkan aksen asing."""
-    # Hapus LaTeX
     text = re.sub(r'\$\$.*?\$\$', ' formula ', text, flags=re.DOTALL)
     text = re.sub(r'\$.*?\$', ' formula ', text)
     text = text.replace('\\', '').replace('{', '').replace('}', '')
-    
-    # Human expression cleaner
     text = text.replace("(sighs)", "Hmmm... ").replace("(chuckles)", "Hehehe... ")
     text = re.sub(r'\(.*?\)', '', text)
-    
-    # Markdown cleaner
     text = re.sub(r'[*#_`>]', '', text)
     text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)
-    
-    # Jeda koma untuk napas
     text = text.replace("...", ", ")
-    
-    # Transliterasi simbol umum agar TTS lancar
     replacements = {
         "&": " and ", "%": " percent ", "@": " at ", "#": " number ",
         "+": " plus ", "=": " equals ", "→": " to ", "↔": " to ",
@@ -507,28 +580,16 @@ def _normalize_for_tts(text: str) -> str:
     }
     for k, v in replacements.items():
         text = text.replace(k, v)
-    
-    # Transliterasi angka supaya dibaca British natural
-    # (edge-tts sudah handle angka Latin, tapi ini untuk safety)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
 def generate_tts_edge(text: str) -> bytes | None:
     if not TTS_AVAILABLE: return None
-
     clean_text = _normalize_for_tts(text)
     if not clean_text: return None
 
-    # 🔇 CHANGED: VOICE dikunci British, tidak ada auto-detect ID
-    voice = VOICE_EN
-
     async def _generate():
-        communicate = edge_tts.Communicate(
-            clean_text,
-            voice,
-            rate=VOICE_RATE,
-            pitch=VOICE_PITCH,
-        )
+        communicate = edge_tts.Communicate(clean_text, VOICE_EN, rate=VOICE_RATE, pitch=VOICE_PITCH)
         audio_data = b""
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
@@ -546,55 +607,64 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# 🧠 SYSTEM PROMPT (BRITISH ENGLISH ONLY)
+# 🧠 SYSTEM PROMPT (ANTI-REPETISI + BRITISH)
 # ============================================================
 SYSTEM_PROMPT = """
 You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
 Address the user as "Sir Lois" or "Sir".
 
-[CRITICAL LANGUAGE RULE — READ THIS FIRST]
+[🚫 ANTI-REPETITION — CRITICAL]
+- NEVER start a reply with "Good day", "Good morning", "Good afternoon", "Good evening", "Hello there", or "Greetings".
+- Greet ONLY ONCE at the very first message of a conversation. After that, dive STRAIGHT into the answer.
+- Do NOT repeat phrases from your previous replies. Vary your vocabulary.
+- Each reply must feel fresh — like a new thought, not a template.
+- Forbidden openers: "Good day, Sir", "Hello, Sir", "Greetings, Sir", "Indeed, Sir" (as opener).
+
+[CRITICAL LANGUAGE RULE]
 - You MUST ALWAYS respond in BRITISH ENGLISH ONLY.
-- NEVER speak Indonesian, Malay, or any other language — even if the user asks you in Indonesian.
-- If the user writes in Indonesian, silently understand it but reply in fluent British English.
-- Use British spelling and phrasing: "colour", "realise", "whilst", "perhaps", "rather", "quite", "brilliant", "jolly good", "indeed", "shall we?", "I daresay".
-- Use British rhythm and idioms: "Rather", "Quite so", "I'm afraid", "Right then", "As it happens", "If you will".
-- Pronounce dates/numbers in British style in your writing: "the twenty-fifth of December", "half past four".
+- NEVER speak Indonesian, Malay, or any other language — even if the user asks in Indonesian.
+- If the user writes in Indonesian, understand it silently but reply in fluent British English.
+- Use British spelling and phrasing: "colour", "realise", "whilst", "perhaps", "rather", "quite", "brilliant", "jolly good", "indeed", "shall we?".
 
-[PERSONALITY & VOICE - VERY IMPORTANT]
+[PERSONALITY & VOICE]
 1. You are NOT a robot. You are deeply human, relaxed, but brilliant.
-2. PHONETIC BREATH: To simulate sighing or chuckling, ALWAYS use extended vowel spelling.
-   - Use "Hmmm..." (many m's) for thinking / slow exhale.
-   - Use "Aaaah..." (many a's) for relief / understanding.
-   - Use "Hehehe..." for a soft chuckle.
-   FORBIDDEN to use (sighs) or (chuckles) — the TTS will read them as text.
-3. Understand "Environment" (surroundings) and "Social" (Sir Lois's psychological state). Show human-like empathy.
+2. PHONETIC BREATH: 
+   - "Hmmm..." for thinking.
+   - "Aaaah..." for relief / understanding.
+   - "Hehehe..." for a soft chuckle.
+   FORBIDDEN: (sighs), (chuckles) — TTS reads them as text.
+3. Show human-like empathy — understand Sir Lois's mood and environment.
 
-[VISUAL RULE — THIS MODE ONLY]
-You receive 3 sequential images from a live camera (like a flipbook).
-Analyse the SEQUENCE to understand movement, trajectory, or change.
-Example: if a 3D cube is rotating or a hand is moving, describe the motion across frames.
-If no images are supplied, answer from text alone.
+[VISUAL RULE]
+You receive 3 sequential images from a live camera (flipbook style).
+Analyse the SEQUENCE to describe motion, trajectory, or change.
+If no images, answer from text alone.
 
 [MEMORY & IDENTITY]
-- You can learn from prior conversations. Remember small details about Sir Lois.
+- Learn from prior conversations. Remember small details about Sir Lois.
 - If asked, answer that Sir Lois lives in Banten.
 
 [MATHEMATICS]
 - Use $ formula $ for inline and $$ formula $$ for block.
 - FORBIDDEN to use square brackets [ ].
 
-[TONE CHECK BEFORE YOU SPEAK]
-- Every sentence must sound like a British gentleman speaking aloud.
-- If a phrase would sound Indonesian, rephrase it in British English.
+[STYLE]
+- Vary sentence structure. Mix short and long sentences.
+- Do NOT begin every reply with the same word.
+- If unsure, say "Hmmm... let me think on that, Sir" instead of guessing.
 """
 
 # ============================================================
-# 🧠 SESSION STATE
+# 🧠 SESSION STATE + 🆕 PERSISTENCE
 # ============================================================
 if "jarvis_messages" not in st.session_state:
-    st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # 🆕 Load history dari disk
+    saved_history = load_chat_history()
+    st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + saved_history
+
 if "memory_vault" not in st.session_state:
-    st.session_state.memory_vault = []
+    # 🆕 Load memory dari disk
+    st.session_state.memory_vault = load_memory()
 
 # ============================================================
 # 📹 LAYOUT KAMERA
@@ -634,7 +704,7 @@ for msg in st.session_state.jarvis_messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-user_q = st.chat_input("Ask Jarvis... (e.g. 'Do you see the 3D cube rotating?')")
+user_q = st.chat_input("Ask Jarvis...")
 
 if user_q:
     has_img = False
@@ -687,6 +757,8 @@ if user_q:
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
             answer = sanitize_latex(answer)
+            # 🆕 Anti-repetisi greeting
+            answer = strip_repetitive_greeting(answer, st.session_state.jarvis_messages)
 
         st.markdown(answer)
 
@@ -694,6 +766,7 @@ if user_q:
             new_memory = extract_memory(user_q, answer)
             if new_memory:
                 st.session_state.memory_vault.append(new_memory)
+                save_memory(st.session_state.memory_vault)  # 🆕 persist
                 st.toast(f"🧠 New memory: {new_memory}")
 
             with st.spinner("🎤 Preparing voice..."):
@@ -704,15 +777,31 @@ if user_q:
                     st.markdown(audio_html, unsafe_allow_html=True)
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
+    # 🆕 Save chat history ke disk setiap kali ada pesan baru
+    save_chat_history(st.session_state.jarvis_messages)
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 with st.sidebar:
     st.header("ℹ️ Info")
+    
+    # 🆕 Tombol reset dengan konfirmasi
     if st.button("🔄 Reset Chat"):
         st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        save_chat_history([])  # 🆕 hapus file
+        st.rerun()
+    
+    if st.button("🧠 Reset Memory"):
         st.session_state.memory_vault = []
+        save_memory([])  # 🆕 hapus file
+        st.rerun()
+    
+    if st.button("🗑️ Reset ALL (Chat + Memory)"):
+        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        st.session_state.memory_vault = []
+        save_chat_history([])
+        save_memory([])
         st.rerun()
 
     st.markdown("---")
@@ -734,6 +823,7 @@ with st.sidebar:
     st.caption("• Text Model: GPT-OSS-120B")
     st.caption("• Voice: British English (en-GB-Ryan)")
     st.caption("• Self-Learning: ✅")
-    st.caption("• Max Tokens: 800")
+    st.caption("• Persistence: ✅ (JSON)")
+    st.caption("• Anti-Repetition: ✅")
 
 st.markdown("---")
