@@ -53,8 +53,8 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Quantum Dots", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Quantum Dots")
+st.set_page_config(page_title="J.A.R.V.I.S - Clean Core", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — Clean Core")
 st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya.")
 
 # ============ WebRTC & Konstanta ============
@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Presisi seperti Gambar)
+# JARVIS CLEAN SMOOTH ORB
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -689,7 +689,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     <head>
         <style>
             * { box-sizing: border-box; margin: 0; padding: 0; }
-            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; display: flex; justify-content: center; align-items: center; height: 100vh; }
+            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; display: flex; justify-content: center; align-items: center; height: 100vh;}
             .orb-container { position: relative; width: 100%; height: 380px; display: flex; align-items: center; justify-content: center; }
             canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
             
@@ -741,7 +741,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     sourceNode = audioContext.createMediaElementSource(audio);
                     analyzer = audioContext.createAnalyser();
                     analyzer.fftSize = 256;
-                    analyzer.smoothingTimeConstant = 0.8;
+                    analyzer.smoothingTimeConstant = 0.85;
                     sourceNode.connect(analyzer);
                     analyzer.connect(audioContext.destination);
                     freqData = new Uint8Array(analyzer.frequencyBinCount);
@@ -1143,7 +1143,7 @@ with st.sidebar:
     if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
     
     st.caption("Technology:")
-    st.caption("• Orb: Quantum Dots")
+    st.caption("• Orb: Clean Smooth Core")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
     st.caption("• Vision Model: Qwen 3.8")
