@@ -38,18 +38,17 @@ try:
 except Exception:
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-# 🆕 MODEL CONFIG — hemat token untuk Free Tier
+# ============ MODEL CONFIG — hemat token untuk Free Tier ============
 JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
 JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
 
-# 🆕 Token budget untuk Free Tier (7000 ITPM)
-MAX_OUTPUT_TOKENS = 300          # turun dari 800
-MAX_CONTEXT_TURNS = 6            # turun dari 15 (≈12 pesan)
-MAX_MSG_CHARS = 400              # potong pesan lama yang kepanjangan
-MAX_FRAMES_FOR_VISION = 2        # turun dari 3 (hemat token gambar)
-IMAGE_MAX_SIZE = 384             # turun dari 512
-IMAGE_QUALITY = 45               # turun dari 60
+MAX_OUTPUT_TOKENS = 300
+MAX_CONTEXT_TURNS = 6
+MAX_MSG_CHARS = 400
+MAX_FRAMES_FOR_VISION = 2
+IMAGE_MAX_SIZE = 384
+IMAGE_QUALITY = 45
 
 VOICE_EN = "en-GB-RyanNeural"
 VOICE_RATE = "-5%"
@@ -95,6 +94,141 @@ MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/han
 if not os.path.exists(MODEL_PATH):
     with st.spinner("📥 Mengunduh model AI..."):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+
+# ============================================================
+# 🆕 FUTURISTIC ORB ANIMATION
+# ============================================================
+def render_orb(state: str = "idle", size: int = 180):
+    """
+    Render futuristic AI orb.
+    state: "idle" | "listening" | "thinking" | "speaking"
+    """
+    palette = {
+        "idle":      {"c1": "#0a4a6b", "c2": "#00b4d8", "glow": "#00e5ff", "speed": "4s"},
+        "listening": {"c1": "#0077b6", "c2": "#00d9ff", "glow": "#00ffff", "speed": "1.2s"},
+        "thinking":  {"c1": "#a68a00", "c2": "#ffd60a", "glow": "#ffea00", "speed": "0.7s"},
+        "speaking":  {"c1": "#5a189a", "c2": "#00f5d4", "glow": "#00f5ff", "speed": "0.9s"},
+    }
+    p = palette.get(state, palette["idle"])
+    
+    html = f"""
+    <style>
+    @keyframes orb-pulse-{state} {{
+        0%   {{ transform: scale(0.92); filter: brightness(0.9); }}
+        50%  {{ transform: scale(1.08); filter: brightness(1.25); }}
+        100% {{ transform: scale(0.92); filter: brightness(0.9); }}
+    }}
+    @keyframes ring-spin-{state} {{
+        0%   {{ transform: rotate(0deg); }}
+        100% {{ transform: rotate(360deg); }}
+    }}
+    @keyframes ring-spin-rev-{state} {{
+        0%   {{ transform: rotate(360deg); }}
+        100% {{ transform: rotate(0deg); }}
+    }}
+    @keyframes wave-{state} {{
+        0%, 100% {{ opacity: 0.2; transform: scale(0.8); }}
+        50%      {{ opacity: 0.8; transform: scale(1.2); }}
+    }}
+    @keyframes glow-breathe-{state} {{
+        0%, 100% {{ box-shadow: 0 0 20px {p['glow']}, 0 0 40px {p['glow']}55; }}
+        50%      {{ box-shadow: 0 0 50px {p['glow']}, 0 0 90px {p['glow']}88; }}
+    }}
+    @keyframes particle-{state} {{
+        0%   {{ transform: rotate(0deg) translateX(70px) rotate(0deg); opacity: 0; }}
+        50%  {{ opacity: 1; }}
+        100% {{ transform: rotate(360deg) translateX(70px) rotate(-360deg); opacity: 0; }}
+    }}
+    
+    .jarvis-orb-wrapper-{state} {{
+        position: relative;
+        width: {size}px; height: {size}px;
+        margin: 10px auto;
+        display: flex; justify-content: center; align-items: center;
+    }}
+    
+    .jarvis-orb-core-{state} {{
+        width: {size*0.55}px; height: {size*0.55}px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 30% 30%,
+            {p['glow']}ff 0%,
+            {p['c2']} 35%,
+            {p['c1']} 70%,
+            #000000 100%);
+        box-shadow: 0 0 30px {p['glow']}, 0 0 60px {p['glow']}88, 0 0 100px {p['glow']}44;
+        animation: orb-pulse-{state} {p['speed']} ease-in-out infinite, glow-breathe-{state} {p['speed']} ease-in-out infinite;
+        position: relative; z-index: 2;
+    }}
+    
+    .jarvis-orb-ring1-{state} {{
+        position: absolute;
+        width: {size*0.85}px; height: {size*0.85}px;
+        border-radius: 50%;
+        border: 2px solid {p['glow']}88;
+        border-top-color: {p['glow']};
+        border-right-color: transparent;
+        animation: ring-spin-{state} {p['speed']} linear infinite;
+        box-shadow: 0 0 15px {p['glow']}66;
+        z-index: 1;
+    }}
+    
+    .jarvis-orb-ring2-{state} {{
+        position: absolute;
+        width: {size}px; height: {size}px;
+        border-radius: 50%;
+        border: 1px dashed {p['c2']}aa;
+        animation: ring-spin-rev-{state} {p['speed']}1.5 linear infinite;
+        opacity: 0.7;
+        z-index: 0;
+    }}
+    
+    .jarvis-orb-particle-{state} {{
+        position: absolute;
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        background: {p['glow']};
+        box-shadow: 0 0 10px {p['glow']}, 0 0 20px {p['glow']};
+        animation: particle-{state} {p['speed']}2 linear infinite;
+        z-index: 0;
+    }}
+    
+    .jarvis-orb-particle2-{state} {{
+        position: absolute;
+        width: 4px; height: 4px;
+        border-radius: 50%;
+        background: {p['c2']};
+        box-shadow: 0 0 8px {p['glow']};
+        animation: particle-{state} {p['speed']}1.7 linear infinite;
+        animation-delay: -1s;
+        z-index: 0;
+    }}
+    
+    .jarvis-orb-label-{state} {{
+        position: absolute;
+        bottom: -8px;
+        font-family: 'Courier New', monospace;
+        font-size: 10px;
+        letter-spacing: 3px;
+        color: {p['glow']};
+        text-shadow: 0 0 8px {p['glow']};
+        text-transform: uppercase;
+        opacity: 0.9;
+        animation: wave-{state} 2s ease-in-out infinite;
+        z-index: 3;
+    }}
+    </style>
+    
+    <div class="jarvis-orb-wrapper-{state}">
+        <div class="jarvis-orb-ring2-{state}"></div>
+        <div class="jarvis-orb-ring1-{state}"></div>
+        <div class="jarvis-orb-particle-{state}"></div>
+        <div class="jarvis-orb-particle2-{state}"></div>
+        <div class="jarvis-orb-core-{state}"></div>
+        <div class="jarvis-orb-label-{state}">{state.upper()}</div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
 
 # ============================================================
 # 🆕 PERSISTENCE HELPERS
@@ -159,7 +293,6 @@ def save_chat_history(messages: list):
             if isinstance(content, list):
                 texts = [c["text"] for c in content if c.get("type") == "text"]
                 content = " ".join(texts) if texts else "[image]"
-            # 🆕 Potong pesan lama yang kepanjangan
             if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
                 content = content[:MAX_MSG_CHARS] + "..."
             clean_msgs.append({"role": m["role"], "content": content})
@@ -171,7 +304,6 @@ def save_chat_history(messages: list):
         st.error(f"❌ Gagal simpan chat: {e}")
 
 def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
-    """Ambil konteks obrolan lama — dipangkas agar hemat token."""
     history = load_chat_history()
     if not history:
         return ""
@@ -182,7 +314,6 @@ def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
         content = m["content"]
         if isinstance(content, list):
             content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
-        # 🆕 Potong per pesan
         if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
             content = content[:MAX_MSG_CHARS] + "..."
         lines.append(f"{role}: {content}")
@@ -237,7 +368,6 @@ class Hand3DProcessor(VideoProcessorBase):
             (0,4), (1,5), (2,6), (3,7)
         ]
         
-        # 🆕 Buffer 2 frame (turun dari 3) — hemat token
         self.frame_buffer = collections.deque(maxlen=2)
         self.last_buffer_time = time.time()
         self.buffer_interval = 0.2
@@ -536,7 +666,6 @@ def image_to_base64(pil_img: Image.Image, max_size=IMAGE_MAX_SIZE, quality=IMAGE
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def _is_rate_limit_error(err_str: str) -> bool:
-    """Deteksi error rate limit / 413 / token limit dari Groq."""
     err = err_str.lower()
     return (
         "413" in err
@@ -551,15 +680,13 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     if not GROQ_API_KEY: return "❌ GROQ_API_KEY belum diset."
     
     client = Groq(api_key=GROQ_API_KEY)
-    
-    # 🆕 Coba model utama
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     try:
         resp = client.chat.completions.create(
             model=model,
             messages=api_messages,
             temperature=0.85,
-            max_tokens=MAX_OUTPUT_TOKENS,     # 🆕 300 (turun dari 800)
+            max_tokens=MAX_OUTPUT_TOKENS,
             frequency_penalty=0.6,
             presence_penalty=0.4,
         )
@@ -568,34 +695,26 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         err_str = str(e)
         _log(f"API ERROR: {err_str[:200]}")
         
-        # 🆕 FALLBACK kalau kena rate limit / 413
         if _is_rate_limit_error(err_str):
-            _log("⚠️ Rate limit kena — fallback ke text-only + pangkas konteks")
-            
-            # Coba tanpa gambar + konteks lebih pendek
+            _log("⚠️ Rate limit kena — fallback ke text-only")
             try:
-                # Pangkas: hanya 2 turn terakhir, text-only
                 fallback_msgs = [api_messages[0]]
-                # Ambil memory system prompt kalau ada
                 for m in api_messages[1:]:
                     if m["role"] == "system" and isinstance(m["content"], str):
-                        # Ambil memory saja (pendek)
                         if "LONG-TERM MEMORY" in m["content"]:
                             fallback_msgs.append(m)
                 
-                # Ambil 2 pesan terakhir yang text-only
                 text_msgs = []
                 for m in api_messages:
                     if m["role"] in ("user", "assistant"):
                         if isinstance(m["content"], str):
                             text_msgs.append({"role": m["role"], "content": m["content"][:300]})
                         elif isinstance(m["content"], list):
-                            # Ambil teks saja, buang gambar
                             texts = [c.get("text", "") for c in m["content"] if c.get("type") == "text"]
                             if texts:
                                 text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
                 
-                fallback_msgs.extend(text_msgs[-4:])  # 2 turn terakhir
+                fallback_msgs.extend(text_msgs[-4:])
                 
                 resp = client.chat.completions.create(
                     model=JARVIS_TEXT_MODEL,
@@ -732,7 +851,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# 🧠 SYSTEM PROMPT — NO FILLER + BRITISH ENGLISH
+# 🧠 SYSTEM PROMPT
 # ============================================================
 SYSTEM_PROMPT = """
 You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
@@ -786,7 +905,7 @@ If no images, answer from text alone.
 """
 
 # ============================================================
-# 🧠 SESSION STATE — UI SELALU FRESH SETIAP REFRESH
+# 🧠 SESSION STATE
 # ============================================================
 if "jarvis_messages" not in st.session_state:
     st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -794,6 +913,24 @@ if "jarvis_messages" not in st.session_state:
 
 if "memory_vault" not in st.session_state:
     st.session_state.memory_vault = load_memory()
+
+# 🆕 Orb state — default idle
+if "orb_state" not in st.session_state:
+    st.session_state.orb_state = "idle"
+
+# ============================================================
+# 🎭 ORB DISPLAY — di atas, center
+# ============================================================
+orb_placeholder = st.empty()
+
+def update_orb(state: str):
+    """Update orb state dan render."""
+    st.session_state.orb_state = state
+    with orb_placeholder.container():
+        render_orb(state)
+
+# Render orb pertama kali
+update_orb(st.session_state.orb_state)
 
 # ============================================================
 # 📹 LAYOUT KAMERA
@@ -836,11 +973,15 @@ for msg in st.session_state.jarvis_messages:
 user_q = st.chat_input("Ask Jarvis...")
 
 if user_q:
+    # 🆕 Orb: listening → thinking
+    update_orb("listening")
+    time.sleep(0.3)  # biar animasi listening sempat terlihat
+    update_orb("thinking")
+
     has_img = False
     pil_imgs = []
 
     if ctx.state.playing and ctx.video_processor is not None and len(ctx.video_processor.frame_buffer) > 0:
-        # 🆕 Ambil maksimal 2 frame (buffer sudah maxlen=2)
         frames_to_send = list(ctx.video_processor.frame_buffer)[-MAX_FRAMES_FOR_VISION:]
         for frame_bgr in frames_to_send:
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -850,7 +991,6 @@ if user_q:
     if has_img:
         content_list = [{"type": "text", "text": user_q}]
         for p_img in pil_imgs:
-            # 🆕 Gambar lebih kecil (384x384, quality 45)
             b64 = image_to_base64(p_img, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY)
             content_list.append({
                 "type": "image_url",
@@ -876,7 +1016,6 @@ if user_q:
         with st.spinner("Jarvis is analysing..."):
             api_messages = [st.session_state.jarvis_messages[0]]
 
-            # 🧠 LONG-TERM MEMORY (maks 5 item terbaru — hemat token)
             if st.session_state.memory_vault:
                 mem_items = st.session_state.memory_vault[-5:]
                 memory_str = "\n".join([f"- {m}" for m in mem_items])
@@ -885,7 +1024,6 @@ if user_q:
                     "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
                 })
 
-            # 🆕 KONTEKS LAMA — dipangkas (6 turn, 400 char/pesan)
             context_summary = get_recent_context_summary(max_turns=MAX_CONTEXT_TURNS)
             if context_summary:
                 api_messages.append({
@@ -904,7 +1042,6 @@ if user_q:
                         "text": f"[CONTEXT — earlier we spoke about:]\n{context_summary}\n\n[NEW QUESTION]:"
                     })
 
-            # Riwayat UI (kalau ada)
             ui_history = st.session_state.jarvis_messages[1:-1]
             for m in ui_history:
                 api_messages.append({"role": m["role"], "content": m["content"]})
@@ -927,18 +1064,44 @@ if user_q:
                 save_memory(st.session_state.memory_vault)
                 st.toast(f"🧠 New memory: {new_memory}")
 
+            # 🆕 Orb: speaking saat TTS
+            update_orb("speaking")
             with st.spinner("🎤 Preparing voice..."):
                 audio_bytes = generate_tts_edge(answer)
                 if audio_bytes:
                     b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
-                    audio_html = f'<audio autoplay="true" style="display:none;"><source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3"></audio>'
+                    # 🆕 Audio + JS untuk kembali ke idle setelah selesai bicara
+                    audio_html = f'''
+                    <audio id="jarvis-audio" autoplay="true" style="display:none;">
+                        <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
+                    </audio>
+                    <script>
+                        const audioEl = document.getElementById("jarvis-audio");
+                        if (audioEl) {{
+                            audioEl.onended = function() {{
+                                // Signal ke Streamlit lewat URL param trick
+                                window.parent.postMessage({{type: "jarvis_speaking_done"}}, "*");
+                            }};
+                        }}
+                    </script>
+                    '''
                     st.markdown(audio_html, unsafe_allow_html=True)
+
+                    # 🆕 Estimasi durasi audio untuk auto-reset orb state
+                    # (karena Streamlit tidak bisa listen event JS langsung)
+                    est_duration = max(1.5, len(answer) / 15.0)  # ~15 char/detik
+                    time.sleep(min(est_duration, 30))  # cap 30 detik max
+                    update_orb("idle")
+                else:
+                    update_orb("idle")
+        else:
+            update_orb("idle")
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
     save_chat_history(st.session_state.jarvis_messages)
 
 # ============================================================
-# SIDEBAR — 4 MODE RESET + DEBUG
+# SIDEBAR
 # ============================================================
 with st.sidebar:
     st.header("ℹ️ Info")
@@ -969,6 +1132,18 @@ with st.sidebar:
 
     st.markdown("---")
 
+    # 🆕 Orb state preview
+    st.subheader("🔵 Orb State Preview")
+    orb_preview_state = st.selectbox(
+        "Preview orb animation",
+        ["idle", "listening", "thinking", "speaking"],
+        index=["idle", "listening", "thinking", "speaking"].index(st.session_state.orb_state)
+    )
+    if st.button("Apply Orb Preview"):
+        update_orb(orb_preview_state)
+
+    st.markdown("---")
+
     if st.session_state.memory_vault:
         st.subheader("🧠 Jarvis Memory")
         for mem in st.session_state.memory_vault[-5:]:
@@ -985,13 +1160,10 @@ with st.sidebar:
     st.caption("• Vision Model: Qwen 3.8")
     st.caption("• Text Model: GPT-OSS-120B")
     st.caption("• Voice: British English (en-GB-Ryan)")
+    st.caption("• Orb States: 4 (idle/listen/think/speak)")
     st.caption("• Max Output: 300 tokens")
     st.caption("• Context: 6 turns")
     st.caption("• Image: 384px / Q45")
-    st.caption("• Fallback: ✅ (auto text-only)")
-    st.caption("• Self-Learning: ✅")
-    st.caption("• Persistence: ✅ (JSON)")
-    st.caption("• No Filler: ✅")
 
     st.markdown("---")
     with st.expander("🔍 Debug Info", expanded=False):
@@ -1000,14 +1172,9 @@ with st.sidebar:
         st.caption(f"**MEMORY_FILE:** `{MEMORY_FILE}`")
         st.caption(f"**Chat file exists:** {os.path.exists(CHAT_FILE)}")
         st.caption(f"**Memory file exists:** {os.path.exists(MEMORY_FILE)}")
-        
-        if os.path.exists(CHAT_FILE):
-            st.caption(f"**Chat file size:** {os.path.getsize(CHAT_FILE)} bytes")
-        if os.path.exists(MEMORY_FILE):
-            st.caption(f"**Memory file size:** {os.path.getsize(MEMORY_FILE)} bytes")
-        
         st.caption(f"**Session messages:** {len(st.session_state.jarvis_messages)}")
         st.caption(f"**Memory vault:** {len(st.session_state.memory_vault)}")
+        st.caption(f"**Current orb:** `{st.session_state.orb_state}`")
         
         if st.button("📂 Show File Contents"):
             st.json({
