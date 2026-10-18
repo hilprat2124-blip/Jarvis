@@ -53,8 +53,8 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Groq Vision", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Groq Vision")
+st.set_page_config(page_title="J.A.R.V.I.S - Quantum Vision", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — Quantum Vision")
 st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya.")
 
 # ============ WebRTC & Konstanta ============
@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS LIQUID SPACE ORB (Bulat Saat Diam, Bergelombang Saat Bicara)
+# JARVIS QUANTUM REACTOR ORB (100000x Cooler)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -724,13 +724,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let targetIntensity = 0;
             let fakePulse = 0;
             
-            // Titik-titik untuk liquid ring
-            const points = 120;
+            // Plasma Particles System
+            let plasmaParticles = [];
+            
+            // Liquid Ring Points
+            const points = 100;
             let radii = new Array(points).fill(0);
             let velocities = new Array(points).fill(0);
-            
-            // Partikel luar
-            let particles = [];
             
             function resize() {
                 const rect = canvas.getBoundingClientRect();
@@ -767,6 +767,19 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             
             audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
             
+            // Fungsi bantuan untuk menggambar poligon beraturan
+            function drawPolygon(cx, cy, radius, sides, rotation) {
+                ctx.beginPath();
+                for (let i = 0; i < sides; i++) {
+                    const angle = rotation + (i * 2 * Math.PI / sides);
+                    const x = cx + Math.cos(angle) * radius;
+                    const y = cy + Math.sin(angle) * radius;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                }
+                ctx.closePath();
+            }
+
             function draw() {
                 ctx.clearRect(0, 0, W, H);
                 
@@ -783,59 +796,53 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         targetIntensity = 0.2 + Math.sin(fakePulse) * 0.15;
                     }
                 } else if (currentState === 'listening') {
-                    targetIntensity = 0.1; // Sedikit bergelombang saat listening
+                    targetIntensity = 0.15; 
                 } else {
-                    targetIntensity = 0.0; // Bulat sempurna saat idle
+                    targetIntensity = 0.0; // Bulat sempurna
                 }
                 
-                // Smooth transisi intensitas
                 speakingIntensity += (targetIntensity - speakingIntensity) * 0.1;
                 
-                const baseRadius = Math.min(W, H) * 0.22;
-                const waveRadius = baseRadius * (1 + speakingIntensity * 0.2);
+                const baseRadius = Math.min(W, H) * 0.18;
                 const t = time * 0.001;
                 
-                const c1 = '0, 255, 200'; // Cyan terang
-                const c2 = '0, 100, 150'; // Biru gelap
+                // Warna tema
+                const cPrimary = '0, 255, 220';   // Cyan Neon
+                const cSecondary = '0, 150, 255'; // Blue
+                const cDark = '10, 30, 50';       // Deep Space
 
-                // 1. Gambar Inti (Core) di belakang
-                const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, waveRadius * 0.6);
-                grad.addColorStop(0, 'rgba(0, 255, 200, 0.4)');
-                grad.addColorStop(0.7, 'rgba(0, 150, 200, 0.1)');
-                grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-                ctx.fillStyle = grad;
+                // 1. Inti Energi (Core Glow)
+                const coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, baseRadius * 1.5);
+                coreGrad.addColorStop(0, 'rgba(255, 255, 255, ' + (0.8 + speakingIntensity*0.2) + ')');
+                coreGrad.addColorStop(0.2, 'rgba(' + cPrimary + ', 0.8)');
+                coreGrad.addColorStop(0.5, 'rgba(' + cSecondary + ', 0.3)');
+                coreGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = coreGrad;
                 ctx.beginPath();
-                ctx.arc(cx, cy, waveRadius * 0.8, 0, Math.PI * 2);
+                ctx.arc(cx, cy, baseRadius * 1.5, 0, Math.PI * 2);
                 ctx.fill();
 
-                // 2. Liquid Ring (Garis)
+                // 2. Liquid Ring (Bergelombang hanya saat speaking)
                 for (let i = 0; i < points; i++) {
                     const angle = (i / points) * Math.PI * 2;
+                    let targetR = baseRadius;
                     
-                    let targetR = waveRadius;
-                    
-                    // Hanya bergelombang jika ada suara (speaking)
                     if (speakingIntensity > 0.05) {
                         if (freqData && currentState === 'speaking') {
                             const halfIdx = i < points/2 ? i : points - 1 - i;
                             const freqIdx = Math.floor(halfIdx * freqData.length / (points / 2));
                             const val = freqData[freqIdx] / 255;
-                            targetR += val * baseRadius * 0.5 * speakingIntensity;
+                            targetR += val * baseRadius * 0.6 * speakingIntensity;
                         }
-                        
-                        // Noise / Liquid feel hanya aktif saat speaking
-                        targetR += Math.sin(angle * 6 + t * 3) * (baseRadius * 0.05) * speakingIntensity;
-                        targetR += Math.sin(angle * 12 - t * 2) * (baseRadius * 0.02) * speakingIntensity;
+                        targetR += Math.sin(angle * 8 + t * 5) * (baseRadius * 0.05) * speakingIntensity;
                     }
                     
-                    // Spring physics
                     const force = targetR - radii[i];
-                    velocities[i] += force * 0.08;
-                    velocities[i] *= 0.8; // Damping
+                    velocities[i] += force * 0.1;
+                    velocities[i] *= 0.8; 
                     radii[i] += velocities[i];
                 }
                 
-                // Gambar garis luar
                 ctx.beginPath();
                 for (let i = 0; i <= points; i++) {
                     const angle = (i % points / points) * Math.PI * 2;
@@ -848,74 +855,91 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         const prevR = radii[(i - 1) % points];
                         const prevX = cx + Math.cos(prevAngle) * prevR;
                         const prevY = cy + Math.sin(prevAngle) * prevR;
-                        
-                        const midX = (prevX + x) / 2;
-                        const midY = (prevY + y) / 2;
-                        ctx.quadraticCurveTo(prevX, prevY, midX, midY);
+                        ctx.quadraticCurveTo(prevX, prevY, (prevX+x)/2, (prevY+y)/2);
                     }
                 }
                 ctx.closePath();
-                
-                // Efek glow
                 ctx.shadowBlur = 20 + speakingIntensity * 40;
-                ctx.shadowColor = 'rgba(' + c1 + ', 0.8)';
-                ctx.strokeStyle = 'rgba(' + c1 + ', 0.9)';
+                ctx.shadowColor = 'rgba(' + cPrimary + ', 0.8)';
+                ctx.strokeStyle = 'rgba(' + cPrimary + ', 1)';
                 ctx.lineWidth = 2 * window.devicePixelRatio;
                 ctx.stroke();
-                
-                // Fill dalam
-                const ringGrad = ctx.createRadialGradient(cx, cy, waveRadius * 0.5, cx, cy, waveRadius * 1.2);
-                ringGrad.addColorStop(0, 'rgba(' + c1 + ', 0)');
-                ringGrad.addColorStop(1, 'rgba(' + c1 + ', 0.15)');
-                ctx.fillStyle = ringGrad;
-                ctx.fill();
-                
-                // 3. Inner tech rings
                 ctx.shadowBlur = 0;
-                for (let r = 1; r <= 3; r++) {
-                    ctx.beginPath();
-                    ctx.arc(cx, cy, waveRadius * 0.4 + (r * 15 * window.devicePixelRatio), 0, Math.PI * 2);
-                    ctx.strokeStyle = 'rgba(' + c1 + ', ' + (0.2 / r) + ')';
-                    ctx.lineWidth = 1 * window.devicePixelRatio;
-                    ctx.stroke();
-                }
 
-                // 4. Partikel Debu Luar (Hanya muncul saat Speaking)
-                if (speakingIntensity > 0.1) {
-                    // Spawn partikel baru
-                    if (Math.random() < speakingIntensity * 0.8) {
+                // 3. Cincin Kisi (Wireframe Polygon)
+                const polyRadius = baseRadius * 1.3;
+                ctx.strokeStyle = 'rgba(' + cPrimary + ', 0.3)';
+                ctx.lineWidth = 1 * window.devicePixelRatio;
+                
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(t * 0.5);
+                drawPolygon(0, 0, polyRadius, 6, 0);
+                ctx.stroke();
+                drawPolygon(0, 0, polyRadius * 0.9, 6, Math.PI/6);
+                ctx.stroke();
+                ctx.restore();
+
+                // 4. Orbit Mekanik Berputar (3 Layer)
+                const numOrbits = 3;
+                for (let i = 0; i < numOrbits; i++) {
+                    const r = baseRadius * (1.5 + i * 0.25);
+                    const speed = (i % 2 === 0 ? 1 : -1) * (0.5 + i * 0.2) * (currentState === 'thinking' ? 3 : 1);
+                    
+                    ctx.save();
+                    ctx.translate(cx, cy);
+                    ctx.rotate(t * speed);
+                    
+                    // Bikin cincin putus-putus
+                    ctx.setLineDash([15 * window.devicePixelRatio, 20 * window.devicePixelRatio]);
+                    ctx.strokeStyle = 'rgba(' + cSecondary + ', ' + (0.4 - i*0.1) + ')';
+                    ctx.lineWidth = (3 - i) * window.devicePixelRatio;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, r, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+                ctx.setLineDash([]); // Reset
+
+                // 5. Plasma Particles (Hanya saat speaking)
+                if (speakingIntensity > 0.15) {
+                    // Spawn partikel
+                    if (Math.random() < speakingIntensity * 1.5) {
                         const angle = Math.random() * Math.PI * 2;
-                        const dist = waveRadius * (1.0 + Math.random() * 0.5);
-                        particles.push({
-                            x: cx + Math.cos(angle) * dist,
-                            y: cy + Math.sin(angle) * dist,
-                            vx: Math.cos(angle) * (Math.random() * 2 + 1),
-                            vy: Math.sin(angle) * (Math.random() * 2 + 1),
+                        const r = baseRadius;
+                        plasmaParticles.push({
+                            x: cx + Math.cos(angle) * r,
+                            y: cy + Math.sin(angle) * r,
+                            vx: Math.cos(angle) * (Math.random() * 3 + 2),
+                            vy: Math.sin(angle) * (Math.random() * 3 + 2),
                             life: 1.0,
+                            decay: Math.random() * 0.03 + 0.02,
                             size: Math.random() * 2 + 1
                         });
                     }
 
-                    // Update dan gambar partikel
-                    for (let i = particles.length - 1; i >= 0; i--) {
-                        let p = particles[i];
+                    // Update dan render partikel
+                    for (let i = plasmaParticles.length - 1; i >= 0; i--) {
+                        let p = plasmaParticles[i];
                         p.x += p.vx;
                         p.y += p.vy;
-                        p.life -= 0.02;
+                        p.vx *= 0.95; // Friction
+                        p.vy *= 0.95;
+                        p.life -= p.decay;
                         
                         if (p.life <= 0) {
-                            particles.splice(i, 1);
+                            plasmaParticles.splice(i, 1);
                             continue;
                         }
 
-                        ctx.fillStyle = 'rgba(' + c1 + ', ' + p.life + ')';
+                        ctx.fillStyle = 'rgba(255, 255, 255, ' + p.life + ')';
+                        ctx.shadowBlur = 10;
+                        ctx.shadowColor = 'rgba(' + cPrimary + ', ' + p.life + ')';
                         ctx.beginPath();
-                        ctx.arc(p.x, p.y, p.size * window.devicePixelRatio, 0, Math.PI * 2);
+                        ctx.arc(p.x, p.y, p.size * p.life * window.devicePixelRatio, 0, Math.PI * 2);
                         ctx.fill();
                     }
-                } else {
-                    // Hapus partikel jika sudah diam
-                    particles = [];
+                    ctx.shadowBlur = 0;
                 }
 
                 time += 16;
@@ -1200,7 +1224,7 @@ with st.sidebar:
     if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
     
     st.caption("Technology:")
-    st.caption("• Orb: Space Tech Liquid Reactor")
+    st.caption("• Orb: Quantum Arc Reactor")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
     st.caption("• Vision Model: Qwen 3.8")
