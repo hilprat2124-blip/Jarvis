@@ -20,7 +20,7 @@ from PIL import Image
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
-# ============ AI: Routerra (OpenAI Compatible) ============
+# ============ AI: OpenRouter (OpenAI Compatible) ============
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
@@ -34,16 +34,16 @@ try:
 except ImportError:
     TTS_AVAILABLE = False
 
-# ============ KONFIGURASI ROUTERRA API ============
-# API Key dari dashboard Routerra kamu
-ROUTERRA_API_KEY = "sk-yCKwxnRa5da3fQw674SDtSRzyT9ZzVpEqZx1l7BdH1yqlGio"
+# ============ KONFIGURASI OPENROUTER API ============
+# API Key dari OpenRouter kamu
+OPENROUTER_API_KEY = "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"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# ⚠️ PERBAIKAN BASE URL (Tanpa api.)
-ROUTERRA_BASE_URL = "https://routerra.ai/v1"
-
-# Model yang tersedia di Routerra (sesuaikan dengan nama di dashboard)
-JARVIS_VISION_MODEL = "qwen/qwen-2.5-vl-72b-instruct" 
-JARVIS_TEXT_MODEL = "qwen/qwen-2.5-72b-instruct"
+# ⚠️ MODEL VISION GRATIS YANG TERSEDIA DI OPENROUTER
+# Berdasarkan katalog resmi, Qwen2.5-VL-72B sudah tidak gratis.
+# Kita gunakan Google Gemma 4 yang mendukung gambar + video dan gratis.
+JARVIS_VISION_MODEL = "google/gemma-4-26b-a4b-it:free" 
+JARVIS_TEXT_MODEL = "google/gemma-4-26b-a4b-it:free"
 
 MAX_OUTPUT_TOKENS = 300
 MAX_CONTEXT_TURNS = 6
@@ -57,9 +57,9 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Routerra Vision", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Routerra Vision")
-st.markdown("Jarvis sekarang menggunakan Routerra API.")
+st.set_page_config(page_title="J.A.R.V.I.S - OpenRouter Vision", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — OpenRouter Vision")
+st.markdown("Jarvis sekarang menggunakan OpenRouter API.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -511,7 +511,7 @@ class Hand3DProcessor(VideoProcessorBase):
         except: pass
 
 # ============================================================
-# HELPER JARVIS (ROUTERRA API)
+# HELPER JARVIS (OPENROUTER API)
 # ============================================================
 def image_to_base64(pil_img: Image.Image, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY) -> str:
     img = pil_img.copy()
@@ -527,8 +527,8 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     
     try:
         client = OpenAI(
-            api_key=ROUTERRA_API_KEY,
-            base_url=ROUTERRA_BASE_URL
+            api_key=OPENROUTER_API_KEY,
+            base_url=OPENROUTER_BASE_URL
         )
         
         resp = client.chat.completions.create(
@@ -542,8 +542,8 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         return resp.choices[0].message.content
     except Exception as e:
         err_str = str(e)
-        _log(f"ROUTERRA API ERROR: {err_str[:200]}")
-        return f"❌ Error Jarvis (Routerra): {err_str[:300]}"
+        _log(f"OPENROUTER API ERROR: {err_str[:200]}")
+        return f"❌ Error Jarvis (OpenRouter): {err_str[:300]}"
 
 def sanitize_latex(text: str) -> str:
     if not text: return text
@@ -585,11 +585,11 @@ def strip_repetitive_greeting(text: str, history: list) -> str:
     return text
 
 def extract_memory(user_text: str, ai_text: str) -> str | None:
-    if not OPENAI_AVAILABLE or not ROUTERRA_API_KEY: return None
+    if not OPENAI_AVAILABLE or not OPENROUTER_API_KEY: return None
     try:
         client = OpenAI(
-            api_key=ROUTERRA_API_KEY,
-            base_url=ROUTERRA_BASE_URL
+            api_key=OPENROUTER_API_KEY,
+            base_url=OPENROUTER_BASE_URL
         )
         prompt = f"""
         Analyse this conversation. Is there any important fact about Sir Lois 
@@ -1171,7 +1171,7 @@ with st.sidebar:
     st.caption("Technology:")
     st.caption("• Orb: Futuristic Wave")
     st.caption("• Vision: Live Camera Grab")
-    st.caption("• API: Routerra")
-    st.caption("• Vision Model: Qwen/Gemini")
+    st.caption("• API: OpenRouter")
+    st.caption("• Vision Model: Gemma 4 26B (Free)")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
