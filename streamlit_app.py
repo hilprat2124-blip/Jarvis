@@ -53,8 +53,8 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Quantum Dots", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Quantum Dots")
+st.set_page_config(page_title="J.A.R.V.I.S - Quantum Sphere", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — Quantum Sphere")
 st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya.")
 
 # ============ WebRTC & Konstanta ============
@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Presisi seperti Gambar)
+# JARVIS QUANTUM SPHERE (Persis Gambar)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -781,79 +781,71 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 
                 speakingIntensity += (targetIntensity - speakingIntensity) * 0.1;
                 
-                const baseRadius = Math.min(W, H) * 0.25;
+                const baseRadius = Math.min(W, H) * 0.28;
                 const t = time * 0.001;
                 
                 const cMain = '0, 255, 200'; 
                 
-                // 1. Gambar Inner Sphere (Kiri Bawah) - Grid Dots
-                const sphereRadius = baseRadius * 0.6;
-                const sphereX = cx - baseRadius * 0.2;
-                const sphereY = cy + baseRadius * 0.1;
+                // 1. Lingkaran Luar (Dashed Circle)
+                const outerRadius = baseRadius * 1.1;
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(t * 0.2); // Rotasi sangat lambat
                 
+                ctx.beginPath();
+                // Menggunakan dash line untuk efek titik-titik
+                ctx.setLineDash([4 * window.devicePixelRatio, 12 * window.devicePixelRatio]);
+                ctx.strokeStyle = 'rgba(' + cMain + ', ' + (0.4 + speakingIntensity * 0.4) + ')';
+                ctx.lineWidth = 2 * window.devicePixelRatio;
+                ctx.arc(0, 0, outerRadius, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+                ctx.setLineDash([]); // Reset
+
+                // 2. Gumpalan Bola (Inner Sphere Grid)
+                const sphereRadius = baseRadius * 0.65;
+                
+                // Efek pendaran di belakang bola
+                const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, sphereRadius * 1.5);
+                glow.addColorStop(0, 'rgba(' + cMain + ', ' + (0.1 + speakingIntensity * 0.1) + ')');
+                glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = glow;
+                ctx.beginPath();
+                ctx.arc(cx, cy, sphereRadius * 1.5, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Menggambar grid bola (Sarang lebah)
                 ctx.save();
                 ctx.beginPath();
-                ctx.arc(sphereX, sphereY, sphereRadius, 0, Math.PI * 2);
+                ctx.arc(cx, cy, sphereRadius, 0, Math.PI * 2);
                 ctx.clip();
                 
-                // Grid dots
-                ctx.fillStyle = 'rgba(' + cMain + ', 0.8)';
-                const gridSize = 4 * window.devicePixelRatio;
-                for (let y = sphereY - sphereRadius; y < sphereY + sphereRadius; y += gridSize) {
-                    for (let x = sphereX - sphereRadius; x < sphereX + sphereRadius; x += gridSize) {
-                        // Rotasi bola 3D sederhana (hanya visual)
-                        const rotX = (x - sphereX) * Math.cos(t) - (y - sphereY) * Math.sin(t) + sphereX;
-                        const rotY = (x - sphereX) * Math.sin(t) + (y - sphereY) * Math.cos(t) + sphereY;
+                // Semakin banyak partikel, semakin rapat
+                const dotSpacing = 3.5 * window.devicePixelRatio; 
+                ctx.fillStyle = 'rgba(150, 255, 230, ' + (0.6 + speakingIntensity * 0.4) + ')'; 
+                
+                // Iterasi grid
+                for (let y = cy - sphereRadius; y < cy + sphereRadius; y += dotSpacing) {
+                    for (let x = cx - sphereRadius; x < cx + sphereRadius; x += dotSpacing) {
+                        // Efek rotasi bola
+                        const rotX = (x - cx) * Math.cos(t * 0.5) - (y - cy) * Math.sin(t * 0.5) + cx;
+                        const rotY = (x - cx) * Math.sin(t * 0.5) + (y - cy) * Math.cos(t * 0.5) + cy;
                         
-                        // Kalkulasi alpha berdasarkan jarak dari pusat (untuk efek 3D)
-                        const dist = Math.hypot(rotX - sphereX, rotY - sphereY);
+                        // Kalkulasi bayangan 3D (bayangan di pinggir)
+                        const dist = Math.hypot(rotX - cx, rotY - cy);
                         if (dist < sphereRadius) {
                             const alpha = Math.max(0, 1 - (dist / sphereRadius));
-                            ctx.globalAlpha = alpha * (0.5 + speakingIntensity * 0.5);
+                            ctx.globalAlpha = alpha * (0.8 + speakingIntensity * 0.2);
+                            
+                            // Gambar titik
                             ctx.beginPath();
-                            ctx.arc(rotX, rotY, 1 * window.devicePixelRatio, 0, Math.PI * 2);
+                            ctx.arc(rotX, rotY, 0.8 * window.devicePixelRatio, 0, Math.PI * 2);
                             ctx.fill();
                         }
                     }
                 }
                 ctx.restore();
                 ctx.globalAlpha = 1.0;
-
-                // 2. Gambar Outer Ring (Kanan)
-                const ringRadius = baseRadius * 1.2;
-                const ringX = cx + baseRadius * 0.1;
-                const ringY = cy - baseRadius * 0.1;
-                
-                ctx.beginPath();
-                for (let a = 0; a <= 360; a += 2) {
-                    const rad = a * Math.PI / 180;
-                    
-                    let wave = 0;
-                    if (speakingIntensity > 0.05) {
-                        if (freqData) {
-                            const freqIdx = Math.floor((a/360) * freqData.length);
-                            wave += (freqData[freqIdx]/255) * baseRadius * 0.3 * speakingIntensity;
-                        }
-                        wave += Math.sin(rad * 5 + t * 2) * (baseRadius * 0.05) * speakingIntensity;
-                    } else {
-                        // Idle: Cincin sempurna
-                        wave += Math.sin(rad * 2 + t) * (baseRadius * 0.01);
-                    }
-
-                    const r = ringRadius + wave;
-                    const x = ringX + Math.cos(rad) * r;
-                    const y = ringY + Math.sin(rad) * r;
-                    
-                    if (a === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                }
-                ctx.closePath();
-                
-                ctx.strokeStyle = 'rgba(' + cMain + ', ' + (0.3 + speakingIntensity * 0.5) + ')';
-                ctx.lineWidth = 2 * window.devicePixelRatio;
-                ctx.setLineDash([5 * window.devicePixelRatio, 15 * window.devicePixelRatio]);
-                ctx.stroke();
-                ctx.setLineDash([]); // Reset
 
                 time += 16;
                 requestAnimationFrame(draw);
@@ -1137,7 +1129,7 @@ with st.sidebar:
     if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
     
     st.caption("Technology:")
-    st.caption("• Orb: Quantum Dots")
+    st.caption("• Orb: Quantum Sphere")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
     st.caption("• Vision Model: Qwen 3.8")
