@@ -45,7 +45,7 @@ VOICE_EN = "en-GB-RyanNeural"
 VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
-# 🆕 PERSISTENCE FILE
+# 🆕 PERSISTENCE FILES
 MEMORY_FILE = "jarvis_persistent_memory.json"
 CHAT_FILE = "jarvis_chat_history.json"
 
@@ -122,16 +122,14 @@ def load_chat_history() -> list:
     return []
 
 def save_chat_history(messages: list):
-    """Save chat history ke disk (skip system + skip image data)."""
+    """Save chat history ke disk (skip system + skip image base64)."""
     try:
-        # Hanya simpan text murni, buang gambar base64 biar file ga bengkak
         clean_msgs = []
         for m in messages:
             if m["role"] == "system":
                 continue
             content = m["content"]
             if isinstance(content, list):
-                # Kalau multimodal, ambil text saja
                 texts = [c["text"] for c in content if c.get("type") == "text"]
                 content = " ".join(texts) if texts else "[image]"
             clean_msgs.append({"role": m["role"], "content": content})
@@ -139,6 +137,21 @@ def save_chat_history(messages: list):
             json.dump(clean_msgs, f, ensure_ascii=False, indent=2)
     except Exception as e:
         st.warning(f"Gagal simpan chat: {e}")
+
+# 🆕 Ambil ringkasan obrolan lama (untuk konteks saat UI di-clear)
+def get_recent_context_summary(max_turns: int = 10) -> str:
+    history = load_chat_history()
+    if not history:
+        return ""
+    recent = history[-max_turns * 2:]
+    lines = []
+    for m in recent:
+        role = "Sir Lois" if m["role"] == "user" else "Jarvis"
+        content = m["content"]
+        if isinstance(content, list):
+            content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
 
 # ============================================================
 # 🔒 KELAS KAMERA — SILENT VISUAL MEMORY
@@ -491,14 +504,13 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     try:
         client = Groq(api_key=GROQ_API_KEY)
-        # 🆕 frequency_penalty + presence_penalty untuk kurangi repetisi
         resp = client.chat.completions.create(
             model=model,
             messages=api_messages,
             temperature=0.85,
             max_tokens=800,
-            frequency_penalty=0.6,   # 🆕 hindari kata berulang
-            presence_penalty=0.4,    # 🆕 dorong topik baru
+            frequency_penalty=0.6,
+            presence_penalty=0.4,
         )
         return resp.choices[0].message.content
     except Exception as e:
@@ -512,13 +524,10 @@ def sanitize_latex(text: str) -> str:
     text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
     return text.strip()
 
-# 🆕 Anti-repetisi greeting
 def strip_repetitive_greeting(text: str, history: list) -> str:
     """Hapus 'Good day' / 'Hello' berulang jika sudah pernah diucapkan."""
     if not text:
         return text
-    
-    # Cek apakah greeting sudah pernah muncul di history
     past_greetings = 0
     for m in history:
         if m["role"] == "assistant":
@@ -527,14 +536,11 @@ def strip_repetitive_greeting(text: str, history: list) -> str:
                 content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
             if re.search(r'\b(good day|good morning|good afternoon|good evening|hello there|greetings)\b', str(content), re.IGNORECASE):
                 past_greetings += 1
-    
     if past_greetings >= 1:
-        # Sudah pernah greeting, buang greeting di awal kalimat
         text = re.sub(
             r'^\s*(good day|good morning|good afternoon|good evening|hello there|greetings)[\s,\.!]*',
             '', text, flags=re.IGNORECASE
         )
-        # Kapitalisasi huruf pertama
         if text and text[0].islower():
             text = text[0].upper() + text[1:]
     return text
@@ -607,7 +613,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# 🧠 SYSTEM PROMPT (ANTI-REPETISI + BRITISH)
+# 🧠 SYSTEM PROMPT
 # ============================================================
 SYSTEM_PROMPT = """
 You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
@@ -655,15 +661,13 @@ If no images, answer from text alone.
 """
 
 # ============================================================
-# 🧠 SESSION STATE + 🆕 PERSISTENCE
+# 🧠 SESSION STATE + PERSISTENCE LOAD
 # ============================================================
 if "jarvis_messages" not in st.session_state:
-    # 🆕 Load history dari disk
     saved_history = load_chat_history()
     st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + saved_history
 
 if "memory_vault" not in st.session_state:
-    # 🆕 Load memory dari disk
     st.session_state.memory_vault = load_memory()
 
 # ============================================================
@@ -699,6 +703,7 @@ st.markdown("---")
 st.header("💬 Speak with Jarvis")
 st.caption("Ask in any language — Jarvis always replies in British English.")
 
+# Tampilkan riwayat chat dari session_state
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
     with st.chat_message(msg["role"]):
@@ -744,6 +749,17 @@ if user_q:
         with st.spinner("Jarvis is analysing..."):
             api_messages = [st.session_state.jarvis_messages[0]]
 
+            # 🆕 INJECT KONTEKS LAMA JIKA UI DI-CLEAR
+            ui_history_exists = len(st.session_state.jarvis_messages) > 1
+            if not ui_history_exists:
+                context_summary = get_recent_context_summary(max_turns=10)
+                if context_summary:
+                    api_messages.append({
+                        "role": "system",
+                        "content": f"[PREVIOUS CONVERSATION CONTEXT — you still remember this]:\n{context_summary}"
+                    })
+
+            # 🧠 LONG-TERM MEMORY
             if st.session_state.memory_vault:
                 memory_str = "\n".join([f"- {m}" for m in st.session_state.memory_vault])
                 api_messages.append({
@@ -751,13 +767,13 @@ if user_q:
                     "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
                 })
 
+            # RIWAYAT UI (kalau ada)
             for m in st.session_state.jarvis_messages[1:-1]:
                 api_messages.append({"role": m["role"], "content": m["content"]})
             api_messages.append(user_api_msg)
 
             answer = ask_jarvis(api_messages, use_vision=has_img)
             answer = sanitize_latex(answer)
-            # 🆕 Anti-repetisi greeting
             answer = strip_repetitive_greeting(answer, st.session_state.jarvis_messages)
 
         st.markdown(answer)
@@ -766,7 +782,7 @@ if user_q:
             new_memory = extract_memory(user_q, answer)
             if new_memory:
                 st.session_state.memory_vault.append(new_memory)
-                save_memory(st.session_state.memory_vault)  # 🆕 persist
+                save_memory(st.session_state.memory_vault)
                 st.toast(f"🧠 New memory: {new_memory}")
 
             with st.spinner("🎤 Preparing voice..."):
@@ -777,27 +793,34 @@ if user_q:
                     st.markdown(audio_html, unsafe_allow_html=True)
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
-    # 🆕 Save chat history ke disk setiap kali ada pesan baru
     save_chat_history(st.session_state.jarvis_messages)
 
 # ============================================================
-# SIDEBAR
+# SIDEBAR — 3 MODE RESET
 # ============================================================
 with st.sidebar:
     st.header("ℹ️ Info")
-    
-    # 🆕 Tombol reset dengan konfirmasi
-    if st.button("🔄 Reset Chat"):
+
+    st.subheader("🧹 Chat Controls")
+    # 🧹 Clear UI saja — Jarvis TETAP INGAT dari file
+    if st.button("🧹 Clear Chat View", help="Sembunyikan chat di layar, tapi Jarvis tetap ingat semuanya"):
         st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        save_chat_history([])  # 🆕 hapus file
         st.rerun()
-    
-    if st.button("🧠 Reset Memory"):
+
+    # 🗑️ Hapus history permanen
+    if st.button("🗑️ Delete Chat History", help="Hapus permanen riwayat obrolan dari disk"):
+        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        save_chat_history([])
+        st.rerun()
+
+    st.subheader("🧠 Memory Controls")
+    if st.button("🧠 Reset Long-Term Memory", help="Hapus memori fakta tentang Sir Lois"):
         st.session_state.memory_vault = []
-        save_memory([])  # 🆕 hapus file
+        save_memory([])
         st.rerun()
-    
-    if st.button("🗑️ Reset ALL (Chat + Memory)"):
+
+    st.markdown("---")
+    if st.button("💣 Reset ALL (Chat + Memory)", help="Hapus SEMUA data — Jarvis jadi amnesia total"):
         st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         st.session_state.memory_vault = []
         save_chat_history([])
@@ -825,5 +848,6 @@ with st.sidebar:
     st.caption("• Self-Learning: ✅")
     st.caption("• Persistence: ✅ (JSON)")
     st.caption("• Anti-Repetition: ✅")
+    st.caption("• Context Injection: ✅")
 
 st.markdown("---")
