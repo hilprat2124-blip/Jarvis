@@ -44,7 +44,7 @@ JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
 MAX_OUTPUT_TOKENS = 300
 MAX_CONTEXT_TURNS = 6
 MAX_MSG_CHARS = 400
-MAX_FRAMES_FOR_VISION = 1 
+MAX_FRAMES_FOR_VISION = 1
 IMAGE_MAX_SIZE = 384
 IMAGE_QUALITY = 45
 
@@ -699,7 +699,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             .mic-btn.listening { background: rgba(0,255,200,0.9); border-color: #00ffc8; color: #000; box-shadow: 0 0 25px rgba(0,255,200,0.8); animation: pulse 1.2s infinite; }
             
             @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.06); } 100% { transform: scale(1); } }
-            .transcript-hint { position: absolute; top: 5px; color: #7cfc00; font-size: 11px; text-align: center; width: 100%; z-index: 25; text-shadow: 0 0 8px rgba(0,255,0,0.6); }
+            .transcript-hint { position: absolute; top: 5px; color: #7cfc00; font-size: 11px; text-align: center; width: 100%; z-index: 25; text-shadow: 0 0 8px rgba(0,255,0,0.6); padding: 0 10px; }
         </style>
     </head>
     <body>
@@ -784,54 +784,87 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             
             audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
 
-            // Speech Recognition + 1s Silence Buffer Timeout
+            // ============ SPEECH RECOGNITION (FIXED) ============
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             let recognition = null;
             let isListeningActive = false;
             let silenceTimer = null;
             let latestTranscript = '';
+            let finalTranscript = '';
+            let commandSent = false;
 
             if (SpeechRecognition) {
                 recognition = new SpeechRecognition();
                 recognition.continuous = true;
                 recognition.interimResults = true;
                 recognition.lang = 'id-ID';
+                recognition.maxAlternatives = 1;
 
                 recognition.onstart = () => {
                     isListeningActive = true;
+                    commandSent = false;
+                    latestTranscript = '';
+                    finalTranscript = '';
                     micBtn.classList.add('listening');
                     micBtn.innerText = '🔴 MENDENGARKAN...';
-                    transcriptHint.innerText = '🟢 Mendengarkan... Ucapkan "Jarvis"';
+                    transcriptHint.innerText = '🟢 Mendengarkan... Ucapkan "Jarvis ..."';
                 };
 
                 recognition.onresult = (event) => {
-                    let transcript = '';
+                    let interim = '';
+                    let finalText = '';
                     for (let i = event.resultIndex; i < event.results.length; ++i) {
-                        transcript += event.results[i][0].transcript;
+                        const res = event.results[i];
+                        if (res.isFinal) {
+                            finalText += res[0].transcript + ' ';
+                        } else {
+                            interim += res[0].transcript + ' ';
+                        }
                     }
-                    latestTranscript = transcript;
-                    const lower = transcript.toLowerCase();
-                    transcriptHint.innerText = `Mendengar: "${transcript}"`;
-                    
-                    // Reset timer jeda setiap kali ada suara masuk
+                    if (finalText) finalTranscript += ' ' + finalText;
+                    const combined = (finalTranscript + ' ' + interim).replace(/\s+/g, ' ').trim();
+                    latestTranscript = combined;
+                    transcriptHint.innerText = `Mendengar: "${combined}"`;
+
                     if (silenceTimer) clearTimeout(silenceTimer);
 
-                    // Tunggu 1 detik setelah user berhenti bicara (tidak ada kata baru masuk)
                     silenceTimer = setTimeout(() => {
+                        if (commandSent) return;
+                        const lower = latestTranscript.toLowerCase().trim();
+                        if (!lower) return;
+
                         if (lower.includes('jarvis')) {
                             const parts = lower.split('jarvis');
-                            const command = parts[parts.length - 1].trim();
+                            let command = parts.slice(1).join('jarvis').trim();
+                            command = command.replace(/^[\s,\.!?;:]+|[\s,\.!?;:]+$/g, '').trim();
+
                             if (command.length > 1) {
-                                transcriptHint.innerText = `Mengirim: "${command}"`;
+                                commandSent = true;
+                                transcriptHint.innerText = `📤 Mengirim: "${command}"`;
                                 stopListening();
-                                sendToStreamlit(command);
+                                setTimeout(() => sendToStreamlit(command), 350);
+                            } else {
+                                transcriptHint.innerText = 'Kata "Jarvis" terdeteksi, tapi perintah kosong. Coba lagi.';
                             }
+                        } else {
+                            transcriptHint.innerText = 'Tidak ada kata "Jarvis". Coba ucapkan "Jarvis ..."';
                         }
                     }, 1000);
                 };
 
                 recognition.onerror = (event) => {
                     console.log('Speech error:', event.error);
+                    if (event.error === 'no-speech') {
+                        if (isListeningActive) {
+                            try { recognition.start(); } catch(e) {}
+                        }
+                    } else if (event.error === 'aborted') {
+                        // ignore
+                    } else if (event.error === 'not-allowed') {
+                        transcriptHint.innerText = '❌ Izin mikrofon ditolak. Klik ikon 🔒 di address bar untuk mengizinkan.';
+                    } else {
+                        transcriptHint.innerText = `⚠️ Error mic: ${event.error}`;
+                    }
                 };
 
                 recognition.onend = () => {
@@ -840,19 +873,27 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     micBtn.innerText = '🎙️ MULAI DENGAR';
                 };
             } else {
-                transcriptHint.innerText = 'Browser tidak mendukung Speech Recognition.';
+                transcriptHint.innerText = 'Browser tidak mendukung Speech Recognition. Gunakan Chrome/Edge.';
                 micBtn.style.display = 'none';
             }
 
             function startListening() {
-                if (recognition && !isListeningActive) {
-                    try { recognition.start(); } catch(e) {}
+                if (!recognition) return;
+                if (isListeningActive) return;
+                commandSent = false;
+                latestTranscript = '';
+                finalTranscript = '';
+                try {
+                    recognition.start();
+                } catch (e) {
+                    try { recognition.stop(); } catch(_){}
+                    setTimeout(() => { try { recognition.start(); } catch(_){} }, 250);
                 }
             }
 
             function stopListening() {
                 isListeningActive = false;
-                if (silenceTimer) clearTimeout(silenceTimer);
+                if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
                 micBtn.classList.remove('listening');
                 micBtn.innerText = '🎙️ MULAI DENGAR';
                 try { recognition.stop(); } catch(e) {}
@@ -868,22 +909,41 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             });
 
             function sendToStreamlit(text) {
-                const parentDoc = window.parent.document;
-                const textInputs = parentDoc.querySelectorAll('input');
-                for (let input of textInputs) {
-                    if (input.type === 'text') {
-                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, "value").set;
-                        nativeInputValueSetter.call(input, text);
-                        input.dispatchEvent(new Event('input', { bubbles: true }));
-                        
-                        setTimeout(() => {
-                            const enterEvent = new KeyboardEvent('keydown', {
-                                bubbles: true, cancelable: true, keyCode: 13, key: 'Enter'
-                            });
-                            input.dispatchEvent(enterEvent);
-                        }, 150);
-                        break;
+                try {
+                    const parentDoc = window.parent.document;
+                    // Streamlit chat_input pakai textarea, text_input pakai input[type=text]
+                    const candidates = parentDoc.querySelectorAll('textarea, input[type="text"]');
+                    let target = null;
+                    for (let el of candidates) {
+                        if (el.offsetParent !== null && !el.disabled && !el.readOnly) {
+                            target = el;
+                            break;
+                        }
                     }
+                    if (!target) {
+                        transcriptHint.innerText = '❌ Input Streamlit tidak ditemukan. Refresh halaman.';
+                        return;
+                    }
+                    const proto = target.tagName === 'TEXTAREA'
+                        ? window.parent.HTMLTextAreaElement.prototype
+                        : window.parent.HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                    setter.call(target, text);
+                    target.dispatchEvent(new Event('input', { bubbles: true }));
+                    target.dispatchEvent(new Event('change', { bubbles: true }));
+
+                    setTimeout(() => {
+                        target.focus();
+                        const enterEvent = new KeyboardEvent('keydown', {
+                            bubbles: true, cancelable: true,
+                            keyCode: 13, which: 13, key: 'Enter', code: 'Enter'
+                        });
+                        target.dispatchEvent(enterEvent);
+                        transcriptHint.innerText = '✅ Terkirim ke Jarvis';
+                    }, 250);
+                } catch (err) {
+                    console.log('Send error:', err);
+                    transcriptHint.innerText = '❌ Gagal kirim: ' + err.message;
                 }
             }
 
