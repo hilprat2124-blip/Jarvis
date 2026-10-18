@@ -20,12 +20,12 @@ from PIL import Image
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
-# ============ AI: Groq (Cloud) ============
+# ============ AI: Routerra (OpenAI Compatible) ============
 try:
-    from groq import Groq
-    GROQ_AVAILABLE = True
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
 except ImportError:
-    GROQ_AVAILABLE = False
+    OPENAI_AVAILABLE = False
 
 # ============ AI: Edge-TTS ============
 try:
@@ -34,13 +34,15 @@ try:
 except ImportError:
     TTS_AVAILABLE = False
 
-# ============ KONFIGURASI GROQ API ============
-# API Key yang kamu berikan
-GROQ_API_KEY = "sk-yCKwxnRa5da3fQw674SDtSRzyT9ZzVpEqZx1l7BdH1yqlGio"
+# ============ KONFIGURASI ROUTERRA API ============
+# ⚠️ MASUKKAN API KEY ROUTERRA KAMU DI SINI (contoh format: sk-or-v1-...)
+ROUTERRA_API_KEY = "MASUKKAN_API_KEY_ROUTERRA_KAMU_DI_SINI"
+ROUTERRA_BASE_URL = "https://api.routerra.ai/v1"
 
-JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
-JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
-JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
+# Pilih model vision yang tersedia di Routerra (misalnya qwen, gemini, atau gpt-4o)
+# Cek daftar model di dashboard Routerra kamu
+JARVIS_VISION_MODEL = "qwen/qwen-2.5-vl-72b-instruct" 
+JARVIS_TEXT_MODEL = "qwen/qwen-2.5-72b-instruct"
 
 MAX_OUTPUT_TOKENS = 300
 MAX_CONTEXT_TURNS = 6
@@ -55,9 +57,9 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Cloud Vision", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Cloud Vision (Groq)")
-st.markdown("Jarvis sekarang menggunakan Groq API dengan key milikmu.")
+st.set_page_config(page_title="J.A.R.V.I.S - Routerra Vision", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — Routerra Vision")
+st.markdown("Jarvis sekarang menggunakan Routerra API.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -509,7 +511,7 @@ class Hand3DProcessor(VideoProcessorBase):
         except: pass
 
 # ============================================================
-# HELPER JARVIS (GROQ API)
+# HELPER JARVIS (ROUTERRA API)
 # ============================================================
 def image_to_base64(pil_img: Image.Image, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY) -> str:
     img = pil_img.copy()
@@ -518,22 +520,19 @@ def image_to_base64(pil_img: Image.Image, max_size=IMAGE_MAX_SIZE, quality=IMAGE
     img.save(buf, format="JPEG", quality=quality)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-def _is_rate_limit_error(err_str: str) -> bool:
-    err = err_str.lower()
-    return (
-        "413" in err
-        or "rate_limit" in err
-        or "request too large" in err
-        or "tokens per minute" in err
-        or "itpm" in err
-    )
-
 def ask_jarvis(api_messages: list, use_vision: bool) -> str:
-    if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall. Jalankan: pip install groq"
+    if not OPENAI_AVAILABLE: return "❌ `openai` belum terinstall. Jalankan: pip install openai"
+    if not ROUTERRA_API_KEY or ROUTERRA_API_KEY == "MASUKKAN_API_KEY_ROUTERRA_KAMU_DI_SINI":
+        return "❌ API Key Routerra belum diisi. Silakan edit kode di bagian ROUTERRA_API_KEY."
     
-    client = Groq(api_key=GROQ_API_KEY)
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
+    
     try:
+        client = OpenAI(
+            api_key=ROUTERRA_API_KEY,
+            base_url=ROUTERRA_BASE_URL
+        )
+        
         resp = client.chat.completions.create(
             model=model,
             messages=api_messages,
@@ -545,41 +544,8 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
         return resp.choices[0].message.content
     except Exception as e:
         err_str = str(e)
-        _log(f"API ERROR: {err_str[:200]}")
-        
-        if _is_rate_limit_error(err_str):
-            _log("⚠️ Rate limit kena — fallback ke text-only")
-            try:
-                fallback_msgs = [api_messages[0]]
-                for m in api_messages[1:]:
-                    if m["role"] == "system" and isinstance(m["content"], str):
-                        if "LONG-TERM MEMORY" in m["content"]:
-                            fallback_msgs.append(m)
-                
-                text_msgs = []
-                for m in api_messages:
-                    if m["role"] in ("user", "assistant"):
-                        if isinstance(m["content"], str):
-                            text_msgs.append({"role": m["role"], "content": m["content"][:300]})
-                        elif isinstance(m["content"], list):
-                            texts = [c.get("text", "") for c in m["content"] if c.get("type") == "text"]
-                            if texts:
-                                text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
-                
-                fallback_msgs.extend(text_msgs[-4:])
-                
-                resp = client.chat.completions.create(
-                    model=JARVIS_TEXT_MODEL,
-                    messages=fallback_msgs,
-                    temperature=0.7,
-                    max_tokens=200,
-                )
-                answer = resp.choices[0].message.content
-                return f"{answer}\n\n*(Sir, I had to switch to text-only mode due to token limits.)*"
-            except Exception as e2:
-                return "Sir, my cognitive buffer is momentarily saturated. Please wait a minute and try a shorter question."
-        
-        return f"❌ Error Jarvis: {str(e)[:300]}"
+        _log(f"ROUTERRA API ERROR: {err_str[:200]}")
+        return f"❌ Error Jarvis (Routerra): {err_str[:300]}"
 
 def sanitize_latex(text: str) -> str:
     if not text: return text
@@ -621,9 +587,12 @@ def strip_repetitive_greeting(text: str, history: list) -> str:
     return text
 
 def extract_memory(user_text: str, ai_text: str) -> str | None:
-    if not GROQ_AVAILABLE: return None
+    if not OPENAI_AVAILABLE or not ROUTERRA_API_KEY: return None
     try:
-        client = Groq(api_key=GROQ_API_KEY)
+        client = OpenAI(
+            api_key=ROUTERRA_API_KEY,
+            base_url=ROUTERRA_BASE_URL
+        )
         prompt = f"""
         Analyse this conversation. Is there any important fact about Sir Lois 
         worth remembering? If none, reply "NONE". If yes, write ONE short memory sentence IN ENGLISH (max 15 words).
@@ -631,7 +600,7 @@ def extract_memory(user_text: str, ai_text: str) -> str | None:
         AI: {ai_text[:300]}
         """
         resp = client.chat.completions.create(
-            model=JARVIS_MEMORY_MODEL,
+            model=JARVIS_TEXT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=40, temperature=0.1
         )
@@ -1204,8 +1173,7 @@ with st.sidebar:
     st.caption("Technology:")
     st.caption("• Orb: Futuristic Wave")
     st.caption("• Vision: Live Camera Grab")
-    st.caption("• API: Groq Cloud (Custom Key)")
-    st.caption("• Vision Model: Qwen 3.8")
-    st.caption("• Text Model: GPT-OSS-120B")
+    st.caption("• API: Routerra")
+    st.caption("• Vision Model: Qwen/Gemini")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
