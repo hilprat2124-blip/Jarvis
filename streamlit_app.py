@@ -35,15 +35,12 @@ except ImportError:
     TTS_AVAILABLE = False
 
 # ============ KONFIGURASI OPENROUTER API ============
-# API Key dari OpenRouter kamu
 OPENROUTER_API_KEY = "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"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# ⚠️ MODEL VISION GRATIS YANG TERSEDIA DI OPENROUTER
-# Berdasarkan katalog resmi, Qwen2.5-VL-72B sudah tidak gratis.
-# Kita gunakan Google Gemma 4 yang mendukung gambar + video dan gratis.
-JARVIS_VISION_MODEL = "google/gemma-4-26b-a4b-it:free" 
-JARVIS_TEXT_MODEL = "google/gemma-4-26b-a4b-it:free"
+# 🆕 MENGGUNAKAN MODEL YANG LEBIH STABIL
+JARVIS_VISION_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
+JARVIS_TEXT_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
 
 MAX_OUTPUT_TOKENS = 300
 MAX_CONTEXT_TURNS = 6
@@ -1172,6 +1169,6 @@ with st.sidebar:
     st.caption("• Orb: Futuristic Wave")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: OpenRouter")
-    st.caption("• Vision Model: Gemma 4 26B (Free)")
+    st.caption("• Vision Model: NVIDIA Nemotron")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
