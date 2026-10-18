@@ -687,7 +687,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS FUTURISTIC VOICE ORB
+# JARVIS FUTURISTIC VOICE ORB (Fixed 360 & Autoplay)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -737,6 +737,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let particles = [];
             let speakingIntensity = 0;
             let targetIntensity = 0;
+            let fakePulse = 0;
             
             function resize() {
                 const rect = canvas.getBoundingClientRect();
@@ -799,6 +800,11 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     for (let i = 0; i < freqData.length; i++) sum += freqData[i];
                     const avg = sum / freqData.length / 255;
                     targetIntensity = avg * 2.5;
+                    
+                    if (avg < 0.05) {
+                        fakePulse += 0.1;
+                        targetIntensity = 0.2 + Math.sin(fakePulse) * 0.15;
+                    }
                 } else if (currentState === 'listening') {
                     targetIntensity = 0.15 + Math.sin(time * 2) * 0.05;
                 } else {
@@ -879,17 +885,22 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 }
                 
                 if (currentState === 'speaking' && freqData) {
-                    const barCount = 64;
+                    const barCount = 64; 
                     for (let i = 0; i < barCount; i++) {
-                        const freqIdx = Math.floor(i * freqData.length / barCount);
-                        const val = freqData[freqIdx] / 255;
-                        const angle = (i / barCount) * Math.PI * 2 - Math.PI / 2;
-                        const barLen = 20 * window.devicePixelRatio * (1 + val * 3);
+                        const freqIdx = Math.floor((i < barCount/2 ? i : barCount - 1 - i) * freqData.length / (barCount / 2));
+                        let val = freqData[freqIdx] / 255;
                         
-                        const x1 = cx + Math.cos(angle) * waveRadius;
-                        const y1 = cy + Math.sin(angle) * waveRadius;
-                        const x2 = cx + Math.cos(angle) * (waveRadius + barLen);
-                        const y2 = cy + Math.sin(angle) * (waveRadius + barLen);
+                        if (val < 0.05) val = 0.1 + Math.sin(time * 0.005 + i) * 0.1;
+                        
+                        const angle1 = (i / barCount) * Math.PI * 2 - Math.PI / 2;
+                        const angle2 = ((i + barCount/2) / barCount) * Math.PI * 2 - Math.PI / 2;
+                        
+                        const barLen = 25 * window.devicePixelRatio * (1 + val * 3);
+                        
+                        const x1 = cx + Math.cos(angle1) * waveRadius;
+                        const y1 = cy + Math.sin(angle1) * waveRadius;
+                        const x2 = cx + Math.cos(angle1) * (waveRadius + barLen);
+                        const y2 = cy + Math.sin(angle1) * (waveRadius + barLen);
                         
                         ctx.strokeStyle = 'rgba(' + s.color1 + ',' + (0.4 + val * 0.6) + ')';
                         ctx.lineWidth = 2 * window.devicePixelRatio;
@@ -898,6 +909,16 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         ctx.beginPath();
                         ctx.moveTo(x1, y1);
                         ctx.lineTo(x2, y2);
+                        ctx.stroke();
+                        
+                        const x3 = cx + Math.cos(angle2) * waveRadius;
+                        const y3 = cy + Math.sin(angle2) * waveRadius;
+                        const x4 = cx + Math.cos(angle2) * (waveRadius + barLen);
+                        const y4 = cy + Math.sin(angle2) * (waveRadius + barLen);
+                        
+                        ctx.beginPath();
+                        ctx.moveTo(x3, y3);
+                        ctx.lineTo(x4, y4);
                         ctx.stroke();
                     }
                     ctx.shadowBlur = 0;
@@ -908,8 +929,8 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             }
             
             if (HAS_AUDIO) {
+                initAudioAnalyzer();
                 audio.play().then(() => {
-                    initAudioAnalyzer();
                     if (audioContext) audioContext.resume();
                     currentState = 'speaking';
                 }).catch(() => {
@@ -1202,7 +1223,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption("Technology:")
-    st.caption("• Orb: Futuristic Wave Visualizer")
+    st.caption("• Orb: Futuristic Wave 360°")
     st.caption("• Camera: 60 FPS")
     st.caption("• Buffer: 2 frames (0.2s each)")
     st.caption("• Vision Model: Qwen 3.8")
