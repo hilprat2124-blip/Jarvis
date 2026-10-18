@@ -562,7 +562,7 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
                         if isinstance(m["content"], str):
                             text_msgs.append({"role": m["role"], "content": m["content"][:300]})
                         elif isinstance(m["content"], list):
-                            texts = [c.get("text", "") for c in m["content"] if c.get("type") == "text"]
+                            texts = [c.get("text", "") for c in m["content"] if c.get("type"] == "text"]
                             if texts:
                                 text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
                 
@@ -677,12 +677,13 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS ORB — CONTINUOUS MODE + ROBUST CAMERA AUTO-CLICKER
+# JARVIS ORB — CONTINUOUS MODE + INTENT CAMERA AUTO-CLICKER
 # ============================================================
-def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False):
+def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False, trigger_cam: bool = False):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
     has_audio = "true" if audio_bytes else "false"
     conv_mode_js = "true" if conversation_mode else "false"
+    trigger_cam_js = "true" if trigger_cam else "false"
     
     est_duration_ms = 0
     if audio_bytes:
@@ -729,6 +730,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
             
             const HAS_AUDIO = __HAS_AUDIO__;
             const INITIAL_CONV_MODE = __CONV_MODE__;
+            const SHOULD_TRIGGER_CAM = __TRIGGER_CAM__;
             const EST_DURATION_MS = __EST_DURATION__;
             let currentState = "__STATE__";
             
@@ -782,7 +784,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
             function triggerCameraAutoClick() {
                 try {
                     const parentDoc = window.parent.document;
-                    // Mencari tombol 'START' pada komponen webrtc (biasanya tombol merah)
                     const buttons = parentDoc.querySelectorAll('button');
                     let clicked = false;
                     for (let btn of buttons) {
@@ -795,7 +796,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                         }
                     }
                     if (!clicked) {
-                        // Fallback: Cari berdasarkan warna latar merah atau elemen class webrtc jika teks tidak persis
                         const redButtons = parentDoc.querySelectorAll('button');
                         for (let btn of redButtons) {
                             const style = window.parent.getComputedStyle(btn);
@@ -811,6 +811,11 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 } catch (e) {
                     console.log('Auto-click camera error:', e);
                 }
+            }
+
+            // Jika perintah intent kamera aktif, langsung eksekusi klik kamera
+            if (SHOULD_TRIGGER_CAM) {
+                setTimeout(triggerCameraAutoClick, 300);
             }
 
             function initAudioAnalyzer() {
@@ -1045,7 +1050,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 currentState = 'idle';
                 targetIntensity = 0;
                 
-                // 🚀 AUTO-CLICK KAMERA SAAT JARVIS SELESAI BICARA
+                // 🚀 AUTO-CLICK KAMERA SETELAH JARVIS SELESAI BICARA
                 triggerCameraAutoClick();
 
                 setTimeout(resumeListeningAfterResponse, 600);
@@ -1206,6 +1211,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
         .replace("__AUDIO_B64__", audio_b64)
         .replace("__HAS_AUDIO__", has_audio)
         .replace("__CONV_MODE__", conv_mode_js)
+        .replace("__TRIGGER_CAM__", "true" if trigger_cam else "false")
         .replace("__EST_DURATION__", str(est_duration_ms))
         .replace("__STATE__", state)
     )
@@ -1274,6 +1280,9 @@ if "current_audio" not in st.session_state:
 if "conversation_mode" not in st.session_state:
     st.session_state.conversation_mode = False
 
+if "trigger_camera_intent" not in st.session_state:
+    st.session_state.trigger_camera_intent = False
+
 # ============================================================
 # ORB DI ATAS
 # ============================================================
@@ -1283,7 +1292,12 @@ with orb_placeholder.container():
         audio_bytes=st.session_state.current_audio,
         state=st.session_state.orb_state,
         conversation_mode=st.session_state.conversation_mode,
+        trigger_cam=st.session_state.trigger_camera_intent,
     )
+
+# Reset intent setelah dirender agar tidak berulang terus
+if st.session_state.trigger_camera_intent:
+    st.session_state.trigger_camera_intent = False
 
 # ============================================================
 # LAYOUT KAMERA
@@ -1326,6 +1340,11 @@ for msg in st.session_state.jarvis_messages:
 user_q = st.chat_input("Ask Jarvis...")
 
 if user_q:
+    # 🔍 INTENT DETECTION: Deteksi apakah user ingin menyalakan kamera
+    camera_keywords = ["nyalain kamera", "hidupkan kamera", "buka kamera", "aktifkan kamera", "start kamera", "nyalakan kamera"]
+    if any(kw in user_q.lower() for kw in camera_keywords):
+        st.session_state.trigger_camera_intent = True
+
     st.session_state.orb_state = "listening"
     st.session_state.current_audio = None
     with orb_placeholder.container():
@@ -1333,6 +1352,7 @@ if user_q:
             audio_bytes=None,
             state="listening",
             conversation_mode=st.session_state.conversation_mode,
+            trigger_cam=st.session_state.trigger_camera_intent,
         )
     
     has_img = False
@@ -1429,6 +1449,7 @@ if user_q:
                             audio_bytes=audio_bytes,
                             state="speaking",
                             conversation_mode=st.session_state.conversation_mode,
+                            trigger_cam=st.session_state.trigger_camera_intent,
                         )
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
@@ -1465,6 +1486,7 @@ with st.sidebar:
         st.session_state.current_audio = None
         st.session_state.orb_state = "idle"
         st.session_state.conversation_mode = False
+        st.session_state.trigger_camera_intent = False
         st.rerun()
 
     st.markdown("---")
