@@ -55,7 +55,7 @@ VOICE_PITCH = "-3Hz"
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="J.A.R.V.I.S - Quantum Dots", page_icon="🔵", layout="wide")
 st.title("🔵 J.A.R.V.I.S — Quantum Dots")
-st.markdown("Kamera merekam **setiap 0.2 detik**. Ucapkan **'Jarvis'** diikuti perintah Anda.")
+st.markdown("Kamera merekam **setiap 0.2 detik**. Klik **'Mulai Dengar'** atau ucapkan 'Jarvis'.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Correct Hotword Trigger + Standby Mode)
+# JARVIS QUANTUM DOTS (Robust Voice Recognition & Control)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -696,19 +696,19 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             .controls-row { position: absolute; bottom: 10px; z-index: 30; display: flex; gap: 12px; align-items: center; }
             .mic-btn, .play-btn { padding: 10px 20px; border: 1px solid #37dfff; border-radius: 20px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; font-family: 'Courier New', monospace; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; box-shadow: 0 0 15px rgba(0,200,255,0.4); transition: all 0.3s; }
             .mic-btn:hover, .play-btn:hover { background: rgba(0,100,150,0.9); box-shadow: 0 0 30px rgba(0,220,255,0.8); }
-            .mic-btn.listening { background: rgba(0,255,200,0.8); border-color: #00ffc8; color: #000; box-shadow: 0 0 25px rgba(0,255,200,0.8); animation: pulse 1.5s infinite; }
+            .mic-btn.listening { background: rgba(0,255,200,0.9); border-color: #00ffc8; color: #000; box-shadow: 0 0 25px rgba(0,255,200,0.8); animation: pulse 1.2s infinite; }
             
-            @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+            @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.06); } 100% { transform: scale(1); } }
             .transcript-hint { position: absolute; top: 5px; color: #7cfc00; font-size: 11px; text-align: center; width: 100%; z-index: 25; text-shadow: 0 0 8px rgba(0,255,0,0.6); }
         </style>
     </head>
     <body>
-        <div class="transcript-hint" id="transcriptHint">🎙️ Ucapkan "Jarvis" untuk berbicara</div>
+        <div class="transcript-hint" id="transcriptHint">Klik "Mulai Dengar" atau ucapkan "Jarvis"</div>
         <div class="orb-container">
             <canvas id="orbCanvas"></canvas>
         </div>
         <div class="controls-row">
-            <button class="mic-btn" id="micButton">🟢 MIC STANDBY</button>
+            <button class="mic-btn" id="micButton">🎙️ MULAI DENGAR</button>
             <button class="play-btn" id="playButton" style="display:none;">▶ PLAY VOICE</button>
         </div>
         <audio id="jarvisAudio" style="display:none;" preload="auto">
@@ -784,7 +784,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             
             audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
 
-            // Speech Recognition (Hotword: "Jarvis")
+            // Speech Recognition Setup
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             let recognition = null;
             let isListeningActive = false;
@@ -798,7 +798,8 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 recognition.onstart = () => {
                     isListeningActive = true;
                     micBtn.classList.add('listening');
-                    micBtn.innerText = '🟢 MENDENGARKAN...';
+                    micBtn.innerText = '🔴 MENDENGARKAN...';
+                    transcriptHint.innerText = '🟢 Mendengarkan... Ucapkan "Jarvis"';
                 };
 
                 recognition.onresult = (event) => {
@@ -809,17 +810,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     const lower = transcript.toLowerCase();
                     transcriptHint.innerText = `Mendengar: "${transcript}"`;
                     
-                    // Deteksi kata panggil "jarvis"
                     if (lower.includes('jarvis')) {
-                        // Ambil teks setelah kata jarvis
                         const parts = lower.split('jarvis');
                         const command = parts[parts.length - 1].trim();
-                        if (command.length > 2) {
-                            transcriptHint.innerText = `Perintah: "${command}"`;
+                        if (command.length > 1) {
+                            transcriptHint.innerText = `Mengirim: "${command}"`;
                             stopListening();
                             sendToStreamlit(command);
-                        } else {
-                            transcriptHint.innerText = `Ya, Sir? Silakan lanjutkan perintah...`;
                         }
                     }
                 };
@@ -831,9 +828,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 recognition.onend = () => {
                     isListeningActive = false;
                     micBtn.classList.remove('listening');
-                    micBtn.innerText = '🟢 MIC STANDBY';
-                    // Restart otomatis agar terus standby
-                    setTimeout(() => { startListening(); }, 800);
+                    micBtn.innerText = '🎙️ MULAI DENGAR';
                 };
             } else {
                 transcriptHint.innerText = 'Browser tidak mendukung Speech Recognition.';
@@ -849,20 +844,24 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             function stopListening() {
                 isListeningActive = false;
                 micBtn.classList.remove('listening');
-                micBtn.innerText = '🟢 MIC STANDBY';
+                micBtn.innerText = '🎙️ MULAI DENGAR';
                 try { recognition.stop(); } catch(e) {}
             }
 
             micBtn.addEventListener('click', () => {
-                if (isListeningActive) stopListening();
-                else startListening();
+                if (isListeningActive) {
+                    stopListening();
+                    transcriptHint.innerText = 'Mikrofon dimatikan.';
+                } else {
+                    startListening();
+                }
             });
 
             function sendToStreamlit(text) {
                 const parentDoc = window.parent.document;
-                const textInputs = parentDoc.querySelectorAll('input[type="text"]');
+                const textInputs = parentDoc.querySelectorAll('input');
                 for (let input of textInputs) {
-                    if (input.placeholder && input.placeholder.includes('Ask Jarvis')) {
+                    if (input.type === 'text') {
                         const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, "value").set;
                         nativeInputValueSetter.call(input, text);
                         input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -872,7 +871,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                                 bubbles: true, cancelable: true, keyCode: 13, key: 'Enter'
                             });
                             input.dispatchEvent(enterEvent);
-                        }, 100);
+                        }, 150);
                         break;
                     }
                 }
@@ -998,7 +997,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 });
             }
             
-            setTimeout(() => { startListening(); }, 1200);
             draw();
         </script>
     </body>
@@ -1114,7 +1112,7 @@ with col2:
 # ============================================================
 st.markdown("---")
 st.header("💬 Speak with Jarvis")
-st.caption("Ucapkan **'Jarvis'** diikuti perintah Anda, atau ketik di bawah.")
+st.caption("Klik tombol **'Mulai Dengar'** di bawah orb, lalu ucapkan perintah Anda.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
