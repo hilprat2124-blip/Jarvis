@@ -53,8 +53,8 @@ VOICE_RATE = "-5%"
 VOICE_PITCH = "-3Hz"
 
 # ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Holographic Core", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Holographic Core")
+st.set_page_config(page_title="J.A.R.V.I.S - Quantum Dots", page_icon="🔵", layout="wide")
+st.title("🔵 J.A.R.V.I.S — Quantum Dots")
 st.markdown("Kamera merekam **setiap 0.2 detik**. Jarvis tidak akan bicara kecuali kamu bertanya.")
 
 # ============ WebRTC & Konstanta ============
@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS HOLOGRAPHIC PARTICLE FIELD (Sesuai Gambar)
+# JARVIS QUANTUM DOTS (Presisi seperti Gambar)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -724,43 +724,14 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             let targetIntensity = 0;
             let fakePulse = 0;
             
-            // Particle Grid System
-            const gridSpacing = 5; 
-            let particles = [];
-            
             function resize() {
                 const rect = canvas.getBoundingClientRect();
                 W = canvas.width = rect.width * window.devicePixelRatio;
                 H = canvas.height = rect.height * window.devicePixelRatio;
                 cx = W / 2; cy = H / 2;
-                
-                initGrid();
             }
             window.addEventListener('resize', resize);
-            
-            function initGrid() {
-                particles = [];
-                const maxR = Math.min(W, H) * 0.35; // Radius luar maksimum
-                
-                for(let y = -maxR; y < maxR; y += gridSpacing) {
-                    for(let x = -maxR; x < maxR; x += gridSpacing) {
-                        const dist = Math.hypot(x, y);
-                        if(dist < maxR) {
-                            // Normalisasi jarak (0 di tengah, 1 di pinggir)
-                            const normDist = dist / maxR;
-                            
-                            particles.push({
-                                baseX: x,
-                                baseY: y,
-                                dist: dist,
-                                normDist: normDist,
-                                angle: Math.atan2(y, x),
-                                randomOffset: Math.random() * Math.PI * 2
-                            });
-                        }
-                    }
-                }
-            }
+            resize();
             
             function initAudioAnalyzer() {
                 if (audioContext) return;
@@ -791,140 +762,102 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             function draw() {
                 ctx.clearRect(0, 0, W, H);
                 
-                // State management
                 if (currentState === 'speaking' && analyzer && freqData) {
                     analyzer.getByteFrequencyData(freqData);
                     let sum = 0;
                     for (let i = 0; i < freqData.length; i++) sum += freqData[i];
                     const avg = sum / freqData.length / 255;
-                    targetIntensity = avg * 4; // Boost intensity
+                    targetIntensity = avg * 3;
                     
                     if (avg < 0.05) {
                         fakePulse += 0.1;
                         targetIntensity = 0.2 + Math.sin(fakePulse) * 0.1;
                     }
                 } else if (currentState === 'listening') {
-                    targetIntensity = 0.3; 
+                    targetIntensity = 0.1; 
                 } else {
                     targetIntensity = 0.0; 
                 }
                 
                 speakingIntensity += (targetIntensity - speakingIntensity) * 0.1;
                 
-                const maxR = Math.min(W, H) * 0.35;
+                const baseRadius = Math.min(W, H) * 0.25;
                 const t = time * 0.001;
                 
-                const cMain = '0, 255, 200'; // Cyan
+                const cMain = '0, 255, 200'; 
                 
-                // 1. Gambar Outer Field (Particle Envelope)
-                for(let i=0; i<particles.length; i++) {
-                    let p = particles[i];
-                    
-                    // Hanya gambar partikel di area pinggir (envelope)
-                    if (p.normDist > 0.3) {
-                        let offsetR = 0;
-                        let jitterX = 0;
-                        let jitterY = 0;
-                        
-                        // Get frequency data based on angle
-                        let angleIdx = Math.floor(((p.angle + Math.PI) / (Math.PI*2)) * freqData.length) || 0;
-                        let soundVal = freqData ? freqData[angleIdx]/255 : 0;
-                        
-                        if (currentState === 'speaking' || currentState === 'listening') {
-                            // Active Wavy Envelope
-                            offsetR = Math.sin(p.angle * 5 + t * 3 + p.randomOffset) * (maxR * 0.1) * speakingIntensity;
-                            offsetR += soundVal * maxR * 0.4 * speakingIntensity;
-                            
-                            // Random jitter for chaotic look
-                            jitterX = (Math.random() - 0.5) * 2 * speakingIntensity;
-                            jitterY = (Math.random() - 0.5) * 2 * speakingIntensity;
-                            
-                            // Warna lebih terang saat berbicara
-                            ctx.fillStyle = 'rgba(' + cMain + ', ' + (speakingIntensity * 0.8) + ')';
-                        } else {
-                            // Idle: Perfect smooth ring
-                            // Hanya munculkan partikel yang membentuk cincin sempurna di radius tertentu
-                            if (Math.abs(p.normDist - 0.85) > 0.05) continue;
-                            
-                            ctx.fillStyle = 'rgba(' + cMain + ', 0.5)';
-                        }
-
-                        const targetR = p.dist + offsetR;
-                        const x = cx + Math.cos(p.angle) * targetR + jitterX;
-                        const y = cy + Math.sin(p.angle) * targetR + jitterY;
-                        
-                        ctx.beginPath();
-                        // Titik lebih besar saat bicara
-                        ctx.arc(x, y, (1 + speakingIntensity*1.5) * window.devicePixelRatio, 0, Math.PI * 2);
-                        ctx.fill();
-                    }
-                }
+                // 1. Gambar Inner Sphere (Kiri Bawah) - Grid Dots
+                const sphereRadius = baseRadius * 0.6;
+                const sphereX = cx - baseRadius * 0.2;
+                const sphereY = cy + baseRadius * 0.1;
                 
-                // 2. Inner Sphere (Wireframe Hexagon Grid)
-                const innerRadius = maxR * 0.4;
-                
-                // Core Glow
-                const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, innerRadius);
-                grad.addColorStop(0, 'rgba(' + cMain + ', 0.2)');
-                grad.addColorStop(1, 'rgba(' + cMain + ', 0)');
-                ctx.fillStyle = grad;
-                ctx.beginPath();
-                ctx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
-                ctx.fill();
-
                 ctx.save();
-                ctx.translate(cx, cy);
-                // Rotasi sphere perlahan
-                const rotX = t * 0.2;
-                const rotY = t * 0.3;
-
-                for(let i=0; i<particles.length; i++) {
-                    let p = particles[i];
-                    
-                    if (p.normDist <= 0.4) {
-                        // Proyeksi 3D ke 2D (Ilusi Bola)
-                        const z = Math.sqrt(Math.max(0, 1 - Math.pow(p.normDist/0.4, 2))); 
-                        const r3D = innerRadius;
+                ctx.beginPath();
+                ctx.arc(sphereX, sphereY, sphereRadius, 0, Math.PI * 2);
+                ctx.clip();
+                
+                // Grid dots
+                ctx.fillStyle = 'rgba(' + cMain + ', 0.8)';
+                const gridSize = 4 * window.devicePixelRatio;
+                for (let y = sphereY - sphereRadius; y < sphereY + sphereRadius; y += gridSize) {
+                    for (let x = sphereX - sphereRadius; x < sphereX + sphereRadius; x += gridSize) {
+                        // Rotasi bola 3D sederhana (hanya visual)
+                        const rotX = (x - sphereX) * Math.cos(t) - (y - sphereY) * Math.sin(t) + sphereX;
+                        const rotY = (x - sphereX) * Math.sin(t) + (y - sphereY) * Math.cos(t) + sphereY;
                         
-                        // Rotasi 3D
-                        let px = p.baseX / (maxR * 0.4); // Normalisasi ke -1..1
-                        let py = p.baseY / (maxR * 0.4);
-                        let pz = z;
-                        
-                        // Rotate Y
-                        let x1 = px * Math.cos(rotY) - pz * Math.sin(rotY);
-                        let z1 = px * Math.sin(rotY) + pz * Math.cos(rotY);
-                        // Rotate X
-                        let y1 = py * Math.cos(rotX) - z1 * Math.sin(rotX);
-                        let z2 = py * Math.sin(rotX) + z1 * Math.cos(rotX);
-
-                        // Skala ke radius
-                        const finalX = x1 * r3D;
-                        const finalY = y1 * r3D;
-                        
-                        // Hanya gambar bagian depan (z > 0)
-                        if (z2 > 0) {
-                            // Ukuran dan alpha berdasarkan kedalaman
-                            const depthAlpha = (z2 / 1) * 0.5 + 0.3;
-                            const dotSize = (z2 * 1.5 + 0.5) * window.devicePixelRatio;
-                            
-                            // Warna sedikit berubah saat speaking
-                            ctx.fillStyle = 'rgba(150, 255, 255, ' + (depthAlpha + speakingIntensity*0.5) + ')';
+                        // Kalkulasi alpha berdasarkan jarak dari pusat (untuk efek 3D)
+                        const dist = Math.hypot(rotX - sphereX, rotY - sphereY);
+                        if (dist < sphereRadius) {
+                            const alpha = Math.max(0, 1 - (dist / sphereRadius));
+                            ctx.globalAlpha = alpha * (0.5 + speakingIntensity * 0.5);
                             ctx.beginPath();
-                            ctx.arc(finalX, finalY, dotSize, 0, Math.PI * 2);
+                            ctx.arc(rotX, rotY, 1 * window.devicePixelRatio, 0, Math.PI * 2);
                             ctx.fill();
                         }
                     }
                 }
                 ctx.restore();
+                ctx.globalAlpha = 1.0;
+
+                // 2. Gambar Outer Ring (Kanan)
+                const ringRadius = baseRadius * 1.2;
+                const ringX = cx + baseRadius * 0.1;
+                const ringY = cy - baseRadius * 0.1;
+                
+                ctx.beginPath();
+                for (let a = 0; a <= 360; a += 2) {
+                    const rad = a * Math.PI / 180;
+                    
+                    let wave = 0;
+                    if (speakingIntensity > 0.05) {
+                        if (freqData) {
+                            const freqIdx = Math.floor((a/360) * freqData.length);
+                            wave += (freqData[freqIdx]/255) * baseRadius * 0.3 * speakingIntensity;
+                        }
+                        wave += Math.sin(rad * 5 + t * 2) * (baseRadius * 0.05) * speakingIntensity;
+                    } else {
+                        // Idle: Cincin sempurna
+                        wave += Math.sin(rad * 2 + t) * (baseRadius * 0.01);
+                    }
+
+                    const r = ringRadius + wave;
+                    const x = ringX + Math.cos(rad) * r;
+                    const y = ringY + Math.sin(rad) * r;
+                    
+                    if (a === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                }
+                ctx.closePath();
+                
+                ctx.strokeStyle = 'rgba(' + cMain + ', ' + (0.3 + speakingIntensity * 0.5) + ')';
+                ctx.lineWidth = 2 * window.devicePixelRatio;
+                ctx.setLineDash([5 * window.devicePixelRatio, 15 * window.devicePixelRatio]);
+                ctx.stroke();
+                ctx.setLineDash([]); // Reset
 
                 time += 16;
                 requestAnimationFrame(draw);
             }
-            
-            // Inisialisasi awal
-            resize();
-            initGrid();
             
             if (HAS_AUDIO) {
                 initAudioAnalyzer();
@@ -1204,7 +1137,7 @@ with st.sidebar:
     if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
     
     st.caption("Technology:")
-    st.caption("• Orb: Holographic Particle Field")
+    st.caption("• Orb: Quantum Dots")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
     st.caption("• Vision Model: Qwen 3.8")
