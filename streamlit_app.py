@@ -9,6 +9,7 @@ from mediapipe.tasks.python import vision
 import urllib.request
 import os
 import time
+import threading
 import io
 import base64
 import asyncio
@@ -79,33 +80,46 @@ def _secret(name: str) -> str:
             val = ""
     return str(val) if val else ""
 
-@st.cache_data(ttl=3600, show_spinner=False)
+ICE_ERROR = ""
+
+@st.cache_data(ttl=3000, show_spinner=False)
+def _twilio_ice_servers(sid: str, tok: str):
+    # Hanya hasil SUKSES yang di-cache (exception tidak pernah di-cache)
+    from twilio.rest import Client
+    return Client(sid, tok).tokens.create().ice_servers
+
 def get_ice_servers():
     """Streamlit Cloud tidak bisa WebRTC tanpa TURN server.
-    Prioritas: (1) Twilio, (2) TURN generik (Metered/coturn/dll), (3) STUN saja (sering gagal di cloud).
-    Return: (ice_servers, sumber)"""
+    Prioritas: (1) Twilio, (2) TURN generik, (3) STUN saja. Return: (ice_servers, sumber)"""
+    global ICE_ERROR
     stun = {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}
 
-    sid, tok = _secret("TWILIO_ACCOUNT_SID"), _secret("TWILIO_AUTH_TOKEN")
+    sid, tok = _secret("TWILIO_ACCOUNT_SID").strip(), _secret("TWILIO_AUTH_TOKEN").strip()
     if sid and tok:
         try:
-            from twilio.rest import Client
-            return Client(sid, tok).tokens.create().ice_servers, "Twilio TURN"
+            return _twilio_ice_servers(sid, tok), "Twilio TURN"
+        except ImportError:
+            ICE_ERROR = "Paket `twilio` belum terpasang — tambahkan `twilio` ke requirements.txt lalu reboot app."
         except Exception as e:
-            _log(f"Twilio gagal: {e}")
+            ICE_ERROR = f"Twilio menolak kredensial / gagal: {str(e)[:200]}"
+        _log(f"Twilio gagal: {ICE_ERROR}")
+    else:
+        ICE_ERROR = "TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN tidak terbaca dari Secrets."
 
-    turn_urls = _secret("TURN_URLS")  # pisahkan dengan koma
+    turn_urls = _secret("TURN_URLS")
     if turn_urls:
         urls = [u.strip() for u in turn_urls.split(",") if u.strip()]
-        return [stun, {"urls": urls,
-                       "username": _secret("TURN_USERNAME"),
+        return [stun, {"urls": urls, "username": _secret("TURN_USERNAME"),
                        "credential": _secret("TURN_CREDENTIAL")}], "TURN kustom"
-
     return [stun], "STUN saja"
 
 _ICE_SERVERS, ICE_SOURCE = get_ice_servers()
-RTC_CONFIGURATION = RTCConfiguration({"iceServers": _ICE_SERVERS})
+_rtc_cfg = {"iceServers": _ICE_SERVERS}
+if ICE_SOURCE != "STUN saja" and _secret("ICE_RELAY_ONLY") == "1":
+    _rtc_cfg["iceTransportPolicy"] = "relay"   # browser hanya pakai TURN -> koneksi bisa lebih cepat
+RTC_CONFIGURATION = RTCConfiguration(_rtc_cfg)
 
+SHARPEN = False  # True = deteksi sedikit lebih tajam tapi lebih lambat di server cloud
 PINCH_ENTER = 40
 PINCH_EXIT = 60
 HOLD_THRESHOLD = 1.0
@@ -220,14 +234,9 @@ def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
 # ============================================================
 class Hand3DProcessor(VideoProcessorBase):
     def __init__(self):
-        base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
-        options = vision.HandLandmarkerOptions(
-            base_options=base_options, running_mode=vision.RunningMode.VIDEO,
-            num_hands=1, min_hand_detection_confidence=0.3,
-            min_hand_presence_confidence=0.3, min_tracking_confidence=0.5
-        )
-        self.detector = vision.HandLandmarker.create_from_options(options)
+        self.detector = None  # dimuat di thread latar supaya video tidak menunggu model
         self.frame_timestamp = 0
+        threading.Thread(target=self._load_detector, daemon=True).start()
         
         self.rx, self.ry = 0.5, 0.5
         self.scale = 1.0
@@ -266,6 +275,19 @@ class Hand3DProcessor(VideoProcessorBase):
         self.frame_buffer = collections.deque(maxlen=2)
         self.last_buffer_time = time.time()
         self.buffer_interval = 0.2
+
+    def _load_detector(self):
+        try:
+            base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+            options = vision.HandLandmarkerOptions(
+                base_options=base_options, running_mode=vision.RunningMode.VIDEO,
+                num_hands=1, min_hand_detection_confidence=0.3,
+                min_hand_presence_confidence=0.3, min_tracking_confidence=0.5
+            )
+            self.detector = vision.HandLandmarker.create_from_options(options)
+            _log("HandLandmarker siap")
+        except Exception as e:
+            _log(f"Gagal memuat HandLandmarker: {e}")
 
     def _to_pixel(self, landmark, w, h):
         return int(landmark.x * w), int(landmark.y * h)
@@ -327,19 +349,28 @@ class Hand3DProcessor(VideoProcessorBase):
         img = cv2.flip(img, 1)
         h, w, _ = img.shape
 
-        gaussian = cv2.GaussianBlur(img, (0, 0), 2.0)
-        img_sharp = cv2.addWeighted(img, 1.3, gaussian, -0.3, 0)
-        img_rgb = cv2.cvtColor(img_sharp, cv2.COLOR_BGR2RGB)
+        if SHARPEN:
+            gaussian = cv2.GaussianBlur(img, (0, 0), 2.0)
+            img_src = cv2.addWeighted(img, 1.3, gaussian, -0.3, 0)
+        else:
+            img_src = img
+        img_rgb = cv2.cvtColor(img_src, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
         self.frame_timestamp = max(self.frame_timestamp + 1, int(time.time() * 1000))
         try:
+            if self.detector is None:
+                raise RuntimeError("model belum siap")
             results = self.detector.detect_for_video(mp_image, self.frame_timestamp)
         except Exception as e:
-            _log(f"MediaPipe error: {e}")
+            if self.detector is not None:
+                _log(f"MediaPipe error: {e}")
             results = type("NoHands", (), {"hand_landmarks": []})()
 
         mode_text = "MODE: SIAP"
         color_text = (200, 200, 200)
+        if self.detector is None:
+            mode_text = "MEMUAT MODEL AI..."
+            color_text = (0, 165, 255)
         current_time = time.time()
 
         self.target_ry += self.vel_ry
@@ -1354,6 +1385,7 @@ with col2:
                     "Jika tidak berhasil dalam beberapa detik, klik tombol START di sebelah kiri.")
             if time.time() - st.session_state.get("cam_requested_at", time.time()) > 15:
                 if ICE_SOURCE == "STUN saja":
+                    st.error(f"🔧 Penyebab: {ICE_ERROR}")
                     st.error("Kamera browser sudah menyala, tapi koneksi ke server gagal. Streamlit Cloud butuh **TURN server**. "
                              "Isi `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` (atau `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`) "
                              "di Settings → Secrets, lalu reboot app.")
@@ -1574,3 +1606,5 @@ with st.sidebar:
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
     st.caption(f"• WebRTC: {ICE_SOURCE}")
+    if ICE_ERROR and ICE_SOURCE == "STUN saja":
+        st.error(ICE_ERROR)
