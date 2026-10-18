@@ -143,7 +143,7 @@ def save_chat_history(messages: list):
                 continue
             content = m["content"]
             if isinstance(content, list):
-                texts = [c["text"] for c in content if c.get("type") == "text"]
+                texts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
                 content = " ".join(texts) if texts else "[image]"
             if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
                 content = content[:MAX_MSG_CHARS] + "..."
@@ -562,7 +562,7 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
                         if isinstance(m["content"], str):
                             text_msgs.append({"role": m["role"], "content": m["content"][:300]})
                         elif isinstance(m["content"], list):
-                            texts = [c.get("text", "") for c in m["content"] if c.get("type"] == "text"]
+                            texts = [c.get("text", "") for c in m["content"] if isinstance(c, dict) and c.get("type") == "text"]
                             if texts:
                                 text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
                 
@@ -779,7 +779,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 ctx.shadowBlur = 10;
                 ctx.shadowColor = 'rgba(0, 255, 220, 0.4)';
                 
-                // Cincin Presisi di sekitar Bola Inti
                 ctx.beginPath();
                 ctx.arc(cx, cy, rCore * 1.15, 0, Math.PI * 2);
                 ctx.strokeStyle = 'rgba(0, 230, 210, 0.3)';
@@ -798,7 +797,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 ctx.lineWidth = 1.3 * dpr;
                 ctx.stroke();
                 
-                // Grid Garis Lintang / Bujur di dalam Bola Inti (Persis Referensi Video)
                 const gridStep = 6;
                 for (let i = -gridStep + 1; i < gridStep; i++) {
                     const offset = (i / gridStep) * rCore;
@@ -850,14 +848,13 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 drawCore(dpr);
                 
                 const baseR = Math.min(W, H) * 0.28 * envelopeScale;
-                const points = 240; // Resolusi sudut tinggi agar mulus tanpa patah
+                const points = 240;
                 
                 ctx.save();
                 ctx.globalCompositeOperation = 'lighter';
                 
                 if (speakingIntensity < 0.02 && (currentState === 'idle' || currentState === 'listening' || currentState === 'thinking')) {
                     if (currentState === 'idle') {
-                        // IDLE: Cincin tipis melingkar bersih tanpa gelombang kasar
                         for (let l = 0; l < 12; l++) {
                             const rOffset = (l - 6) * (1.2 * dpr);
                             ctx.beginPath();
@@ -868,7 +865,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                             ctx.stroke();
                         }
                     } else {
-                        // LISTENING: Mengembang halus
                         const numLayers = 35;
                         for (let l = 0; l < numLayers; l++) {
                             const layerNorm = (l / numLayers) - 0.5;
@@ -894,7 +890,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                         }
                     }
                 } else {
-                    // SPEAKING: Cincin gelombang ganda menyebar tipis, bersih, tanpa patah (Persis Tangkapan Layar Video)
                     const rings = [
                         { radius: baseR * 1.02, freqMult: 4, waveAmp: (15 * dpr), speed: 0.0025, alpha: 0.8, layers: 10 },
                         { radius: baseR * 0.85, freqMult: 3, waveAmp: (11 * dpr), speed: -0.0018, alpha: 0.55, layers: 6 }
@@ -917,7 +912,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                                     audioMod = (freqData[freqIdx] / 255) * speakingIntensity;
                                 }
 
-                                // Gelombang harmonik lembut tanpa patah
                                 const wave = Math.sin(angle * ringConfig.freqMult + time * ringConfig.speed) 
                                            * ringConfig.waveAmp 
                                            * (0.5 + audioMod * 0.9);
