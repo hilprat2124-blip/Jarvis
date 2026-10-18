@@ -35,18 +35,20 @@ except ImportError:
     TTS_AVAILABLE = False
 
 # ============ KONFIGURASI ROUTERRA API ============
-# API Key sudah dimasukkan sesuai permintaan
+# API Key dari dashboard Routerra kamu (sudah benar formatnya)
 ROUTERRA_API_KEY = "sk-yCKwxnRa5da3fQw674SDtSRzyT9ZzVpEqZx1l7BdH1yqlGio"
+
+# ⚠️ PENTING: Base URL untuk Routerra (bukan OpenRouter)
 ROUTERRA_BASE_URL = "https://api.routerra.ai/v1"
 
-# Pilih model vision yang tersedia di Routerra
+# ⚠️ PENTING: Ganti dengan model yang tersedia di dashboard Routerra kamu!
+# Contoh: "deepseek-chat" atau model vision lain yang kamu punya aksesnya.
 JARVIS_VISION_MODEL = "qwen/qwen-2.5-vl-72b-instruct" 
 JARVIS_TEXT_MODEL = "qwen/qwen-2.5-72b-instruct"
 
 MAX_OUTPUT_TOKENS = 300
 MAX_CONTEXT_TURNS = 6
 MAX_MSG_CHARS = 400
-# Gunakan 1 frame agar hemat token
 MAX_FRAMES_FOR_VISION = 1 
 IMAGE_MAX_SIZE = 384
 IMAGE_QUALITY = 45
@@ -542,6 +544,7 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     except Exception as e:
         err_str = str(e)
         _log(f"ROUTERRA API ERROR: {err_str[:200]}")
+        # Menampilkan pesan error yang lebih jelas
         return f"❌ Error Jarvis (Routerra): {err_str[:300]}"
 
 def sanitize_latex(text: str) -> str:
