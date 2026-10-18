@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS ORB — CONTINUOUS MODE FIXED WITH AUTO-CLICK CAMERA
+# JARVIS ORB — CONTINUOUS MODE + ROBUST CAMERA AUTO-CLICKER
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -778,17 +778,34 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 } catch(e) {}
             }
             
-            // ============ AUTO CLICKER KAMERA ============
+            // ============ ROBUST AUTO CLICKER KAMERA ============
             function triggerCameraAutoClick() {
                 try {
                     const parentDoc = window.parent.document;
+                    // Mencari tombol 'START' pada komponen webrtc (biasanya tombol merah)
                     const buttons = parentDoc.querySelectorAll('button');
+                    let clicked = false;
                     for (let btn of buttons) {
-                        // Mencari tombol 'START' (atau tombol utama berwarna merah di streamlit-webrtc)
-                        if (btn.innerText.trim().toUpperCase() === 'START') {
+                        const txt = btn.innerText.trim().toUpperCase();
+                        if (txt === 'START') {
                             btn.click();
                             console.log('JARVIS: Auto-clicked camera START button.');
+                            clicked = true;
                             break;
+                        }
+                    }
+                    if (!clicked) {
+                        // Fallback: Cari berdasarkan warna latar merah atau elemen class webrtc jika teks tidak persis
+                        const redButtons = parentDoc.querySelectorAll('button');
+                        for (let btn of redButtons) {
+                            const style = window.parent.getComputedStyle(btn);
+                            if (style.backgroundColor === 'rgb(255, 75, 75)' || style.backgroundColor === 'rgb(255, 43, 43)' || btn.getAttribute('kind') === 'primary') {
+                                if (btn.innerText.trim().toUpperCase() !== 'STOP') {
+                                    btn.click();
+                                    console.log('JARVIS: Auto-clicked primary/red camera button.');
+                                    break;
+                                }
+                            }
                         }
                     }
                 } catch (e) {
@@ -1028,7 +1045,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 currentState = 'idle';
                 targetIntensity = 0;
                 
-                // 🚀 Panggil auto-clicker kamera ketika respons suara selesai
+                // 🚀 AUTO-CLICK KAMERA SAAT JARVIS SELESAI BICARA
                 triggerCameraAutoClick();
 
                 setTimeout(resumeListeningAfterResponse, 600);
