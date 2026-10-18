@@ -55,7 +55,7 @@ VOICE_PITCH = "-3Hz"
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="J.A.R.V.I.S - Quantum Dots", page_icon="🔵", layout="wide")
 st.title("🔵 J.A.R.V.I.S — Quantum Dots")
-st.markdown("Kamera merekam **setiap 0.2 detik**. Klik **'Mulai Dengar'** atau ucapkan 'Jarvis'.")
+st.markdown("Kamera merekam **setiap 0.2 detik**. Klik **'Mulai Dengar'** dan Jarvis akan menunggu 1 detik setelah Anda berhenti berbicara.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Robust Voice Recognition & Control)
+# JARVIS QUANTUM DOTS (Voice Recognition + 1s Silence Buffer Timeout)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -784,10 +784,12 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             
             audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
 
-            // Speech Recognition Setup
+            // Speech Recognition + 1s Silence Buffer Timeout
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             let recognition = null;
             let isListeningActive = false;
+            let silenceTimer = null;
+            let latestTranscript = '';
 
             if (SpeechRecognition) {
                 recognition = new SpeechRecognition();
@@ -807,18 +809,25 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     for (let i = event.resultIndex; i < event.results.length; ++i) {
                         transcript += event.results[i][0].transcript;
                     }
+                    latestTranscript = transcript;
                     const lower = transcript.toLowerCase();
                     transcriptHint.innerText = `Mendengar: "${transcript}"`;
                     
-                    if (lower.includes('jarvis')) {
-                        const parts = lower.split('jarvis');
-                        const command = parts[parts.length - 1].trim();
-                        if (command.length > 1) {
-                            transcriptHint.innerText = `Mengirim: "${command}"`;
-                            stopListening();
-                            sendToStreamlit(command);
+                    // Reset timer jeda setiap kali ada suara masuk
+                    if (silenceTimer) clearTimeout(silenceTimer);
+
+                    // Tunggu 1 detik setelah user berhenti bicara (tidak ada kata baru masuk)
+                    silenceTimer = setTimeout(() => {
+                        if (lower.includes('jarvis')) {
+                            const parts = lower.split('jarvis');
+                            const command = parts[parts.length - 1].trim();
+                            if (command.length > 1) {
+                                transcriptHint.innerText = `Mengirim: "${command}"`;
+                                stopListening();
+                                sendToStreamlit(command);
+                            }
                         }
-                    }
+                    }, 1000);
                 };
 
                 recognition.onerror = (event) => {
@@ -843,6 +852,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
 
             function stopListening() {
                 isListeningActive = false;
+                if (silenceTimer) clearTimeout(silenceTimer);
                 micBtn.classList.remove('listening');
                 micBtn.innerText = '🎙️ MULAI DENGAR';
                 try { recognition.stop(); } catch(e) {}
@@ -1112,7 +1122,7 @@ with col2:
 # ============================================================
 st.markdown("---")
 st.header("💬 Speak with Jarvis")
-st.caption("Klik tombol **'Mulai Dengar'** di bawah orb, lalu ucapkan perintah Anda.")
+st.caption("Klik **'Mulai Dengar'** di bawah orb, ucapkan 'Jarvis' dan tunggu 1 detik setelah selesai bicara.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
