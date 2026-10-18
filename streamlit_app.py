@@ -55,7 +55,7 @@ VOICE_PITCH = "-3Hz"
 # ============ Konfigurasi Halaman ============
 st.set_page_config(page_title="J.A.R.V.I.S - Quantum Dots", page_icon="🔵", layout="wide")
 st.title("🔵 J.A.R.V.I.S — Quantum Dots")
-st.markdown("Kamera merekam **setiap 0.2 detik**. Klik **'Mulai Dengar'**, bicara apa saja, dan obrolan otomatis terkirim setelah 1 detik diam.")
+st.markdown("Kamera merekam **setiap 0.2 detik**. Klik **'Mulai Dengar'** sekali, dan mode obrolan suara akan **aktif terus** sampai Anda klik **'Stop Dengar'**.")
 
 # ============ WebRTC & Konstanta ============
 RTC_CONFIGURATION = RTCConfiguration(
@@ -677,7 +677,7 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS QUANTUM DOTS (Voice Recognition — AUTO SEND, NO WAKE WORD)
+# JARVIS QUANTUM DOTS (Continuous Conversation Mode)
 # ============================================================
 def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
@@ -703,7 +703,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
         </style>
     </head>
     <body>
-        <div class="transcript-hint" id="transcriptHint">Klik "Mulai Dengar" lalu bicara</div>
+        <div class="transcript-hint" id="transcriptHint">Klik "Mulai Dengar" untuk mode obrolan suara</div>
         <div class="orb-container">
             <canvas id="orbCanvas"></canvas>
         </div>
@@ -781,17 +781,22 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     playBtn.style.display = 'none';
                 } catch (e) { console.log('Audio blocked'); }
             });
-            
-            audio.addEventListener('ended', () => { currentState = 'idle'; targetIntensity = 0; });
 
-            // ============ SPEECH RECOGNITION — AUTO SEND (NO WAKE WORD) ============
+            // ============ SPEECH RECOGNITION — CONTINUOUS CONVERSATION MODE ============
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             let recognition = null;
             let isListeningActive = false;
+            let isRecognitionRunning = false;
             let silenceTimer = null;
-            let latestTranscript = '';
-            let finalTranscript = '';
+            let committedTranscript = '';
+            let interimTranscript = '';
             let commandSent = false;
+            let userStoppedManually = false;
+            let isSendingToStreamlit = false;
+
+            const SILENCE_TIMEOUT_MS = 1500;
+            const RESTART_DELAY_MS = 150;
+            const RESUME_AFTER_RESPONSE_MS = 2500;
 
             if (SpeechRecognition) {
                 recognition = new SpeechRecognition();
@@ -801,89 +806,148 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                 recognition.maxAlternatives = 1;
 
                 recognition.onstart = () => {
-                    isListeningActive = true;
-                    commandSent = false;
-                    latestTranscript = '';
-                    finalTranscript = '';
+                    isRecognitionRunning = true;
                     micBtn.classList.add('listening');
-                    micBtn.innerText = '🔴 MENDENGARKAN...';
-                    transcriptHint.innerText = '🟢 Silakan bicara... (otomatis kirim setelah 1 detik diam)';
+                    micBtn.innerText = '⏹️ STOP DENGAR';
+                    transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
                 };
 
                 recognition.onresult = (event) => {
+                    if (isSendingToStreamlit) return;
+
+                    let newFinal = '';
                     let interim = '';
-                    let finalText = '';
                     for (let i = event.resultIndex; i < event.results.length; ++i) {
                         const res = event.results[i];
                         if (res.isFinal) {
-                            finalText += res[0].transcript + ' ';
+                            newFinal += res[0].transcript + ' ';
                         } else {
                             interim += res[0].transcript + ' ';
                         }
                     }
-                    if (finalText) finalTranscript += ' ' + finalText;
-                    const combined = (finalTranscript + ' ' + interim).replace(/\s+/g, ' ').trim();
-                    latestTranscript = combined;
-                    transcriptHint.innerText = `Mendengar: "${combined}"`;
 
-                    // Reset timer setiap ada update suara
-                    if (silenceTimer) clearTimeout(silenceTimer);
+                    if (newFinal.trim()) {
+                        committedTranscript = (committedTranscript + ' ' + newFinal).replace(/\s+/g, ' ').trim();
+                    }
+                    interimTranscript = interim.replace(/\s+/g, ' ').trim();
 
-                    // Setelah 1 detik tanpa update → kirim otomatis
-                    silenceTimer = setTimeout(() => {
-                        if (commandSent) return;
-                        const text = latestTranscript.trim();
-                        if (!text) return;
+                    const combined = (committedTranscript + ' ' + interimTranscript).replace(/\s+/g, ' ').trim();
+                    if (combined) {
+                        transcriptHint.innerText = `Mendengar: "${combined}"`;
+                    }
 
-                        commandSent = true;
-                        transcriptHint.innerText = `📤 Mengirim: "${text}"`;
-                        stopListening();
-                        setTimeout(() => sendToStreamlit(text), 350);
-                    }, 1000);
+                    if (newFinal.trim()) {
+                        if (silenceTimer) clearTimeout(silenceTimer);
+                        silenceTimer = setTimeout(finalizeAndSend, SILENCE_TIMEOUT_MS);
+                    }
                 };
 
                 recognition.onerror = (event) => {
                     console.log('Speech error:', event.error);
-                    if (event.error === 'no-speech') {
-                        if (isListeningActive) {
-                            try { recognition.start(); } catch(e) {}
-                        }
-                    } else if (event.error === 'aborted') {
-                        // ignore
-                    } else if (event.error === 'not-allowed') {
-                        transcriptHint.innerText = '❌ Izin mikrofon ditolak. Klik ikon 🔒 di address bar untuk mengizinkan.';
+                    if (event.error === 'no-speech' || event.error === 'aborted') return;
+                    if (event.error === 'not-allowed') {
+                        isListeningActive = false;
+                        transcriptHint.innerText = '❌ Izin mikrofon ditolak. Klik ikon 🔒 di address bar.';
+                        micBtn.classList.remove('listening');
+                        micBtn.innerText = '🎙️ MULAI DENGAR';
+                        return;
+                    }
+                    if (event.error === 'network') {
+                        transcriptHint.innerText = '⚠️ Koneksi internet bermasalah.';
                     } else {
                         transcriptHint.innerText = `⚠️ Error mic: ${event.error}`;
                     }
                 };
 
                 recognition.onend = () => {
-                    isListeningActive = false;
-                    micBtn.classList.remove('listening');
-                    micBtn.innerText = '🎙️ MULAI DENGAR';
+                    isRecognitionRunning = false;
+
+                    if (isListeningActive && !userStoppedManually && !isSendingToStreamlit) {
+                        setTimeout(() => {
+                            if (isListeningActive && !isRecognitionRunning && !isSendingToStreamlit) {
+                                try {
+                                    recognition.start();
+                                } catch (e) {
+                                    setTimeout(() => { try { recognition.start(); } catch(_) {} }, 300);
+                                }
+                            }
+                        }, RESTART_DELAY_MS);
+                    }
                 };
             } else {
                 transcriptHint.innerText = 'Browser tidak mendukung Speech Recognition. Gunakan Chrome/Edge.';
                 micBtn.style.display = 'none';
             }
 
+            function finalizeAndSend() {
+                if (commandSent || isSendingToStreamlit) return;
+                const text = (committedTranscript + ' ' + interimTranscript).replace(/\s+/g, ' ').trim();
+                if (!text) return;
+
+                isSendingToStreamlit = true;
+                transcriptHint.innerText = `📤 Mengirim: "${text}"`;
+
+                if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+                try { recognition.stop(); } catch(e) {}
+
+                setTimeout(() => {
+                    sendToStreamlit(text);
+                }, 350);
+            }
+
+            function resumeListeningAfterResponse() {
+                if (userStoppedManually) return;
+                try {
+                    const wasActive = window.parent.localStorage.getItem('jarvis_conversation_mode') === '1';
+                    if (!wasActive) return;
+                } catch(e) { return; }
+
+                isSendingToStreamlit = false;
+                commandSent = false;
+                committedTranscript = '';
+                interimTranscript = '';
+                isListeningActive = true;
+
+                micBtn.classList.add('listening');
+                micBtn.innerText = '⏹️ STOP DENGAR';
+                transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
+
+                try { recognition.start(); } catch(e) {
+                    setTimeout(() => { try { recognition.start(); } catch(_) {} }, 300);
+                }
+            }
+
             function startListening() {
                 if (!recognition) return;
                 if (isListeningActive) return;
+
                 commandSent = false;
-                latestTranscript = '';
-                finalTranscript = '';
+                userStoppedManually = false;
+                isSendingToStreamlit = false;
+                committedTranscript = '';
+                interimTranscript = '';
+                isListeningActive = true;
+
+                try { window.parent.localStorage.setItem('jarvis_conversation_mode', '1'); } catch(e) {}
+
+                if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+
                 try {
                     recognition.start();
                 } catch (e) {
                     try { recognition.stop(); } catch(_){}
-                    setTimeout(() => { try { recognition.start(); } catch(_){} }, 250);
+                    setTimeout(() => { try { recognition.start(); } catch(_) {} }, 250);
                 }
             }
 
             function stopListening() {
+                userStoppedManually = true;
                 isListeningActive = false;
+                isSendingToStreamlit = false;
                 if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+
+                try { window.parent.localStorage.setItem('jarvis_conversation_mode', '0'); } catch(e) {}
+
                 micBtn.classList.remove('listening');
                 micBtn.innerText = '🎙️ MULAI DENGAR';
                 try { recognition.stop(); } catch(e) {}
@@ -892,7 +956,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             micBtn.addEventListener('click', () => {
                 if (isListeningActive) {
                     stopListening();
-                    transcriptHint.innerText = 'Mikrofon dimatikan.';
+                    transcriptHint.innerText = '🔴 Mode obrolan dimatikan.';
                 } else {
                     startListening();
                 }
@@ -901,7 +965,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
             function sendToStreamlit(text) {
                 try {
                     const parentDoc = window.parent.document;
-                    // Streamlit chat_input pakai textarea, text_input pakai input[type=text]
                     const candidates = parentDoc.querySelectorAll('textarea, input[type="text"]');
                     let target = null;
                     for (let el of candidates) {
@@ -929,13 +992,22 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                             keyCode: 13, which: 13, key: 'Enter', code: 'Enter'
                         });
                         target.dispatchEvent(enterEvent);
-                        transcriptHint.innerText = '✅ Terkirim ke Jarvis';
+                        transcriptHint.innerText = '✅ Terkirim — menunggu Jarvis...';
                     }, 250);
                 } catch (err) {
                     console.log('Send error:', err);
                     transcriptHint.innerText = '❌ Gagal kirim: ' + err.message;
                 }
             }
+
+            // Auto-resume mode obrolan setelah Jarvis selesai bicara
+            audio.addEventListener('ended', () => {
+                currentState = 'idle';
+                targetIntensity = 0;
+                if (typeof resumeListeningAfterResponse === 'function') {
+                    setTimeout(resumeListeningAfterResponse, RESUME_AFTER_RESPONSE_MS);
+                }
+            });
 
             function drawParticleSphereCore(scaleFactor) {
                 const rCore = Math.min(W, H) * 0.085 * scaleFactor;
@@ -1055,6 +1127,19 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle"):
                     playBtn.style.display = 'block';
                     currentState = 'speaking';
                 });
+            } else {
+                // Tidak ada audio baru — kalau mode obrolan masih aktif di localStorage,
+                // auto-resume listening (ini terjadi setelah Streamlit rerun)
+                try {
+                    const wasActive = window.parent.localStorage.getItem('jarvis_conversation_mode') === '1';
+                    if (wasActive) {
+                        setTimeout(() => {
+                            if (typeof resumeListeningAfterResponse === 'function') {
+                                resumeListeningAfterResponse();
+                            }
+                        }, 800);
+                    }
+                } catch(e) {}
             }
             
             draw();
@@ -1172,7 +1257,7 @@ with col2:
 # ============================================================
 st.markdown("---")
 st.header("💬 Speak with Jarvis")
-st.caption("Klik **'Mulai Dengar'** di bawah orb, bicara apa saja, dan obrolan otomatis terkirim setelah 1 detik diam. Tidak perlu kata 'Jarvis'.")
+st.caption("Klik **'Mulai Dengar'** sekali → mode obrolan suara aktif terus. Bicara → diam 1.5 detik → auto kirim. Klik **'Stop Dengar'** untuk mematikan.")
 
 for msg in st.session_state.jarvis_messages:
     if msg["role"] == "system": continue
@@ -1327,6 +1412,6 @@ with st.sidebar:
     st.caption("• Orb: Quantum Dots")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
-    st.caption("• Vision Model: Qwen 3.8")
+    st.caption("• Voice Mode: Continuous Conversation")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
