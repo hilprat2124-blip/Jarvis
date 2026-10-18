@@ -38,9 +38,18 @@ try:
 except Exception:
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
+# 🆕 MODEL CONFIG — hemat token untuk Free Tier
 JARVIS_VISION_MODEL = "qwen/qwen3.8-27b"
 JARVIS_TEXT_MODEL = "openai/gpt-oss-120b"
 JARVIS_MEMORY_MODEL = "openai/gpt-oss-20b"
+
+# 🆕 Token budget untuk Free Tier (7000 ITPM)
+MAX_OUTPUT_TOKENS = 300          # turun dari 800
+MAX_CONTEXT_TURNS = 6            # turun dari 15 (≈12 pesan)
+MAX_MSG_CHARS = 400              # potong pesan lama yang kepanjangan
+MAX_FRAMES_FOR_VISION = 2        # turun dari 3 (hemat token gambar)
+IMAGE_MAX_SIZE = 384             # turun dari 512
+IMAGE_QUALITY = 45               # turun dari 60
 
 VOICE_EN = "en-GB-RyanNeural"
 VOICE_RATE = "-5%"
@@ -88,7 +97,7 @@ if not os.path.exists(MODEL_PATH):
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
 # ============================================================
-# 🆕 PERSISTENCE HELPERS — PATH ABSOLUT + LOGGING
+# 🆕 PERSISTENCE HELPERS
 # ============================================================
 SCRIPT_DIR = pathlib.Path(__file__).parent.absolute()
 MEMORY_FILE = str(SCRIPT_DIR / "jarvis_persistent_memory.json")
@@ -150,6 +159,9 @@ def save_chat_history(messages: list):
             if isinstance(content, list):
                 texts = [c["text"] for c in content if c.get("type") == "text"]
                 content = " ".join(texts) if texts else "[image]"
+            # 🆕 Potong pesan lama yang kepanjangan
+            if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
+                content = content[:MAX_MSG_CHARS] + "..."
             clean_msgs.append({"role": m["role"], "content": content})
         with open(CHAT_FILE, "w", encoding="utf-8") as f:
             json.dump(clean_msgs, f, ensure_ascii=False, indent=2)
@@ -158,7 +170,8 @@ def save_chat_history(messages: list):
         _log(f"ERROR saving chat: {e}")
         st.error(f"❌ Gagal simpan chat: {e}")
 
-def get_recent_context_summary(max_turns: int = 15) -> str:
+def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
+    """Ambil konteks obrolan lama — dipangkas agar hemat token."""
     history = load_chat_history()
     if not history:
         return ""
@@ -169,6 +182,9 @@ def get_recent_context_summary(max_turns: int = 15) -> str:
         content = m["content"]
         if isinstance(content, list):
             content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+        # 🆕 Potong per pesan
+        if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
+            content = content[:MAX_MSG_CHARS] + "..."
         lines.append(f"{role}: {content}")
     _log(f"CONTEXT BUILT: {len(recent)} messages")
     return "\n".join(lines)
@@ -221,7 +237,8 @@ class Hand3DProcessor(VideoProcessorBase):
             (0,4), (1,5), (2,6), (3,7)
         ]
         
-        self.frame_buffer = collections.deque(maxlen=3)
+        # 🆕 Buffer 2 frame (turun dari 3) — hemat token
+        self.frame_buffer = collections.deque(maxlen=2)
         self.last_buffer_time = time.time()
         self.buffer_interval = 0.2
 
@@ -511,30 +528,91 @@ class Hand3DProcessor(VideoProcessorBase):
 # ============================================================
 # 🤖 HELPER JARVIS
 # ============================================================
-def image_to_base64(pil_img: Image.Image, max_size=800, quality=75) -> str:
+def image_to_base64(pil_img: Image.Image, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY) -> str:
     img = pil_img.copy()
     img.thumbnail((max_size, max_size))
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
+def _is_rate_limit_error(err_str: str) -> bool:
+    """Deteksi error rate limit / 413 / token limit dari Groq."""
+    err = err_str.lower()
+    return (
+        "413" in err
+        or "rate_limit" in err
+        or "request too large" in err
+        or "tokens per minute" in err
+        or "itpm" in err
+    )
+
 def ask_jarvis(api_messages: list, use_vision: bool) -> str:
     if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall."
     if not GROQ_API_KEY: return "❌ GROQ_API_KEY belum diset."
+    
+    client = Groq(api_key=GROQ_API_KEY)
+    
+    # 🆕 Coba model utama
     model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
     try:
-        client = Groq(api_key=GROQ_API_KEY)
         resp = client.chat.completions.create(
             model=model,
             messages=api_messages,
             temperature=0.85,
-            max_tokens=800,
+            max_tokens=MAX_OUTPUT_TOKENS,     # 🆕 300 (turun dari 800)
             frequency_penalty=0.6,
             presence_penalty=0.4,
         )
         return resp.choices[0].message.content
     except Exception as e:
-        return f"❌ Error Jarvis: {str(e)}"
+        err_str = str(e)
+        _log(f"API ERROR: {err_str[:200]}")
+        
+        # 🆕 FALLBACK kalau kena rate limit / 413
+        if _is_rate_limit_error(err_str):
+            _log("⚠️ Rate limit kena — fallback ke text-only + pangkas konteks")
+            
+            # Coba tanpa gambar + konteks lebih pendek
+            try:
+                # Pangkas: hanya 2 turn terakhir, text-only
+                fallback_msgs = [api_messages[0]]
+                # Ambil memory system prompt kalau ada
+                for m in api_messages[1:]:
+                    if m["role"] == "system" and isinstance(m["content"], str):
+                        # Ambil memory saja (pendek)
+                        if "LONG-TERM MEMORY" in m["content"]:
+                            fallback_msgs.append(m)
+                
+                # Ambil 2 pesan terakhir yang text-only
+                text_msgs = []
+                for m in api_messages:
+                    if m["role"] in ("user", "assistant"):
+                        if isinstance(m["content"], str):
+                            text_msgs.append({"role": m["role"], "content": m["content"][:300]})
+                        elif isinstance(m["content"], list):
+                            # Ambil teks saja, buang gambar
+                            texts = [c.get("text", "") for c in m["content"] if c.get("type") == "text"]
+                            if texts:
+                                text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
+                
+                fallback_msgs.extend(text_msgs[-4:])  # 2 turn terakhir
+                
+                resp = client.chat.completions.create(
+                    model=JARVIS_TEXT_MODEL,
+                    messages=fallback_msgs,
+                    temperature=0.7,
+                    max_tokens=200,
+                )
+                answer = resp.choices[0].message.content
+                return f"{answer}\n\n*(Sir, I had to switch to text-only mode due to token limits. Do try a shorter question if you need my eyes.)*"
+            except Exception as e2:
+                _log(f"FALLBACK ERROR: {str(e2)[:200]}")
+                return (
+                    "Sir, my cognitive buffer is momentarily saturated. "
+                    "Please wait a minute and try a shorter question — preferably without images."
+                )
+        
+        return f"❌ Error Jarvis: {str(e)[:300]}"
 
 def sanitize_latex(text: str) -> str:
     if not text: return text
@@ -544,34 +622,26 @@ def sanitize_latex(text: str) -> str:
     text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
     return text.strip()
 
-# 🔇 HAPUS FILLER WORDS
 def strip_filler_words(text: str) -> str:
-    """Hapus filler/hesitation words yang bikin annoying."""
     if not text:
         return text
-    
     filler_patterns = [
         r'^\s*(Aaa+h+|Ahh+|Ah+|Hmm+m*|Hm+|Uhh+|Umm+|Erm+|Er+|Hehehe+|Hehe+|Haha+|Hah+|Ugh+|Pfft+|Ohh+|Ooh+)[\s,\.\!\?…—\-]*',
     ]
-    
     for _ in range(3):
         old = text
         for pattern in filler_patterns:
             text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
         if text == old:
             break
-    
     text = re.sub(
         r'[\s,]+(Aaa+h+|Ahh+|Hmm+m*|Uhh+|Umm+|Erm+|Hehehe+|Hehe+|Haha+|Ugh+)[\s,\.\!\?…]*',
         ' ', text, flags=re.IGNORECASE
     )
-    
     text = re.sub(r'^\s*Well\s*[\.,…—\-]+\s*', '', text, flags=re.IGNORECASE)
-    
     text = re.sub(r'\s+', ' ', text).strip()
     if text and text[0].islower():
         text = text[0].upper() + text[1:]
-    
     return text
 
 def strip_repetitive_greeting(text: str, history: list) -> str:
@@ -603,14 +673,14 @@ def extract_memory(user_text: str, ai_text: str) -> str | None:
         Analyse this conversation. Is there any important fact about Sir Lois 
         (hobbies, feelings, environment, weather, or significant events) worth remembering?
         If none, reply with "NONE".
-        If yes, write one short memory sentence IN ENGLISH.
-        User: {user_text}
-        AI: {ai_text}
+        If yes, write one short memory sentence IN ENGLISH (max 15 words).
+        User: {user_text[:300]}
+        AI: {ai_text[:300]}
         """
         resp = client.chat.completions.create(
             model=JARVIS_MEMORY_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=60, temperature=0.1
+            max_tokens=40, temperature=0.1
         )
         memory = resp.choices[0].message.content.strip()
         if "NONE" not in memory.upper() and len(memory) > 5:
@@ -623,9 +693,7 @@ def _normalize_for_tts(text: str) -> str:
     text = re.sub(r'\$\$.*?\$\$', ' formula ', text, flags=re.DOTALL)
     text = re.sub(r'\$.*?\$', ' formula ', text)
     text = text.replace('\\', '').replace('{', '').replace('}', '')
-    
     text = strip_filler_words(text)
-    
     text = re.sub(r'\(.*?\)', '', text)
     text = re.sub(r'[*#_`>]', '', text)
     text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)
@@ -693,11 +761,11 @@ Address the user as "Sir Lois" or "Sir".
 [PERSONALITY & VOICE]
 1. You are NOT a robot. You are deeply human, relaxed, but brilliant.
 2. Show human-like empathy through WORD CHOICE, not through filler sounds.
-   Example: instead of "Aaaah... Banten", write "Banten — noted, Sir."
 3. Keep responses crisp and confident. Dry wit, no theatrical sighs.
+4. BREVITY: Keep replies SHORT — max 3-4 sentences unless the user asks for detail. This is critical for token budget.
 
 [VISUAL RULE]
-You receive 3 sequential images from a live camera (flipbook style).
+You receive 2 sequential images from a live camera (flipbook style).
 Analyse the SEQUENCE to describe motion, trajectory, or change.
 If no images, answer from text alone.
 
@@ -720,8 +788,6 @@ If no images, answer from text alone.
 # ============================================================
 # 🧠 SESSION STATE — UI SELALU FRESH SETIAP REFRESH
 # ============================================================
-# Jangan load history ke session_state — biar UI selalu kosong saat refresh
-# Tapi Jarvis TETAP INGAT via context injection dari file JSON
 if "jarvis_messages" not in st.session_state:
     st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     _log("Session initialized FRESH (UI empty, memory from file)")
@@ -774,7 +840,9 @@ if user_q:
     pil_imgs = []
 
     if ctx.state.playing and ctx.video_processor is not None and len(ctx.video_processor.frame_buffer) > 0:
-        for frame_bgr in ctx.video_processor.frame_buffer:
+        # 🆕 Ambil maksimal 2 frame (buffer sudah maxlen=2)
+        frames_to_send = list(ctx.video_processor.frame_buffer)[-MAX_FRAMES_FOR_VISION:]
+        for frame_bgr in frames_to_send:
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             pil_imgs.append(Image.fromarray(frame_rgb))
         has_img = True
@@ -782,7 +850,8 @@ if user_q:
     if has_img:
         content_list = [{"type": "text", "text": user_q}]
         for p_img in pil_imgs:
-            b64 = image_to_base64(p_img, max_size=512, quality=60)
+            # 🆕 Gambar lebih kecil (384x384, quality 45)
+            b64 = image_to_base64(p_img, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY)
             content_list.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
@@ -807,22 +876,22 @@ if user_q:
         with st.spinner("Jarvis is analysing..."):
             api_messages = [st.session_state.jarvis_messages[0]]
 
+            # 🧠 LONG-TERM MEMORY (maks 5 item terbaru — hemat token)
             if st.session_state.memory_vault:
-                memory_str = "\n".join([f"- {m}" for m in st.session_state.memory_vault])
+                mem_items = st.session_state.memory_vault[-5:]
+                memory_str = "\n".join([f"- {m}" for m in mem_items])
                 api_messages.append({
                     "role": "system",
                     "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
                 })
 
-            # 🆕 SELALU inject konteks lama dari FILE (bukan dari UI)
-            # Ini bikin Jarvis tetap ingat walau UI di-refresh / di-clear
-            context_summary = get_recent_context_summary(max_turns=15)
+            # 🆕 KONTEKS LAMA — dipangkas (6 turn, 400 char/pesan)
+            context_summary = get_recent_context_summary(max_turns=MAX_CONTEXT_TURNS)
             if context_summary:
                 api_messages.append({
                     "role": "system",
                     "content": f"[PREVIOUS CONVERSATION — YOU MUST REMEMBER THIS]:\n{context_summary}"
                 })
-                # Juga taruh di user message sebagai prefix (double reinforcement)
                 if isinstance(user_api_msg["content"], str):
                     user_api_msg["content"] = (
                         f"[CONTEXT — earlier Sir Lois and I spoke about:]\n"
@@ -835,7 +904,7 @@ if user_q:
                         "text": f"[CONTEXT — earlier we spoke about:]\n{context_summary}\n\n[NEW QUESTION]:"
                     })
 
-            # 🆕 Tambahkan riwayat UI juga (kalau ada pesan di sesi ini)
+            # Riwayat UI (kalau ada)
             ui_history = st.session_state.jarvis_messages[1:-1]
             for m in ui_history:
                 api_messages.append({"role": m["role"], "content": m["content"]})
@@ -912,15 +981,17 @@ with st.sidebar:
     st.markdown("---")
     st.caption("Technology:")
     st.caption("• Camera: 60 FPS")
-    st.caption("• Buffer: 3 frames (0.2s each)")
+    st.caption("• Buffer: 2 frames (0.2s each)")
     st.caption("• Vision Model: Qwen 3.8")
     st.caption("• Text Model: GPT-OSS-120B")
     st.caption("• Voice: British English (en-GB-Ryan)")
+    st.caption("• Max Output: 300 tokens")
+    st.caption("• Context: 6 turns")
+    st.caption("• Image: 384px / Q45")
+    st.caption("• Fallback: ✅ (auto text-only)")
     st.caption("• Self-Learning: ✅")
     st.caption("• Persistence: ✅ (JSON)")
-    st.caption("• Anti-Repetition: ✅")
     st.caption("• No Filler: ✅")
-    st.caption("• Context Injection: ✅")
 
     st.markdown("---")
     with st.expander("🔍 Debug Info", expanded=False):
