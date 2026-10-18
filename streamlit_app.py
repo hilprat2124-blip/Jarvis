@@ -143,7 +143,7 @@ def save_chat_history(messages: list):
                 continue
             content = m["content"]
             if isinstance(content, list):
-                texts = [c["text"] for c in content if c.get("type") == "text"]
+                texts = [c.get("text", "") for c in content if c.get("type") == "text"]
                 content = " ".join(texts) if texts else "[image]"
             if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
                 content = content[:MAX_MSG_CHARS] + "..."
@@ -562,7 +562,7 @@ def ask_jarvis(api_messages: list, use_vision: bool) -> str:
                         if isinstance(m["content"], str):
                             text_msgs.append({"role": m["role"], "content": m["content"][:300]})
                         elif isinstance(m["content"], list):
-                            texts = [c.get("text", "") for c in m["content"] if c.get("type"] == "text"]
+                            texts = [c.get("text", "") for c in m["content"] if c.get("type") == "text"]
                             if texts:
                                 text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
                 
@@ -780,7 +780,7 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 } catch(e) {}
             }
             
-            // ============ ROBUST AUTO CLICKER KAMERA ============
+            # ============ ROBUST AUTO CLICKER KAMERA ============
             function triggerCameraAutoClick() {
                 try {
                     const parentDoc = window.parent.document;
@@ -813,7 +813,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 }
             }
 
-            // Jika perintah intent kamera aktif, langsung eksekusi klik kamera
             if (SHOULD_TRIGGER_CAM) {
                 setTimeout(triggerCameraAutoClick, 300);
             }
@@ -1050,7 +1049,6 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
                 currentState = 'idle';
                 targetIntensity = 0;
                 
-                // 🚀 AUTO-CLICK KAMERA SETELAH JARVIS SELESAI BICARA
                 triggerCameraAutoClick();
 
                 setTimeout(resumeListeningAfterResponse, 600);
@@ -1295,7 +1293,6 @@ with orb_placeholder.container():
         trigger_cam=st.session_state.trigger_camera_intent,
     )
 
-# Reset intent setelah dirender agar tidak berulang terus
 if st.session_state.trigger_camera_intent:
     st.session_state.trigger_camera_intent = False
 
@@ -1340,7 +1337,6 @@ for msg in st.session_state.jarvis_messages:
 user_q = st.chat_input("Ask Jarvis...")
 
 if user_q:
-    # 🔍 INTENT DETECTION: Deteksi apakah user ingin menyalakan kamera
     camera_keywords = ["nyalain kamera", "hidupkan kamera", "buka kamera", "aktifkan kamera", "start kamera", "nyalakan kamera"]
     if any(kw in user_q.lower() for kw in camera_keywords):
         st.session_state.trigger_camera_intent = True
