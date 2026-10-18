@@ -18,7 +18,7 @@ import pathlib
 import collections
 from PIL import Image
 
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase, RTCConfiguration
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 # ============ AI: Groq (Cloud) ============
 try:
@@ -734,8 +734,8 @@ if "current_audio" not in st.session_state:
     st.session_state.current_audio = None
 if "conversation_mode" not in st.session_state:
     st.session_state.conversation_mode = False
-if "camera_running" not in st.session_state:
-    st.session_state.camera_running = False
+if "force_cam_on" not in st.session_state:
+    st.session_state.force_cam_on = False
 
 # ============================================================
 # ORB DI ATAS
@@ -756,31 +756,60 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("📹 Kamera (Live)")
     
-    # --- TOMBOL KONTROL KAMERA MANUAL (BERHASIL 100%) ---
-    if not st.session_state.camera_running:
-        if st.button("🔴 KLIK DISINI UNTUK MENYALAKAN KAMERA", use_container_width=True):
-            st.session_state.camera_running = True
-            st.rerun()
-    else:
-        if st.button("⏹️ MATIKAN KAMERA", use_container_width=True):
-            st.session_state.camera_running = False
-            st.rerun()
-            
-    # Render WebRTC dengan desired_playing_state
+    # Render WebRTC
     ctx = webrtc_streamer(
         key="hand-3d-tracker-smooth",
-        mode=WebRtcMode.SENDRECV,
         video_processor_factory=Hand3DProcessor,
         rtc_configuration=RTC_CONFIGURATION,
         media_stream_constraints={"video": {"width": 640, "height": 480}, "audio": False},
         async_processing=True,
-        desired_playing_state=True if st.session_state.camera_running else False
     )
     
-    # Sinkronisasi state jika kamera dimatikan manual lewat UI WebRTC
-    if not ctx.state.playing and st.session_state.camera_running:
-        st.session_state.camera_running = False
-        st.rerun()
+    # --- TRIK KLIK PAKSA LEWAT LAYER TRANSPARAN ---
+    if st.session_state.force_cam_on and not ctx.state.playing:
+        st.components.v1.html(f"""
+            <script>
+                const doc = window.parent.document;
+                // Cari tombol START merah bawaan WebRTC
+                const buttons = doc.querySelectorAll('button');
+                let startBtn = null;
+                for(let b of buttons) {{
+                    if(b.innerText.trim().toUpperCase() === 'START') {{
+                        startBtn = b; break;
+                    }}
+                }}
+                
+                if(startBtn) {{
+                    // Dapatkan posisi tombol START
+                    const rect = startBtn.getBoundingClientRect();
+                    
+                    // Buat kotak transparan persis di atas tombol
+                    const overlay = doc.createElement('div');
+                    overlay.style.position = 'fixed';
+                    overlay.style.left = rect.left + 'px';
+                    overlay.style.top = rect.top + 'px';
+                    overlay.style.width = rect.width + 'px';
+                    overlay.style.height = rect.height + 'px';
+                    overlay.style.zIndex = '999999';
+                    overlay.style.cursor = 'pointer';
+                    overlay.style.background = 'rgba(0,0,0,0.01)';
+                    
+                    // Saat overlay diklik (oleh JS kita), tembak event klik ke tombol asli
+                    overlay.onclick = () => {{
+                        startBtn.click();
+                        overlay.remove();
+                    }};
+                    
+                    doc.body.appendChild(overlay);
+                    
+                    // Picu klik secara otomatis setelah 0.5 detik
+                    setTimeout(() => {{
+                        overlay.click();
+                    }}, 500);
+                }}
+            </script>
+        """, height=0, width=0)
+        st.warning("🎥 Jarvis sedang menekan tombol START merah...")
 
 with col2:
     st.subheader("ℹ️ Status Visual")
@@ -788,6 +817,9 @@ with col2:
         st.success("🟢 Kamera aktif")
         if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
             st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame.")
+        # Reset jika sudah nyala
+        if st.session_state.force_cam_on:
+            st.session_state.force_cam_on = False
     else:
         st.info("⚪ Kamera mati")
     st.markdown("---")
@@ -810,8 +842,8 @@ user_q = st.chat_input("Ask Jarvis...")
 if user_q:
     # === DETEKSI PERINTAH ON CAM ===
     if is_camera_on_command(user_q):
-        st.session_state.camera_running = True
-        st.toast("🎥 Perintah nyalakan kamera terdeteksi — Menyalakan kamera...", icon="🔴")
+        st.session_state.force_cam_on = True
+        st.toast("🎥 Perintah nyalakan kamera terdeteksi — Menekan tombol START...", icon="🔴")
         time.sleep(1)
         st.rerun()
 
@@ -836,7 +868,7 @@ if user_q:
             has_img = True
     else:
         if is_camera_on_command(user_q):
-            st.warning("🎥 Menyalakan kamera... izinkan akses kamera di browser jika diminta.")
+            st.warning("🎥 Tombol START sedang ditekan. Jika belum nyala, pastikan Anda mengizinkan akses kamera.")
         else:
             st.warning("⚠️ Kamera belum menyala. Klik START di atas agar Jarvis bisa melihat!")
 
@@ -934,7 +966,7 @@ with st.sidebar:
         st.session_state.current_audio = None
         st.session_state.orb_state = "idle"
         st.session_state.conversation_mode = False
-        st.session_state.camera_running = False
+        st.session_state.force_cam_on = False
         st.rerun()
 
     st.markdown("---")
@@ -953,4 +985,4 @@ with st.sidebar:
     st.caption("• Voice Mode: Continuous Conversation")
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
-    st.caption("• 🎥 Auto-Start Cam: Native Toggle")
+    st.caption("• 🎥 Auto-Start Cam: Overlay Hack")
