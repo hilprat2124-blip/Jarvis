@@ -114,10 +114,51 @@ def get_ice_servers():
     return [stun], "STUN saja"
 
 _ICE_SERVERS, ICE_SOURCE = get_ice_servers()
-_rtc_cfg = {"iceServers": _ICE_SERVERS}
-if ICE_SOURCE != "STUN saja" and _secret("ICE_RELAY_ONLY") == "1":
-    _rtc_cfg["iceTransportPolicy"] = "relay"   # browser hanya pakai TURN -> koneksi bisa lebih cepat
-RTC_CONFIGURATION = RTCConfiguration(_rtc_cfg)
+ICE_MODES = ["Auto (STUN + TURN)", "STUN saja", "Paksa TURN relay"]
+ICE_MODE = st.session_state.get("ice_mode", ICE_MODES[0])
+if ICE_MODE not in ICE_MODES:
+    ICE_MODE = ICE_MODES[0]
+
+def _server_urls(server: dict) -> list:
+    u = server.get("urls") or server.get("url") or []
+    return [u] if isinstance(u, str) else list(u)
+
+def _is_turn(server: dict) -> bool:
+    return any(x.startswith(("turn:", "turns:")) for x in _server_urls(server))
+
+def _udp_only(servers: list) -> list:
+    """Sisi server (aiortc/aioice) bisa lambat/macet saat mengumpulkan kandidat TURN lewat TCP/TLS.
+    Untuk server cukup STUN + TURN UDP; browser tetap memakai daftar lengkap."""
+    out = []
+    for sv in servers:
+        urls = [x for x in _server_urls(sv) if x.startswith(("stun:", "stuns:")) or
+                (x.startswith("turn:") and "transport=tcp" not in x)]
+        if urls:
+            item = {"urls": urls}
+            if sv.get("username"): item["username"] = sv["username"]
+            if sv.get("credential"): item["credential"] = sv["credential"]
+            out.append(item)
+    return out
+
+_STUN_ONLY = [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]
+_has_turn = any(_is_turn(sv) for sv in _ICE_SERVERS)
+
+if ICE_MODE == "STUN saja" or not _has_turn:
+    _browser_cfg = {"iceServers": _STUN_ONLY}
+    _server_cfg = {"iceServers": _STUN_ONLY}
+else:
+    _browser_cfg = {"iceServers": list(_STUN_ONLY) + list(_ICE_SERVERS)}
+    _server_cfg = {"iceServers": list(_STUN_ONLY) + [sv for sv in _udp_only(_ICE_SERVERS) if _is_turn(sv)]}
+    if ICE_MODE == "Paksa TURN relay" or _secret("ICE_RELAY_ONLY") == "1":
+        _browser_cfg["iceTransportPolicy"] = "relay"
+
+RTC_CONFIGURATION = RTCConfiguration(_browser_cfg)
+SERVER_RTC_CONFIGURATION = RTCConfiguration(_server_cfg)
+
+import inspect as _inspect
+_WEBRTC_EXTRA = {}
+if "server_rtc_configuration" in _inspect.signature(webrtc_streamer).parameters:
+    _WEBRTC_EXTRA["server_rtc_configuration"] = SERVER_RTC_CONFIGURATION
 
 SHARPEN = False  # True = deteksi sedikit lebih tajam tapi lebih lambat di server cloud
 PINCH_ENTER = 40
@@ -1363,10 +1404,11 @@ with col1:
     
     # Jika perintah suara kamera aktif, kita berikan default active pada webrtc jika didukung
     ctx = webrtc_streamer(
-        key=f"hand-3d-tracker-smooth-{st.session_state.cam_nonce}",
+        key=f"hand-3d-tracker-smooth-{st.session_state.cam_nonce}-{ICE_MODES.index(ICE_MODE)}",
         desired_playing_state=True if st.session_state.cam_autostart else None,
         video_processor_factory=Hand3DProcessor,
         rtc_configuration=RTC_CONFIGURATION,
+        **_WEBRTC_EXTRA,
         media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 30}}, "audio": False},
         async_processing=True,
     )
@@ -1390,8 +1432,9 @@ with col2:
                              "Isi `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` (atau `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`) "
                              "di Settings → Secrets, lalu reboot app.")
                 else:
-                    st.error(f"Kamera belum tersambung meski memakai {ICE_SOURCE}. Coba klik STOP lalu START, "
-                             "ganti jaringan (mis. hotspot HP), atau cek kuota/kredensial TURN.")
+                    st.error(f"Kamera belum tersambung meski memakai {ICE_SOURCE} (mode: {ICE_MODE}). "
+                             "Coba ganti **Mode koneksi kamera** di sidebar (mis. ke 'STUN saja'), lalu nyalakan lagi. "
+                             "Jika masih gagal: klik STOP lalu START, atau ganti jaringan (mis. hotspot HP).")
         else:
             st.warning("⚪ Kamera dalam mode standby. Ucapkan 'nyalakan kamera' atau klik START.")
 
@@ -1606,5 +1649,9 @@ with st.sidebar:
     st.caption("• Voice: British English")
     st.caption("• Limit: 1 Frame / Question")
     st.caption(f"• WebRTC: {ICE_SOURCE}")
+    st.selectbox("Mode koneksi kamera", ICE_MODES, key="ice_mode",
+                 help="Jika kamera macet loading, coba ganti mode lalu nyalakan kamera lagi.")
+    if ICE_SOURCE == "Twilio TURN":
+        st.caption("Jika kamera macet di 'Auto', coba 'STUN saja'.")
     if ICE_ERROR and ICE_SOURCE == "STUN saja":
         st.error(ICE_ERROR)
