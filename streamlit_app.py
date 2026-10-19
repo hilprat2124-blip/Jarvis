@@ -88,11 +88,41 @@ def _twilio_ice_servers(sid: str, tok: str):
     from twilio.rest import Client
     return Client(sid, tok).tokens.create().ice_servers
 
+@st.cache_data(ttl=3000, show_spinner=False)
+def _cloudflare_ice_servers(key_id: str, api_token: str):
+    import json, urllib.request
+    req = urllib.request.Request(
+        f"https://rtc.live.cloudflare.com/v1/turn/keys/{key_id}/credentials/generate-ice-servers",
+        data=json.dumps({"ttl": 86400}).encode(),
+        headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json",
+                 "User-Agent": "Mozilla/5.0 (JarvisApp)"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        payload = json.loads(r.read().decode())
+    servers = payload.get("iceServers")
+    if not servers:
+        raise RuntimeError("respons Cloudflare tanpa iceServers")
+    return servers if isinstance(servers, list) else [servers]
+
 def get_ice_servers():
     """Streamlit Cloud tidak bisa WebRTC tanpa TURN server.
     Prioritas: (1) Twilio, (2) TURN generik, (3) STUN saja. Return: (ice_servers, sumber)"""
     global ICE_ERROR
     stun = {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}
+
+    cf_id, cf_tok = _secret("CLOUDFLARE_TURN_KEY_ID").strip(), _secret("CLOUDFLARE_TURN_API_TOKEN").strip()
+    if cf_id and cf_tok:
+        try:
+            return _cloudflare_ice_servers(cf_id, cf_tok), "Cloudflare TURN"
+        except Exception as e:
+            detail = str(e)
+            try:
+                detail += " " + e.read().decode()[:150]   # HTTPError membawa body
+            except Exception:
+                pass
+            ICE_ERROR = f"Cloudflare gagal: {detail[:250]}"
+            _log(ICE_ERROR)
 
     sid, tok = _secret("TWILIO_ACCOUNT_SID").strip(), _secret("TWILIO_AUTH_TOKEN").strip()
     if sid and tok:
@@ -104,7 +134,8 @@ def get_ice_servers():
             ICE_ERROR = f"Twilio menolak kredensial / gagal: {str(e)[:200]}"
         _log(f"Twilio gagal: {ICE_ERROR}")
     else:
-        ICE_ERROR = "TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN tidak terbaca dari Secrets."
+        if not ICE_ERROR:
+            ICE_ERROR = "Kredensial TURN (CLOUDFLARE_TURN_* atau TWILIO_*) tidak terbaca dari Secrets."
 
     turn_urls = _secret("TURN_URLS")
     if turn_urls:
@@ -115,6 +146,7 @@ def get_ice_servers():
 
 _ICE_SERVERS, ICE_SOURCE = get_ice_servers()
 ICE_MODES = ["STUN saja", "Auto (STUN + TURN)", "Paksa TURN relay"]
+st.session_state.setdefault("ice_mode", ICE_MODES[0] if ICE_SOURCE == "STUN saja" else ICE_MODES[1])
 ICE_MODE = st.session_state.get("ice_mode", ICE_MODES[0])
 if ICE_MODE not in ICE_MODES:
     ICE_MODE = ICE_MODES[0]
@@ -1434,11 +1466,11 @@ with col2:
                time.time() - st.session_state.get("cam_requested_at", time.time()) > CAM_RETRY_AFTER:
                 if ICE_MODE == "STUN saja":
                     st.error("Kamera belum tersambung dengan mode STUN saja. Klik STOP lalu START, atau ganti jaringan "
-                             "(mis. hotspot HP). Jika jaringan Anda ketat, isi kredensial TURN dan pilih mode 'Auto'.")
+                             "(mis. hotspot HP). Jika jaringan Anda ketat, isi kredensial TURN (Cloudflare/Twilio) dan pilih mode 'Auto'.")
                 elif ICE_SOURCE == "STUN saja":
                     st.error(f"🔧 Penyebab: {ICE_ERROR}")
                     st.error("Kamera browser sudah menyala, tapi koneksi ke server gagal. Streamlit Cloud butuh **TURN server**. "
-                             "Isi `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` (atau `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`) "
+                             "Isi `CLOUDFLARE_TURN_KEY_ID` + `CLOUDFLARE_TURN_API_TOKEN` (atau `TWILIO_*`) "
                              "di Settings → Secrets, lalu reboot app.")
                 else:
                     st.error(f"Kamera belum tersambung meski memakai {ICE_SOURCE} (mode: {ICE_MODE}). "
@@ -1664,8 +1696,8 @@ with st.sidebar:
                  help="Jika kamera macet loading, coba ganti mode lalu nyalakan kamera lagi.")
     if ICE_MODE == "STUN saja":
         st.caption("Default. Jika kamera macet di jaringan lain, coba mode 'Auto' (butuh TURN).")
-    elif ICE_SOURCE == "Twilio TURN":
-        st.caption("Jika kamera macet di 'Auto', kembali ke 'STUN saja'.")
+    elif ICE_SOURCE != "STUN saja":
+        st.caption("Jika kamera macet di 'Auto', coba kembali ke 'STUN saja'.")
     if ICE_ERROR and ICE_SOURCE == "STUN saja" and ICE_MODE != "STUN saja":
         st.error(ICE_ERROR)
 
