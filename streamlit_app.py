@@ -84,7 +84,6 @@ ICE_ERROR = ""
 
 @st.cache_data(ttl=3000, show_spinner=False)
 def _twilio_ice_servers(sid: str, tok: str):
-    # Hanya hasil SUKSES yang di-cache (exception tidak pernah di-cache)
     from twilio.rest import Client
     return Client(sid, tok).tokens.create().ice_servers
 
@@ -106,8 +105,6 @@ def _cloudflare_ice_servers(key_id: str, api_token: str):
     return servers if isinstance(servers, list) else [servers]
 
 def get_ice_servers():
-    """Streamlit Cloud tidak bisa WebRTC tanpa TURN server.
-    Prioritas: (1) Twilio, (2) TURN generik, (3) STUN saja. Return: (ice_servers, sumber)"""
     global ICE_ERROR
     stun = {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}
 
@@ -118,7 +115,7 @@ def get_ice_servers():
         except Exception as e:
             detail = str(e)
             try:
-                detail += " " + e.read().decode()[:150]   # HTTPError membawa body
+                detail += " " + e.read().decode()[:150]
             except Exception:
                 pass
             ICE_ERROR = f"Cloudflare gagal: {detail[:250]}"
@@ -150,7 +147,6 @@ ICE_MODE = st.session_state.get("ice_mode", ICE_MODES[0])
 if ICE_MODE not in ICE_MODES:
     ICE_MODE = ICE_MODES[0]
 
-# Default = STUN saja (terbukti paling stabil). Kredensial TURN hanya diambil bila mode TURN dipilih.
 if ICE_MODE == "STUN saja":
     _ICE_SERVERS, ICE_SOURCE = [], "STUN saja"
 else:
@@ -164,8 +160,6 @@ def _is_turn(server: dict) -> bool:
     return any(x.startswith(("turn:", "turns:")) for x in _server_urls(server))
 
 def _udp_only(servers: list) -> list:
-    """Sisi server (aiortc/aioice) bisa lambat/macet saat mengumpulkan kandidat TURN lewat TCP/TLS.
-    Untuk server cukup STUN + TURN UDP; browser tetap memakai daftar lengkap."""
     out = []
     for sv in servers:
         urls = [x for x in _server_urls(sv) if x.startswith(("stun:", "stuns:")) or
@@ -197,7 +191,7 @@ _WEBRTC_EXTRA = {}
 if "server_rtc_configuration" in _inspect.signature(webrtc_streamer).parameters:
     _WEBRTC_EXTRA["server_rtc_configuration"] = SERVER_RTC_CONFIGURATION
 
-SHARPEN = False  # True = deteksi sedikit lebih tajam tapi lebih lambat di server cloud
+SHARPEN = False
 PINCH_ENTER = 40
 PINCH_EXIT = 60
 HOLD_THRESHOLD = 1.0
@@ -215,6 +209,10 @@ INERTIA_DECAY = 0.93
 PAN_POS_ALPHA = 0.7
 PAN_DEADZONE = 0.5
 PAN_APPLY_SMOOTH = 0.55
+
+# ============ Pinch-Orb Threshold (dari prototipe) ============
+PINCH_ORB_ENTER = 45   # px, masuk grab
+PINCH_ORB_EXIT  = 70   # px, lepas grab
 
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8),
@@ -308,14 +306,12 @@ def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
     return "\n".join(lines)
 
 # ============================================================
-# KELAS KAMERA — SILENT VISUAL MEMORY
+# KELAS KAMERA — SILENT VISUAL MEMORY + PINCH EXPORT
 # ============================================================
-cv2.setNumThreads(1)  # hemat memori/thread di server cloud
+cv2.setNumThreads(1)
 
 @st.cache_resource(show_spinner=False)
 def get_detector_holder():
-    """Satu HandLandmarker untuk SEMUA koneksi kamera (hemat memori).
-    Dimuat di thread latar sekali saja per proses server."""
     holder = {"det": None, "lock": threading.Lock(), "ts": 0}
 
     def _load():
@@ -340,7 +336,7 @@ class Hand3DProcessor(VideoProcessorBase):
     def __init__(self, holder=None):
         self.holder = holder
         self.frame_timestamp = 0
-        
+
         self.rx, self.ry = 0.5, 0.5
         self.scale = 1.0
         self.offset_x, self.offset_y = 0.0, 0.0
@@ -366,6 +362,11 @@ class Hand3DProcessor(VideoProcessorBase):
         self.smoothed_dist_mid_index = None
         self.prev_palm_pos = None
         self.swipe_vel_smooth = np.array([0.0, 0.0])
+
+        # ==== PINCH ORB EXPORT (dari prototipe) ====
+        self.pinch_point_norm = None   # (x_norm, y_norm) di [0,1]
+        self.pinch_active = False
+
         self.vertices = np.array([
             [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
             [-1, -1,  1], [1, -1,  1], [1, 1,  1], [-1, 1,  1]
@@ -374,7 +375,7 @@ class Hand3DProcessor(VideoProcessorBase):
             (0,1), (1,2), (2,3), (3,0), (4,5), (5,6), (6,7), (7,4),
             (0,4), (1,5), (2,6), (3,7)
         ]
-        
+
         self.frame_buffer = collections.deque(maxlen=2)
         self.last_buffer_time = time.time()
         self.buffer_interval = 0.2
@@ -485,6 +486,9 @@ class Hand3DProcessor(VideoProcessorBase):
             hand_detected = True
             self.last_seen_time = current_time
         else:
+            # reset pinch saat tangan hilang
+            self.pinch_active = False
+            self.pinch_point_norm = None
             if current_time - self.last_seen_time > 0.4:
                 self.active_mode = None
                 self.candidate_mode = None
@@ -526,6 +530,27 @@ class Hand3DProcessor(VideoProcessorBase):
             d_index = self.smoothed_dist_index
             d_middle = self.smoothed_dist_middle
             d_mid_index = self.smoothed_dist_mid_index
+
+            # ==== PINCH ORB EXPORT (dari prototipe) ====
+            # koordinat sudah mirror karena cv2.flip di awal
+            pinch_mid_x = (thumb[0] + index[0]) / 2.0 / w
+            pinch_mid_y = (thumb[1] + index[1]) / 2.0 / h
+            if not self.pinch_active and d_index < PINCH_ORB_ENTER:
+                self.pinch_active = True
+            elif self.pinch_active and d_index > PINCH_ORB_EXIT:
+                self.pinch_active = False
+            if self.pinch_active:
+                self.pinch_point_norm = (float(pinch_mid_x), float(pinch_mid_y))
+            else:
+                self.pinch_point_norm = None
+
+            # indikator visual di frame
+            if self.pinch_active:
+                mid_pt = (int((thumb[0] + index[0]) / 2), int((thumb[1] + index[1]) / 2))
+                cv2.circle(img, mid_pt, 14, (255, 210, 74), 2, cv2.LINE_AA)
+                cv2.circle(img, mid_pt, 4, (255, 210, 74), -1, cv2.LINE_AA)
+                cv2.putText(img, "GRAB ORB", (mid_pt[0] + 18, mid_pt[1] - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 210, 74), 1, cv2.LINE_AA)
 
             index_up = index[1] < wrist[1]
             middle_up = middle[1] < wrist[1]
@@ -712,7 +737,7 @@ def _clean_llm_text(text) -> str:
 def _call_llm(client, model: str, messages: list, max_tokens: int, temperature: float, **extra) -> str:
     kwargs = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens, **extra)
     if model.startswith("openai/gpt-oss"):
-        kwargs["reasoning_effort"] = "low"   # cegah token habis untuk "berpikir" -> content kosong
+        kwargs["reasoning_effort"] = "low"
     resp = client.chat.completions.create(**kwargs)
     return _clean_llm_text(resp.choices[0].message.content)
 
@@ -860,500 +885,509 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS ORB — CONTINUOUS MODE
+# JARVIS ORB — INTERACTIVE (PINCH-TO-DRAG)
 # ============================================================
-def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False):
+def render_jarvis_orb(
+    audio_bytes: bytes = None,
+    state: str = "idle",
+    conversation_mode: bool = False,
+    interactive: bool = False,
+    camera_mode: bool = False,
+):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
     has_audio = "true" if audio_bytes else "false"
     conv_mode_js = "true" if conversation_mode else "false"
-    
+    interactive_js = "true" if interactive else "false"
+    camera_js = "true" if camera_mode else "false"
+
     est_duration_ms = 0
     if audio_bytes:
         est_duration_ms = max(3000, int(len(audio_bytes) / 16))
-    
+
     html_template = r"""
     <!DOCTYPE html>
     <html>
     <head>
-        <style>
-            * { box-sizing: border-box; margin: 0; padding: 0; }
-            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; }
-            .orb-container { position: relative; width: 100%; height: 320px; display: flex; align-items: center; justify-content: center; }
-            canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-            
-            .controls-row { position: absolute; bottom: 10px; z-index: 30; display: flex; gap: 12px; align-items: center; }
-            .mic-btn, .play-btn { padding: 10px 20px; border: 1px solid #37dfff; border-radius: 20px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; font-family: 'Courier New', monospace; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; box-shadow: 0 0 15px rgba(0,200,255,0.4); transition: all 0.3s; }
-            .mic-btn:hover, .play-btn:hover { background: rgba(0,100,150,0.9); box-shadow: 0 0 30px rgba(0,220,255,0.8); }
-            .mic-btn.listening { background: rgba(0,255,200,0.9); border-color: #00ffc8; color: #000; box-shadow: 0 0 25px rgba(0,255,200,0.8); animation: pulse 1.2s infinite; }
-            
-            @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.06); } 100% { transform: scale(1); } }
-            .transcript-hint { position: absolute; top: 5px; color: #7cfc00; font-size: 11px; text-align: center; width: 100%; z-index: 25; text-shadow: 0 0 8px rgba(0,255,0,0.6); padding: 0 10px; }
-        </style>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace;
+               display: flex; flex-direction: column; justify-content: center; align-items: center;
+               height: 100vh; touch-action: none; }
+        .orb-container { position: relative; width: 100%; height: 320px; display: flex;
+                         align-items: center; justify-content: center; transition: height .5s; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+        body.camera .orb-container { height: 120px; justify-content: flex-end; padding-right: 12px; }
+        body.camera canvas { width: 120px !important; height: 120px !important;
+                             position: relative; border-radius: 50%;
+                             box-shadow: 0 0 24px rgba(0,242,210,.55); }
+
+        .grab-hint { position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+                     color: #00ffc8; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+                     opacity: 0; transition: opacity .3s; z-index: 25; text-align:center; width:100%; }
+        body.interactive .grab-hint { opacity: .85; }
+        body.grabbing .grab-hint { color: #ffd24a; opacity: 1; }
+        body.grabbing canvas { filter: drop-shadow(0 0 12px rgba(255,210,74,.7)); }
+
+        .controls-row { position: absolute; bottom: 6px; z-index: 30; display: flex;
+                        gap: 10px; align-items: center; }
+        .mic-btn, .play-btn { padding: 8px 16px; border: 1px solid #37dfff; border-radius: 20px;
+                              background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer;
+                              font-family: 'Courier New', monospace; font-size: 10px;
+                              letter-spacing: 1px; text-transform: uppercase;
+                              box-shadow: 0 0 15px rgba(0,200,255,0.4); transition: all 0.3s; }
+        .mic-btn:hover, .play-btn:hover { background: rgba(0,100,150,0.9);
+                                          box-shadow: 0 0 30px rgba(0,220,255,0.8); }
+        .mic-btn.listening { background: rgba(0,255,200,0.9); border-color: #00ffc8; color: #000;
+                             box-shadow: 0 0 25px rgba(0,255,200,0.8);
+                             animation: pulse 1.2s infinite; }
+        @keyframes pulse { 0%,100%{transform:scale(1);} 50%{transform:scale(1.06);} }
+        .transcript-hint { position: absolute; top: 5px; color: #7cfc00; font-size: 11px;
+                           text-align: center; width: 100%; z-index: 25;
+                           text-shadow: 0 0 8px rgba(0,255,0,0.6); padding: 0 10px; }
+        body.camera .transcript-hint,
+        body.camera .controls-row,
+        body.camera .grab-hint { display: none; }
+    </style>
     </head>
     <body>
         <div class="transcript-hint" id="transcriptHint">Klik "Mulai Dengar" untuk mode obrolan suara</div>
-        <div class="orb-container">
+        <div class="grab-hint" id="grabHint">🤏 Cubit untuk menggeser orb</div>
+        <div class="orb-container" id="orbContainer">
             <canvas id="orbCanvas"></canvas>
         </div>
-        <div class="controls-row">
+        <div class="controls-row" id="controlsRow">
             <button class="mic-btn" id="micButton">🎙️ MULAI DENGAR</button>
             <button class="play-btn" id="playButton" style="display:none;">▶ PLAY VOICE</button>
         </div>
         <audio id="jarvisAudio" style="display:none;" preload="auto">
             <source src="data:audio/mp3;base64,__AUDIO_B64__" type="audio/mp3">
         </audio>
-        <script>
-            const canvas = document.getElementById('orbCanvas');
-            const ctx = canvas.getContext('2d');
-            const audio = document.getElementById('jarvisAudio');
-            const playBtn = document.getElementById('playButton');
-            const micBtn = document.getElementById('micButton');
-            const transcriptHint = document.getElementById('transcriptHint');
-            
-            const HAS_AUDIO = __HAS_AUDIO__;
-            const INITIAL_CONV_MODE = __CONV_MODE__;
-            const EST_DURATION_MS = __EST_DURATION__;
-            let currentState = "__STATE__";
-            
-            let W, H, cx, cy;
-            let analyzer = null;
-            let audioContext = null;
-            let sourceNode = null;
-            let freqData = null;
-            let time = 0;
-            let speakingIntensity = 0;
-            let targetIntensity = 0;
-            let listeningScale = 1.0;
-            let targetListeningScale = 1.0;
-            
-            const sphereDots = [];
-            const NUM_SPHERE_DOTS = 320;
-            const phiRatio = (1 + Math.sqrt(5)) / 2;
-            
-            for (let i = 0; i < NUM_SPHERE_DOTS; i++) {
-                const theta = 2 * Math.PI * i / phiRatio;
-                const y = 1 - (i / (NUM_SPHERE_DOTS - 1)) * 2;
-                const radiusAtY = Math.sqrt(1 - y * y);
-                sphereDots.push({
-                    x: Math.cos(theta) * radiusAtY, y: y, z: Math.sin(theta) * radiusAtY,
-                    baseSize: Math.random() * 0.8 + 0.8
-                });
+    <script>
+    const canvas = document.getElementById('orbCanvas');
+    const ctx = canvas.getContext('2d');
+    const audio = document.getElementById('jarvisAudio');
+    const playBtn = document.getElementById('playButton');
+    const micBtn = document.getElementById('micButton');
+    const transcriptHint = document.getElementById('transcriptHint');
+    const grabHint = document.getElementById('grabHint');
+
+    const HAS_AUDIO = __HAS_AUDIO__;
+    const INITIAL_CONV_MODE = __CONV_MODE__;
+    const INTERACTIVE = __INTERACTIVE__;
+    const CAMERA_MODE = __CAMERA__;
+    const EST_DURATION_MS = __EST_DURATION__;
+    let currentState = "__STATE__";
+
+    if (CAMERA_MODE) document.body.classList.add('camera');
+    if (INTERACTIVE) document.body.classList.add('interactive');
+
+    let W, H, cx, cy;
+    let analyzer = null, audioContext = null, sourceNode = null, freqData = null;
+    let time = 0, speakingIntensity = 0, targetIntensity = 0;
+    let listeningScale = 1.0, targetListeningScale = 1.0;
+
+    // ==== Interactive orb state ====
+    const orbOffset = { x: 0, y: 0 };
+    let pinchTarget = null;
+    let isGrabbing = false;
+
+    const sphereDots = [];
+    const NUM_SPHERE_DOTS = 320;
+    const phiRatio = (1 + Math.sqrt(5)) / 2;
+    for (let i = 0; i < NUM_SPHERE_DOTS; i++) {
+        const theta = 2 * Math.PI * i / phiRatio;
+        const y = 1 - (i / (NUM_SPHERE_DOTS - 1)) * 2;
+        const r = Math.sqrt(1 - y * y);
+        sphereDots.push({ x: Math.cos(theta)*r, y: y, z: Math.sin(theta)*r,
+                          baseSize: Math.random()*0.8 + 0.8 });
+    }
+
+    function resize() {
+        const rect = canvas.getBoundingClientRect();
+        W = canvas.width = rect.width * (window.devicePixelRatio || 1);
+        H = canvas.height = rect.height * (window.devicePixelRatio || 1);
+        cx = W / 2; cy = H / 2;
+    }
+    window.addEventListener('resize', resize); resize();
+
+    // ===== Pinch input dari Streamlit =====
+    window.addEventListener('message', (e) => {
+        const data = e.data;
+        if (!data || data.type !== 'jarvis_pinch') return;
+        if (data.active && !CAMERA_MODE) {
+            pinchTarget = { x: data.x * canvas.width, y: data.y * canvas.height };
+            if (!isGrabbing) {
+                isGrabbing = true;
+                document.body.classList.add('grabbing');
+                grabHint.textContent = '🟡 Menggeser orb...';
             }
+        } else {
+            isGrabbing = false;
+            pinchTarget = null;
+            document.body.classList.remove('grabbing');
+            grabHint.textContent = '🤏 Cubit untuk menggeser orb';
+        }
+    });
 
-            function resize() {
-                const rect = canvas.getBoundingClientRect();
-                W = canvas.width = rect.width * (window.devicePixelRatio || 1);
-                H = canvas.height = rect.height * (window.devicePixelRatio || 1);
-                cx = W / 2; cy = H / 2;
+    // Fallback: drag manual mouse/touch
+    let dragging = false, dragStart = null;
+    canvas.addEventListener('pointerdown', (e) => {
+        if (!INTERACTIVE) return;
+        dragging = true;
+        const r = canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        dragStart = { x: e.clientX - r.left, y: e.clientY - r.top,
+                      ox: orbOffset.x, oy: orbOffset.y };
+    });
+    window.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const r = canvas.getBoundingClientRect();
+        orbOffset.x = dragStart.ox + (e.clientX - r.left) - dragStart.x;
+        orbOffset.y = dragStart.oy + (e.clientY - r.top)  - dragStart.y;
+    });
+    window.addEventListener('pointerup', () => { dragging = false; });
+
+    function initAudioAnalyzer() {
+        if (audioContext) return;
+        try {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            sourceNode = audioContext.createMediaElementSource(audio);
+            analyzer = audioContext.createAnalyser();
+            analyzer.fftSize = 256;
+            analyzer.smoothingTimeConstant = 0.8;
+            sourceNode.connect(analyzer);
+            analyzer.connect(audioContext.destination);
+            freqData = new Uint8Array(analyzer.frequencyBinCount);
+        } catch (e) { console.log('Audio analyzer error:', e); }
+    }
+
+    playBtn.addEventListener('click', async () => {
+        initAudioAnalyzer();
+        if (audioContext && audioContext.state === 'suspended') await audioContext.resume();
+        try {
+            await audio.play();
+            playBtn.style.display = 'none';
+            currentState = 'speaking';
+        } catch (e) { console.log('Audio blocked'); }
+    });
+
+    // ==== Speech Recognition ====
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition = null;
+    let isListeningActive = false, isRecognitionRunning = false;
+    let silenceTimer = null, committedTranscript = '', interimTranscript = '';
+    let isSendingToStreamlit = false, userStoppedManually = false, resumeTimer = null;
+    const SILENCE_TIMEOUT_MS = 1500, RESTART_DELAY_MS = 100;
+
+    if (SpeechRecognition) {
+        recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'id-ID';
+        recognition.maxAlternatives = 1;
+        recognition.onstart = () => {
+            isRecognitionRunning = true;
+            micBtn.classList.add('listening');
+            micBtn.innerText = '⏹️ STOP DENGAR';
+            transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
+        };
+        recognition.onresult = (event) => {
+            if (isSendingToStreamlit) return;
+            let newFinal = '', interim = '';
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                const res = event.results[i];
+                if (res.isFinal) newFinal += res[0].transcript + ' ';
+                else interim += res[0].transcript + ' ';
             }
-            window.addEventListener('resize', resize);
-            resize();
-            
-            function getConvMode() {
-                try {
-                    const v = window.parent.localStorage.getItem('jarvis_conversation_mode');
-                    return v === '1';
-                } catch(e) { return INITIAL_CONV_MODE; }
-            }
-            function setConvMode(active) {
-                try {
-                    window.parent.localStorage.setItem('jarvis_conversation_mode', active ? '1' : '0');
-                } catch(e) {}
-            }
-
-            function initAudioAnalyzer() {
-                if (audioContext) return;
-                try {
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    sourceNode = audioContext.createMediaElementSource(audio);
-                    analyzer = audioContext.createAnalyser();
-                    analyzer.fftSize = 256;
-                    analyzer.smoothingTimeConstant = 0.8;
-                    sourceNode.connect(analyzer);
-                    analyzer.connect(audioContext.destination);
-                    freqData = new Uint8Array(analyzer.frequencyBinCount);
-                } catch (e) { console.log('Audio analyzer error:', e); }
-            }
-            
-            playBtn.addEventListener('click', async () => {
-                initAudioAnalyzer();
-                if (audioContext && audioContext.state === 'suspended') await audioContext.resume();
-                try {
-                    await audio.play();
-                    playBtn.style.display = 'none';
-                    currentState = 'speaking';
-                } catch (e) { console.log('Audio blocked'); }
-            });
-
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            let recognition = null;
-            let isListeningActive = false;
-            let isRecognitionRunning = false;
-            let silenceTimer = null;
-            let committedTranscript = '';
-            let interimTranscript = '';
-            let isSendingToStreamlit = false;
-            let userStoppedManually = false;
-            let resumeTimer = null;
-
-            const SILENCE_TIMEOUT_MS = 1500;
-            const RESTART_DELAY_MS = 100;
-
-            if (SpeechRecognition) {
-                recognition = new SpeechRecognition();
-                recognition.continuous = true;
-                recognition.interimResults = true;
-                recognition.lang = 'id-ID';
-                recognition.maxAlternatives = 1;
-
-                recognition.onstart = () => {
-                    isRecognitionRunning = true;
-                    micBtn.classList.add('listening');
-                    micBtn.innerText = '⏹️ STOP DENGAR';
-                    micBtn.style.display = 'block';
-                    transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
-                };
-
-                recognition.onresult = (event) => {
-                    if (isSendingToStreamlit) return;
-
-                    let newFinal = '';
-                    let interim = '';
-                    for (let i = event.resultIndex; i < event.results.length; ++i) {
-                        const res = event.results[i];
-                        if (res.isFinal) {
-                            newFinal += res[0].transcript + ' ';
-                        } else {
-                            interim += res[0].transcript + ' ';
-                        }
-                    }
-
-                    if (newFinal.trim()) {
-                        committedTranscript = (committedTranscript + ' ' + newFinal).replace(/\s+/g, ' ').trim();
-                    }
-                    interimTranscript = interim.replace(/\s+/g, ' ').trim();
-
-                    const combined = (committedTranscript + ' ' + interimTranscript).replace(/\s+/g, ' ').trim();
-                    if (combined) {
-                        transcriptHint.innerText = `Mendengar: "${combined}"`;
-                    }
-
-                    if (silenceTimer) clearTimeout(silenceTimer);
-                    silenceTimer = setTimeout(finalizeAndSend, SILENCE_TIMEOUT_MS);
-                };
-
-                recognition.onerror = (event) => {
-                    if (event.error === 'no-speech' || event.error === 'aborted') return;
-                    if (event.error === 'not-allowed') {
-                        isListeningActive = false;
-                        setConvMode(false);
-                        transcriptHint.innerText = '❌ Izin mikrofon ditolak.';
-                        micBtn.classList.remove('listening');
-                        micBtn.innerText = '🎙️ MULAI DENGAR';
-                        micBtn.style.display = 'block';
-                        return;
-                    }
-                };
-
-                recognition.onend = () => {
-                    isRecognitionRunning = false;
-                    if (isListeningActive && !userStoppedManually && !isSendingToStreamlit) {
-                        setTimeout(() => {
-                            if (isListeningActive && !isRecognitionRunning && !isSendingToStreamlit) {
-                                try { recognition.start(); } catch (e) {}
-                            }
-                        }, RESTART_DELAY_MS);
-                    }
-                };
-            }
-
-            function finalizeAndSend() {
-                if (isSendingToStreamlit) return;
-                const text = (committedTranscript + ' ' + interimTranscript).replace(/\s+/g, ' ').trim();
-                if (!text) return;
-
-                isSendingToStreamlit = true;
-                transcriptHint.innerText = `📤 Mengirim: "${text}"`;
-                micBtn.style.display = 'none';
-
-                if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
-                try { recognition.stop(); } catch(e) {}
-
-                setTimeout(() => { sendToStreamlit(text); }, 350);
-            }
-
-            function resumeListeningAfterResponse() {
-                if (userStoppedManually) return;
-                const convActive = getConvMode();
-                if (!convActive) {
-                    transcriptHint.innerText = '🔴 Mode obrolan dimatikan.';
-                    micBtn.style.display = 'block';
-                    micBtn.classList.remove('listening');
-                    micBtn.innerText = '🎙️ MULAI DENGAR';
-                    return;
-                }
-
-                isSendingToStreamlit = false;
-                isListeningActive = true;
-                committedTranscript = '';
-                interimTranscript = '';
-
-                micBtn.style.display = 'block';
-                micBtn.classList.add('listening');
-                micBtn.innerText = '⏹️ STOP DENGAR';
-                transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
-
-                if (!isRecognitionRunning) {
-                    try { recognition.start(); } catch(e) {}
-                }
-            }
-
-            function startListening() {
-                if (!recognition) return;
-                if (isListeningActive) return;
-
-                userStoppedManually = false;
-                isSendingToStreamlit = false;
-                committedTranscript = '';
-                interimTranscript = '';
-                isListeningActive = true;
-                setConvMode(true);
-
-                if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
-
-                try { recognition.start(); } catch (e) {
-                    try { recognition.stop(); } catch(_){}
-                    setTimeout(() => { try { recognition.start(); } catch(_) {} }, 250);
-                }
-            }
-
-            function stopListening() {
-                userStoppedManually = true;
+            if (newFinal.trim()) committedTranscript = (committedTranscript + ' ' + newFinal).replace(/\s+/g,' ').trim();
+            interimTranscript = interim.replace(/\s+/g,' ').trim();
+            const combined = (committedTranscript + ' ' + interimTranscript).replace(/\s+/g,' ').trim();
+            if (combined) transcriptHint.innerText = `Mendengar: "${combined}"`;
+            if (silenceTimer) clearTimeout(silenceTimer);
+            silenceTimer = setTimeout(finalizeAndSend, SILENCE_TIMEOUT_MS);
+        };
+        recognition.onerror = (event) => {
+            if (event.error === 'no-speech' || event.error === 'aborted') return;
+            if (event.error === 'not-allowed') {
                 isListeningActive = false;
-                isSendingToStreamlit = false;
-                if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
-                if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
-
-                setConvMode(false);
+                transcriptHint.innerText = '❌ Izin mikrofon ditolak.';
                 micBtn.classList.remove('listening');
                 micBtn.innerText = '🎙️ MULAI DENGAR';
-                micBtn.style.display = 'block';
-                try { recognition.stop(); } catch(e) {}
             }
-
-            micBtn.addEventListener('click', () => {
-                if (isListeningActive) {
-                    stopListening();
-                    transcriptHint.innerText = '🔴 Mode obrolan dimatikan.';
-                } else {
-                    startListening();
-                }
-            });
-
-            function sendToStreamlit(text) {
-                try {
-                    const parentDoc = window.parent.document;
-                    let candidates = parentDoc.querySelectorAll('[data-testid="stChatInput"] textarea');
-                    if (!candidates.length) candidates = parentDoc.querySelectorAll('textarea, input[type="text"]');
-                    let target = null;
-                    for (let el of candidates) {
-                        if (el.offsetParent !== null && !el.disabled && !el.readOnly) {
-                            target = el;
-                            break;
-                        }
+        };
+        recognition.onend = () => {
+            isRecognitionRunning = false;
+            if (isListeningActive && !userStoppedManually && !isSendingToStreamlit) {
+                setTimeout(() => {
+                    if (isListeningActive && !isRecognitionRunning && !isSendingToStreamlit) {
+                        try { recognition.start(); } catch(e){}
                     }
-                    if (!target) return;
-                    const proto = target.tagName === 'TEXTAREA'
-                        ? window.parent.HTMLTextAreaElement.prototype
-                        : window.parent.HTMLInputElement.prototype;
-                    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                    setter.call(target, text);
-                    target.dispatchEvent(new Event('input', { bubbles: true }));
-                    target.dispatchEvent(new Event('change', { bubbles: true }));
-
-                    setTimeout(() => {
-                        target.focus();
-                        const enterEvent = new KeyboardEvent('keydown', {
-                            bubbles: true, cancelable: true,
-                            keyCode: 13, which: 13, key: 'Enter', code: 'Enter'
-                        });
-                        target.dispatchEvent(enterEvent);
-                    }, 250);
-                } catch (err) { console.log('Send error:', err); }
+                }, RESTART_DELAY_MS);
             }
+        };
+    }
 
-            function scheduleResumeAfterAudio(estimatedMs) {
-                if (resumeTimer) clearTimeout(resumeTimer);
-                resumeTimer = setTimeout(() => {
-                    if (!audio.paused && !audio.ended) return;
-                    resumeListeningAfterResponse();
-                }, estimatedMs + 1500);
+    function finalizeAndSend() {
+        if (isSendingToStreamlit) return;
+        const text = (committedTranscript + ' ' + interimTranscript).replace(/\s+/g,' ').trim();
+        if (!text) return;
+        isSendingToStreamlit = true;
+        transcriptHint.innerText = `📤 Mengirim: "${text}"`;
+        micBtn.style.display = 'none';
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+        try { recognition.stop(); } catch(e){}
+        setTimeout(() => sendToStreamlit(text), 350);
+    }
+
+    function resumeListeningAfterResponse() {
+        if (userStoppedManually) return;
+        isSendingToStreamlit = false;
+        isListeningActive = true;
+        committedTranscript = ''; interimTranscript = '';
+        micBtn.style.display = 'block';
+        micBtn.classList.add('listening');
+        micBtn.innerText = '⏹️ STOP DENGAR';
+        transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
+        if (!isRecognitionRunning) { try { recognition.start(); } catch(e){} }
+    }
+
+    function startListening() {
+        if (!recognition || isListeningActive) return;
+        userStoppedManually = false;
+        isSendingToStreamlit = false;
+        committedTranscript = ''; interimTranscript = '';
+        isListeningActive = true;
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+        try { recognition.start(); } catch(e) {
+            try { recognition.stop(); } catch(_){}
+            setTimeout(() => { try { recognition.start(); } catch(_){} }, 250);
+        }
+    }
+
+    function stopListening() {
+        userStoppedManually = true;
+        isListeningActive = false;
+        isSendingToStreamlit = false;
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+        if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+        micBtn.classList.remove('listening');
+        micBtn.innerText = '🎙️ MULAI DENGAR';
+        try { recognition.stop(); } catch(e){}
+    }
+
+    micBtn.addEventListener('click', () => {
+        if (isListeningActive) { stopListening(); transcriptHint.innerText = '🔴 Mode obrolan dimatikan.'; }
+        else { startListening(); }
+    });
+
+    function sendToStreamlit(text) {
+        try {
+            const parentDoc = window.parent.document;
+            let candidates = parentDoc.querySelectorAll('[data-testid="stChatInput"] textarea');
+            if (!candidates.length) candidates = parentDoc.querySelectorAll('textarea, input[type="text"]');
+            let target = null;
+            for (let el of candidates) {
+                if (el.offsetParent !== null && !el.disabled && !el.readOnly) { target = el; break; }
             }
-
-            audio.addEventListener('ended', () => {
-                currentState = 'idle';
-                targetIntensity = 0;
-                setTimeout(resumeListeningAfterResponse, 600);
-            });
-
-            audio.addEventListener('error', () => {
-                scheduleResumeAfterAudio(EST_DURATION_MS);
-            });
-
-            function drawParticleSphereCore(scaleFactor) {
-                const rCore = Math.min(W, H) * 0.085 * scaleFactor;
-                const dpr = window.devicePixelRatio || 1;
-                const rotY = time * 0.0012;
-                const rotX = time * 0.0007;
-                const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
-                const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
-                
-                ctx.save();
-                const projectedDots = [];
-                for (let i = 0; i < NUM_SPHERE_DOTS; i++) {
-                    const dot = sphereDots[i];
-                    let x1 = dot.x * cosY - dot.z * sinY;
-                    let z1 = dot.x * sinY + dot.z * cosY;
-                    let y2 = dot.y * cosX - z1 * sinX;
-                    let z2 = dot.y * sinX + z1 * cosX;
-                    
-                    projectedDots.push({
-                        px: cx + x1 * rCore,
-                        py: cy + y2 * rCore,
-                        z: z2,
-                        size: dot.baseSize
-                    });
-                }
-                projectedDots.sort((a, b) => a.z - b.z);
-                
-                projectedDots.forEach(p => {
-                    const depthAlpha = (p.z + 1.2) / 2.4;
-                    const alpha = Math.max(0.12, Math.min(0.95, depthAlpha));
-                    const dotSize = p.size * (0.7 + depthAlpha * 0.6) * dpr;
-                    
-                    ctx.beginPath();
-                    ctx.arc(p.px, p.py, dotSize, 0, Math.PI * 2);
-                    ctx.fillStyle = `rgba(130, 245, 255, ${alpha})`;
-                    ctx.fill();
+            if (!target) return;
+            const proto = target.tagName === 'TEXTAREA'
+                ? window.parent.HTMLTextAreaElement.prototype
+                : window.parent.HTMLInputElement.prototype;
+            const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+            setter.call(target, text);
+            target.dispatchEvent(new Event('input', { bubbles: true }));
+            target.dispatchEvent(new Event('change', { bubbles: true }));
+            setTimeout(() => {
+                target.focus();
+                const enterEvent = new KeyboardEvent('keydown', {
+                    bubbles: true, cancelable: true,
+                    keyCode: 13, which: 13, key: 'Enter', code: 'Enter'
                 });
-                ctx.restore();
-            }
+                target.dispatchEvent(enterEvent);
+            }, 250);
+        } catch (err) { console.log('Send error:', err); }
+    }
 
-            function draw() {
-                ctx.clearRect(0, 0, W, H);
-                
-                if (currentState === 'speaking' && analyzer && freqData) {
-                    analyzer.getByteFrequencyData(freqData);
-                    let sum = 0;
-                    for (let i = 0; i < freqData.length; i++) sum += freqData[i];
-                    const avg = sum / freqData.length / 255;
-                    targetIntensity = avg * 2.8;
-                    targetListeningScale = 1.0;
-                } else if (currentState === 'listening' || currentState === 'thinking' || isListeningActive) {
-                    targetIntensity = 0.0;
-                    targetListeningScale = 1.35;
-                } else {
-                    targetIntensity = 0.0;
-                    targetListeningScale = 1.0;
-                }
-                
-                speakingIntensity += (targetIntensity - speakingIntensity) * 0.12;
-                listeningScale += (targetListeningScale - listeningScale) * 0.08;
-                
-                drawParticleSphereCore(listeningScale);
-                
-                const dpr = window.devicePixelRatio || 1;
-                const baseR = Math.min(W, H) * 0.28 * listeningScale;
-                const numRings = 40;
-                const pointsPerRing = 180;
-                
-                ctx.save();
-                for (let r = 0; r < numRings; r++) {
-                    const layerProgress = r / numRings; 
-                    const ringRadius = baseR + (layerProgress - 0.5) * (18 * dpr);
-                    
-                    ctx.beginPath();
-                    for (let p = 0; p <= pointsPerRing; p++) {
-                        const angle = (p / pointsPerRing) * Math.PI * 2;
-                        let wave = 0;
-                        if (speakingIntensity > 0.02) {
-                            let audioMod = 0;
-                            if (freqData && freqData.length > 0) {
-                                const normPos = p / pointsPerRing; 
-                                const symPos = Math.sin(normPos * Math.PI); 
-                                const freqIdx = Math.floor(symPos * (freqData.length * 0.5));
-                                audioMod = (freqData[freqIdx] / 255);
-                            }
-                            wave += (audioMod * (25 * dpr)) * speakingIntensity;
-                            wave += Math.sin(angle * 8 + time * 0.005 + r * 0.12) * (10 * dpr) * speakingIntensity;
-                            wave += Math.cos(angle * 12 - time * 0.003) * (6 * dpr) * speakingIntensity;
-                        }
-                        const currentR = ringRadius + wave;
-                        const x = cx + Math.cos(angle) * currentR;
-                        const y = cy + Math.sin(angle) * currentR;
-                        if (p === 0) ctx.moveTo(x, y);
-                        else ctx.lineTo(x, y);
+    function scheduleResumeAfterAudio(ms) {
+        if (resumeTimer) clearTimeout(resumeTimer);
+        resumeTimer = setTimeout(() => {
+            if (!audio.paused && !audio.ended) return;
+            resumeListeningAfterResponse();
+        }, ms + 1500);
+    }
+    audio.addEventListener('ended', () => {
+        currentState = 'idle';
+        targetIntensity = 0;
+        setTimeout(resumeListeningAfterResponse, 600);
+    });
+    audio.addEventListener('error', () => scheduleResumeAfterAudio(EST_DURATION_MS));
+
+    // ===== RENDER =====
+    function drawParticleSphereCore(scaleFactor) {
+        const rCore = Math.min(W, H) * 0.085 * scaleFactor;
+        const dpr = window.devicePixelRatio || 1;
+        const rotY = time * 0.0012, rotX = time * 0.0007;
+        const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+        const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+        const ox = orbOffset.x * dpr, oy = orbOffset.y * dpr;
+
+        ctx.save();
+        const projectedDots = [];
+        for (let i = 0; i < NUM_SPHERE_DOTS; i++) {
+            const dot = sphereDots[i];
+            let x1 = dot.x * cosY - dot.z * sinY;
+            let z1 = dot.x * sinY + dot.z * cosY;
+            let y2 = dot.y * cosX - z1 * sinX;
+            let z2 = dot.y * sinX + z1 * cosX;
+            projectedDots.push({ px: cx + ox + x1*rCore, py: cy + oy + y2*rCore,
+                                 z: z2, size: dot.baseSize });
+        }
+        projectedDots.sort((a, b) => a.z - b.z);
+        projectedDots.forEach(p => {
+            const depthAlpha = (p.z + 1.2) / 2.4;
+            const alpha = Math.max(0.12, Math.min(0.95, depthAlpha));
+            const dotSize = p.size * (0.7 + depthAlpha * 0.6) * dpr;
+            ctx.beginPath();
+            ctx.arc(p.px, p.py, dotSize, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(130, 245, 255, ${alpha})`;
+            ctx.fill();
+        });
+        ctx.restore();
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, W, H);
+
+        // Smooth pinch target
+        if (isGrabbing && pinchTarget) {
+            const dpr = window.devicePixelRatio || 1;
+            const tx = (pinchTarget.x - cx) / dpr;
+            const ty = (pinchTarget.y - cy) / dpr;
+            orbOffset.x += (tx - orbOffset.x) * 0.35;
+            orbOffset.y += (ty - orbOffset.y) * 0.35;
+        }
+
+        if (currentState === 'speaking' && analyzer && freqData) {
+            analyzer.getByteFrequencyData(freqData);
+            let sum = 0;
+            for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+            const avg = sum / freqData.length / 255;
+            targetIntensity = avg * 2.8;
+            targetListeningScale = 1.0;
+        } else if (currentState === 'listening' || currentState === 'thinking' || isListeningActive) {
+            targetIntensity = 0.0;
+            targetListeningScale = 1.35;
+        } else {
+            targetIntensity = 0.0;
+            targetListeningScale = 1.0;
+        }
+        speakingIntensity += (targetIntensity - speakingIntensity) * 0.12;
+        listeningScale += (targetListeningScale - listeningScale) * 0.08;
+
+        drawParticleSphereCore(listeningScale);
+
+        const dpr = window.devicePixelRatio || 1;
+        const baseR = Math.min(W, H) * 0.28 * listeningScale;
+        const numRings = 40, pointsPerRing = 180;
+        const ox = orbOffset.x * dpr, oy = orbOffset.y * dpr;
+
+        ctx.save();
+        for (let r = 0; r < numRings; r++) {
+            const layerProgress = r / numRings;
+            const ringRadius = baseR + (layerProgress - 0.5) * (18 * dpr);
+            ctx.beginPath();
+            for (let p = 0; p <= pointsPerRing; p++) {
+                const angle = (p / pointsPerRing) * Math.PI * 2;
+                let wave = 0;
+                if (speakingIntensity > 0.02) {
+                    let audioMod = 0;
+                    if (freqData && freqData.length > 0) {
+                        const normPos = p / pointsPerRing;
+                        const symPos = Math.sin(normPos * Math.PI);
+                        const freqIdx = Math.floor(symPos * (freqData.length * 0.5));
+                        audioMod = (freqData[freqIdx] / 255);
                     }
-                    ctx.closePath();
-                    
-                    let alpha = 0.15 + (1.0 - Math.abs(layerProgress - 0.5) * 2) * 0.5;
-                    if (speakingIntensity > 0.02) alpha += speakingIntensity * 0.25;
-                    
-                    ctx.strokeStyle = 'rgba(0, 242, 210, ' + Math.min(alpha, 0.95) + ')';
-                    ctx.lineWidth = (0.8 + (1.0 - Math.abs(layerProgress - 0.5)) * 0.6) * dpr;
-                    ctx.stroke();
+                    wave += (audioMod * (25 * dpr)) * speakingIntensity;
+                    wave += Math.sin(angle * 8 + time * 0.005 + r * 0.12) * (10 * dpr) * speakingIntensity;
+                    wave += Math.cos(angle * 12 - time * 0.003) * (6 * dpr) * speakingIntensity;
                 }
-                ctx.restore();
+                const currentR = ringRadius + wave;
+                const x = cx + ox + Math.cos(angle) * currentR;
+                const y = cy + oy + Math.sin(angle) * currentR;
+                if (p === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            let alpha = 0.15 + (1.0 - Math.abs(layerProgress - 0.5) * 2) * 0.5;
+            if (speakingIntensity > 0.02) alpha += speakingIntensity * 0.25;
+            if (isGrabbing) alpha = Math.min(1.0, alpha * 1.3);
+            ctx.strokeStyle = isGrabbing
+                ? `rgba(255, 210, 74, ${Math.min(alpha, 0.95)})`
+                : `rgba(0, 242, 210, ${Math.min(alpha, 0.95)})`;
+            ctx.lineWidth = (0.8 + (1.0 - Math.abs(layerProgress - 0.5)) * 0.6) * dpr;
+            ctx.stroke();
+        }
+        ctx.restore();
 
-                time += 16;
-                requestAnimationFrame(draw);
-            }
-            
-            const convActiveOnLoad = getConvMode();
-            
-            if (HAS_AUDIO) {
-                micBtn.style.display = 'none';
-                playBtn.style.display = 'none';
-                currentState = 'speaking';
-                
-                if (convActiveOnLoad) {
-                    isListeningActive = true;
-                }
-                
-                initAudioAnalyzer();
-                audio.play().then(() => {
-                    if (audioContext) audioContext.resume();
-                }).catch(() => {
-                    playBtn.style.display = 'block';
-                    scheduleResumeAfterAudio(EST_DURATION_MS);
-                });
-            } else {
-                if (convActiveOnLoad) {
-                    setTimeout(() => {
-                        resumeListeningAfterResponse();
-                    }, 400);
-                } else {
-                    micBtn.style.display = 'block';
-                    micBtn.innerText = '🎙️ MULAI DENGAR';
-                }
-            }
-            
-            draw();
-        </script>
+        time += 16;
+        requestAnimationFrame(draw);
+    }
+
+    if (HAS_AUDIO) {
+        micBtn.style.display = 'none';
+        playBtn.style.display = 'none';
+        currentState = 'speaking';
+        initAudioAnalyzer();
+        audio.play().then(() => { if (audioContext) audioContext.resume(); })
+             .catch(() => { playBtn.style.display = 'block';
+                            scheduleResumeAfterAudio(EST_DURATION_MS); });
+    } else {
+        micBtn.style.display = 'block';
+        micBtn.innerText = '🎙️ MULAI DENGAR';
+    }
+
+    draw();
+    </script>
     </body>
     </html>
     """
-    
-    html = (
-        html_template
+
+    html = (html_template
         .replace("__AUDIO_B64__", audio_b64)
         .replace("__HAS_AUDIO__", has_audio)
         .replace("__CONV_MODE__", conv_mode_js)
+        .replace("__INTERACTIVE__", interactive_js)
+        .replace("__CAMERA__", camera_js)
         .replace("__EST_DURATION__", str(est_duration_ms))
-        .replace("__STATE__", state)
-    )
-    
-    components.html(html, height=360)
+        .replace("__STATE__", state))
+
+    components.html(html, height=120 if camera_mode else 360)
+
+
+# ============================================================
+# PINCH BRIDGE — kirim posisi pinch ke iframe orb
+# ============================================================
+def render_pinch_bridge(pinch_point, active):
+    """Kirim posisi pinch ke semua iframe orb via postMessage."""
+    if not active or not pinch_point:
+        x, y = -1, -1
+        active_js = "false"
+    else:
+        x, y = pinch_point
+        active_js = "true"
+
+    components.html(f"""
+    <script>
+      (function() {{
+        const msg = {{ type: 'jarvis_pinch', active: {active_js}, x: {x}, y: {y} }};
+        try {{
+          const iframes = window.parent.document.querySelectorAll('iframe');
+          iframes.forEach(f => {{ try {{ f.contentWindow.postMessage(msg, '*'); }} catch(e){{}} }});
+        }} catch(e) {{ console.log('bridge error', e); }}
+      }})();
+    </script>
+    """, height=0)
+
 
 # ============================================================
 # SYSTEM PROMPT
@@ -1420,7 +1454,9 @@ if "conversation_mode" not in st.session_state:
 if "camera_active_state" not in st.session_state:
     st.session_state.camera_active_state = False
 
-# Kontrol kamera lewat suara: nonce mengganti key webrtc agar streamer dibuat ulang
+if "orb_interactive" not in st.session_state:
+    st.session_state.orb_interactive = False
+
 if "cam_nonce" not in st.session_state:
     st.session_state.cam_nonce = 0
 if "cam_autostart" not in st.session_state:
@@ -1428,8 +1464,8 @@ if "cam_autostart" not in st.session_state:
 if "cam_attempt" not in st.session_state:
     st.session_state.cam_attempt = 0
 
-CAM_MAX_ATTEMPTS = 3     # jumlah percobaan otomatis
-CAM_RETRY_AFTER = 20     # detik menunggu sebelum mengulang
+CAM_MAX_ATTEMPTS = 3
+CAM_RETRY_AFTER = 20
 
 CAMERA_ON_KEYWORDS = ["nyalain kamera", "nyalakan kamera", "hidupkan kamera", "buka kamera",
                       "aktifkan kamera", "start kamera", "turn on the camera", "open the camera",
@@ -1444,25 +1480,13 @@ def detect_camera_command(text: str):
     return None
 
 # ============================================================
-# ORB DI ATAS
-# ============================================================
-orb_placeholder = st.empty()
-with orb_placeholder.container():
-    render_jarvis_orb(
-        audio_bytes=st.session_state.current_audio,
-        state=st.session_state.orb_state,
-        conversation_mode=st.session_state.conversation_mode,
-    )
-
-# ============================================================
-# LAYOUT KAMERA DENGAN AUTO-ACTIVATE STATE
+# LAYOUT KAMERA
 # ============================================================
 col1, col2 = st.columns([2, 1])
 
 with col1:
     st.subheader("📹 Kamera (Live)")
-    
-    # Jika perintah suara kamera aktif, kita berikan default active pada webrtc jika didukung
+
     ctx = webrtc_streamer(
         key=f"hand-3d-tracker-smooth-{st.session_state.cam_nonce}-{ICE_MODES.index(ICE_MODE)}",
         desired_playing_state=True if st.session_state.cam_autostart else None,
@@ -1480,6 +1504,13 @@ with col2:
         st.session_state.camera_active_state = True
         if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
             st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame.")
+        # status pinch
+        if ctx.video_processor is not None:
+            _pinch_active = getattr(ctx.video_processor, "pinch_active", False)
+            if _pinch_active:
+                st.markdown("🟡 **Orb digenggam** — gerakkan tangan untuk memindahkan orb.")
+            elif st.session_state.get("orb_interactive"):
+                st.caption("🤏 Cubit jempol + telunjuk untuk menggeser orb.")
     else:
         st.session_state.camera_active_state = False
         if st.session_state.cam_autostart:
@@ -1504,14 +1535,34 @@ with col2:
             st.warning("⚪ Kamera dalam mode standby. Ucapkan 'nyalakan kamera' atau klik START.")
 
     st.markdown("---")
-    st.markdown("---")
     st.toggle("📷 Mode foto (cadangan, tanpa WebRTC)", key="photo_mode",
               help="Pakai kamera browser langsung untuk mengambil foto. Cukup untuk bertanya 'apa yang kamu lihat?'. "
                    "Gesture kubus 3D tidak aktif di mode ini.")
     if st.session_state.get("photo_mode"):
         st.camera_input("Ambil foto untuk Jarvis", key="snap_cam")
         st.caption("Ambil foto, lalu tanya Jarvis, mis. 'apa yang kamu lihat?'. Foto terakhir dipakai untuk pertanyaan berikutnya.")
-    st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
+    st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser kubus |\n| 🤏 Pinch 3 | Zoom |\n| 🤏 Cubit orb | Pindahkan orb |")
+
+# ============================================================
+# ORB
+# ============================================================
+pinch_pt = None
+pinch_active = False
+if ctx.video_processor is not None:
+    pinch_pt = getattr(ctx.video_processor, "pinch_point_norm", None)
+    pinch_active = getattr(ctx.video_processor, "pinch_active", False)
+
+orb_placeholder = st.empty()
+with orb_placeholder.container():
+    render_jarvis_orb(
+        audio_bytes=st.session_state.current_audio,
+        state=st.session_state.orb_state,
+        conversation_mode=st.session_state.conversation_mode,
+        interactive=st.session_state.orb_interactive,
+        camera_mode=False,   # orb di panel utama (bukan corner) — corner hanya untuk iframe orb
+    )
+    if st.session_state.orb_interactive:
+        render_pinch_bridge(pinch_pt, pinch_active)
 
 # ============================================================
 # JARVIS CHAT + VOICE
@@ -1561,20 +1612,20 @@ elif user_q:
             audio_bytes=None,
             state="listening",
             conversation_mode=st.session_state.conversation_mode,
+            interactive=st.session_state.orb_interactive,
+            camera_mode=False,
         )
-    
+
     has_img = False
     pil_imgs = []
 
     if ctx.state.playing and ctx.video_processor is not None:
-        time.sleep(0.5) 
+        time.sleep(0.5)
         if len(ctx.video_processor.frame_buffer) > 0:
             latest_frame = list(ctx.video_processor.frame_buffer)[-1]
             frame_rgb = cv2.cvtColor(latest_frame, cv2.COLOR_BGR2RGB)
             pil_imgs.append(Image.fromarray(frame_rgb))
             has_img = True
-    else:
-        pass  # kamera mati -> model diberi tahu lewat system note di bawah
 
     if not has_img and st.session_state.get("photo_mode"):
         _snap = st.session_state.get("snap_cam")
@@ -1676,6 +1727,8 @@ elif user_q:
                             audio_bytes=audio_bytes,
                             state="speaking",
                             conversation_mode=st.session_state.conversation_mode,
+                            interactive=st.session_state.orb_interactive,
+                            camera_mode=False,
                         )
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
@@ -1686,6 +1739,14 @@ elif user_q:
 # ============================================================
 with st.sidebar:
     st.header("ℹ️ Info")
+    st.subheader("🌀 Interactive Orb")
+    st.toggle("Aktifkan pinch-to-drag orb", key="orb_interactive",
+              help="Cubit jempol + telunjuk di depan kamera, lalu geser untuk memindahkan orb. "
+                   "Butuh kamera aktif.")
+    if st.session_state.get("orb_interactive"):
+        st.caption("🤏 Cubit → geser orb. Lepas pinch → orb berhenti di posisi terakhir.")
+    st.markdown("---")
+
     st.subheader("🧹 Chat Controls")
     if st.button("🧹 Clear Chat View"):
         st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -1723,9 +1784,9 @@ with st.sidebar:
         st.markdown("---")
 
     if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
-    
+
     st.caption("Technology:")
-    st.caption("• Orb: Quantum Dots")
+    st.caption("• Orb: Quantum Dots + Interactive Pinch")
     st.caption("• Vision: Live Camera Grab")
     st.caption("• API: Groq")
     st.caption("• Voice Mode: Continuous Conversation")
@@ -1775,7 +1836,7 @@ with st.sidebar:
 
 
 # ============================================================
-# AUTO-RETRY KAMERA (di paling akhir agar chat tetap ter-render)
+# AUTO-RETRY KAMERA
 # ============================================================
 if ctx.state.playing:
     st.session_state.cam_attempt = 0
@@ -1784,10 +1845,9 @@ elif st.session_state.cam_autostart and st.session_state.cam_attempt > 0:
     if _elapsed > CAM_RETRY_AFTER:
         if st.session_state.cam_attempt < CAM_MAX_ATTEMPTS:
             st.session_state.cam_attempt += 1
-            st.session_state.cam_nonce += 1          # buat ulang komponen -> start ulang
+            st.session_state.cam_nonce += 1
             st.session_state.cam_requested_at = time.time()
             st.rerun()
-        # kalau sudah habis percobaan: berhenti polling, pesan error tampil di panel status
     else:
         time.sleep(1.5)
         st.rerun()
