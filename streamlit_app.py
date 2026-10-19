@@ -1,1793 +1,1631 @@
-import av
-import cv2
-import numpy as np
-import streamlit as st
-import streamlit.components.v1 as components
-import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
-import urllib.request
-import os
-import time
-import threading
-import io
-import base64
-import asyncio
-import re
-import json
-import pathlib
-import collections
-from PIL import Image
-
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
-
-# ============ AI: Groq (Cloud) ============
-try:
-    from groq import Groq
-    GROQ_AVAILABLE = True
-except ImportError:
-    GROQ_AVAILABLE = False
-
-# ============ AI: Edge-TTS ============
-try:
-    import edge_tts
-    TTS_AVAILABLE = True
-except ImportError:
-    TTS_AVAILABLE = False
-
-# ============ KONFIGURASI GROQ API ============
-def _get_groq_key() -> str:
-    key = os.environ.get("GROQ_API_KEY", "")
-    if not key:
-        try:
-            key = st.secrets.get("GROQ_API_KEY", "")
-        except Exception:
-            key = ""
-    return key
-
-GROQ_API_KEY = _get_groq_key()
-
-JARVIS_VISION_MODEL = os.environ.get("JARVIS_VISION_MODEL", "qwen/qwen3.8-27b")
-JARVIS_TEXT_MODEL = os.environ.get("JARVIS_TEXT_MODEL", "openai/gpt-oss-120b")
-JARVIS_MEMORY_MODEL = os.environ.get("JARVIS_MEMORY_MODEL", "openai/gpt-oss-20b")
-
-MAX_OUTPUT_TOKENS = 1024
-MAX_CONTEXT_TURNS = 6
-MAX_MSG_CHARS = 400
-MAX_FRAMES_FOR_VISION = 1
-IMAGE_MAX_SIZE = 384
-IMAGE_QUALITY = 45
-
-VOICE_EN = "en-GB-RyanNeural"
-VOICE_RATE = "-5%"
-VOICE_PITCH = "-3Hz"
-
-# ============ Konfigurasi Halaman ============
-st.set_page_config(page_title="J.A.R.V.I.S - Quantum Dots", page_icon="🔵", layout="wide")
-st.title("🔵 J.A.R.V.I.S — Quantum Dots")
-st.markdown("Kamera merekam **setiap 0.2 detik**. Klik **'Mulai Dengar'** sekali, mode obrolan suara akan **aktif terus** sampai Anda klik **'Stop Dengar'**.")
-
-# ============ WebRTC & Konstanta ============
-def _log(msg: str):
-    print(f"[JARVIS-PERSIST] {msg}", flush=True)
-
-def _secret(name: str) -> str:
-    val = os.environ.get(name, "")
-    if not val:
-        try:
-            val = st.secrets.get(name, "")
-        except Exception:
-            val = ""
-    return str(val) if val else ""
-
-ICE_ERROR = ""
-
-@st.cache_data(ttl=3000, show_spinner=False)
-def _twilio_ice_servers(sid: str, tok: str):
-    # Hanya hasil SUKSES yang di-cache (exception tidak pernah di-cache)
-    from twilio.rest import Client
-    return Client(sid, tok).tokens.create().ice_servers
-
-@st.cache_data(ttl=3000, show_spinner=False)
-def _cloudflare_ice_servers(key_id: str, api_token: str):
-    import json, urllib.request
-    req = urllib.request.Request(
-        f"https://rtc.live.cloudflare.com/v1/turn/keys/{key_id}/credentials/generate-ice-servers",
-        data=json.dumps({"ttl": 86400}).encode(),
-        headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json",
-                 "User-Agent": "Mozilla/5.0 (JarvisApp)"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=10) as r:
-        payload = json.loads(r.read().decode())
-    servers = payload.get("iceServers")
-    if not servers:
-        raise RuntimeError("respons Cloudflare tanpa iceServers")
-    return servers if isinstance(servers, list) else [servers]
-
-def get_ice_servers():
-    """Streamlit Cloud tidak bisa WebRTC tanpa TURN server.
-    Prioritas: (1) Twilio, (2) TURN generik, (3) STUN saja. Return: (ice_servers, sumber)"""
-    global ICE_ERROR
-    stun = {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}
-
-    cf_id, cf_tok = _secret("CLOUDFLARE_TURN_KEY_ID").strip(), _secret("CLOUDFLARE_TURN_API_TOKEN").strip()
-    if cf_id and cf_tok:
-        try:
-            return _cloudflare_ice_servers(cf_id, cf_tok), "Cloudflare TURN"
-        except Exception as e:
-            detail = str(e)
-            try:
-                detail += " " + e.read().decode()[:150]   # HTTPError membawa body
-            except Exception:
-                pass
-            ICE_ERROR = f"Cloudflare gagal: {detail[:250]}"
-            _log(ICE_ERROR)
-
-    sid, tok = _secret("TWILIO_ACCOUNT_SID").strip(), _secret("TWILIO_AUTH_TOKEN").strip()
-    if sid and tok:
-        try:
-            return _twilio_ice_servers(sid, tok), "Twilio TURN"
-        except ImportError:
-            ICE_ERROR = "Paket `twilio` belum terpasang — tambahkan `twilio` ke requirements.txt lalu reboot app."
-        except Exception as e:
-            ICE_ERROR = f"Twilio menolak kredensial / gagal: {str(e)[:200]}"
-        _log(f"Twilio gagal: {ICE_ERROR}")
-    else:
-        if not ICE_ERROR:
-            ICE_ERROR = "Kredensial TURN (CLOUDFLARE_TURN_* atau TWILIO_*) tidak terbaca dari Secrets."
-
-    turn_urls = _secret("TURN_URLS")
-    if turn_urls:
-        urls = [u.strip() for u in turn_urls.split(",") if u.strip()]
-        return [stun, {"urls": urls, "username": _secret("TURN_USERNAME"),
-                       "credential": _secret("TURN_CREDENTIAL")}], "TURN kustom"
-    return [stun], "STUN saja"
-
-ICE_MODES = ["STUN saja", "Auto (STUN + TURN)", "Paksa TURN relay"]
-st.session_state.setdefault("ice_mode", ICE_MODES[0])
-ICE_MODE = st.session_state.get("ice_mode", ICE_MODES[0])
-if ICE_MODE not in ICE_MODES:
-    ICE_MODE = ICE_MODES[0]
-
-# Default = STUN saja (terbukti paling stabil). Kredensial TURN hanya diambil bila mode TURN dipilih.
-if ICE_MODE == "STUN saja":
-    _ICE_SERVERS, ICE_SOURCE = [], "STUN saja"
-else:
-    _ICE_SERVERS, ICE_SOURCE = get_ice_servers()
-
-def _server_urls(server: dict) -> list:
-    u = server.get("urls") or server.get("url") or []
-    return [u] if isinstance(u, str) else list(u)
-
-def _is_turn(server: dict) -> bool:
-    return any(x.startswith(("turn:", "turns:")) for x in _server_urls(server))
-
-def _udp_only(servers: list) -> list:
-    """Sisi server (aiortc/aioice) bisa lambat/macet saat mengumpulkan kandidat TURN lewat TCP/TLS.
-    Untuk server cukup STUN + TURN UDP; browser tetap memakai daftar lengkap."""
-    out = []
-    for sv in servers:
-        urls = [x for x in _server_urls(sv) if x.startswith(("stun:", "stuns:")) or
-                (x.startswith("turn:") and "transport=tcp" not in x)]
-        if urls:
-            item = {"urls": urls}
-            if sv.get("username"): item["username"] = sv["username"]
-            if sv.get("credential"): item["credential"] = sv["credential"]
-            out.append(item)
-    return out
-
-_STUN_ONLY = [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]
-_has_turn = any(_is_turn(sv) for sv in _ICE_SERVERS)
-
-if ICE_MODE == "STUN saja" or not _has_turn:
-    _browser_cfg = {"iceServers": _STUN_ONLY}
-    _server_cfg = {"iceServers": _STUN_ONLY}
-else:
-    _browser_cfg = {"iceServers": list(_STUN_ONLY) + list(_ICE_SERVERS)}
-    _server_cfg = {"iceServers": list(_STUN_ONLY) + [sv for sv in _udp_only(_ICE_SERVERS) if _is_turn(sv)]}
-    if ICE_MODE == "Paksa TURN relay" or _secret("ICE_RELAY_ONLY") == "1":
-        _browser_cfg["iceTransportPolicy"] = "relay"
-
-RTC_CONFIGURATION = RTCConfiguration(_browser_cfg)
-SERVER_RTC_CONFIGURATION = RTCConfiguration(_server_cfg)
-
-import inspect as _inspect
-_WEBRTC_EXTRA = {}
-if "server_rtc_configuration" in _inspect.signature(webrtc_streamer).parameters:
-    _WEBRTC_EXTRA["server_rtc_configuration"] = SERVER_RTC_CONFIGURATION
-
-SHARPEN = False  # True = deteksi sedikit lebih tajam tapi lebih lambat di server cloud
-PINCH_ENTER = 40
-PINCH_EXIT = 60
-HOLD_THRESHOLD = 1.0
-MIN_SCALE, MAX_SCALE = 0.5, 3.0
-ZOOM_SENSITIVITY = 0.01
-MAX_ZOOM_STEP = 0.03
-THUMB_TIP = 4
-INDEX_TIP = 8
-MIDDLE_TIP = 12
-PINKY_TIP = 20
-POS_ALPHA = 0.45
-ROT_ALPHA = 0.20
-SCALE_ALPHA = 0.20
-INERTIA_DECAY = 0.93
-PAN_POS_ALPHA = 0.7
-PAN_DEADZONE = 0.5
-PAN_APPLY_SMOOTH = 0.55
-
-HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8),
-    (5, 9), (9, 10), (10, 11), (11, 12), (9, 13), (13, 14), (14, 15),
-    (15, 16), (13, 17), (17, 18), (18, 19), (19, 20), (0, 17)
-]
-
-MODEL_PATH = "hand_landmarker.task"
-MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
-
-if not os.path.exists(MODEL_PATH):
-    with st.spinner("📥 Mengunduh model AI..."):
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-
-# ============================================================
-# PERSISTENCE HELPERS
-# ============================================================
-SCRIPT_DIR = pathlib.Path(__file__).parent.absolute()
-MEMORY_FILE = str(SCRIPT_DIR / "jarvis_persistent_memory.json")
-CHAT_FILE = str(SCRIPT_DIR / "jarvis_chat_history.json")
-
-
-def load_memory() -> list:
-    if os.path.exists(MEMORY_FILE):
-        try:
-            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                _log(f"LOADED memory: {len(data)} items")
-                return data
-        except Exception as e:
-            _log(f"ERROR loading memory: {e}")
-            return []
-    return []
-
-def save_memory(memory_list: list):
-    try:
-        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(memory_list, f, ensure_ascii=False, indent=2)
-        _log(f"SAVED memory: {len(memory_list)} items")
-    except Exception as e:
-        _log(f"ERROR saving memory: {e}")
-
-def load_chat_history() -> list:
-    if os.path.exists(CHAT_FILE):
-        try:
-            with open(CHAT_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                _log(f"LOADED chat: {len(data)} messages")
-                return data
-        except Exception as e:
-            _log(f"ERROR loading chat: {e}")
-            return []
-    return []
-
-def save_chat_history(messages: list):
-    try:
-        clean_msgs = []
-        for m in messages:
-            if m["role"] == "system":
-                continue
-            content = m["content"]
-            if isinstance(content, list):
-                texts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
-                content = " ".join(texts) if texts else "[image]"
-            if not str(content).strip():
-                continue
-            if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
-                content = content[:MAX_MSG_CHARS] + "..."
-            clean_msgs.append({"role": m["role"], "content": content})
-        with open(CHAT_FILE, "w", encoding="utf-8") as f:
-            json.dump(clean_msgs, f, ensure_ascii=False, indent=2)
-        _log(f"SAVED chat: {len(clean_msgs)} messages")
-    except Exception as e:
-        _log(f"ERROR saving chat: {e}")
-
-def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
-    history = load_chat_history()
-    if not history:
-        return ""
-    recent = history[-max_turns * 2:]
-    lines = []
-    for m in recent:
-        role = "Sir Lois" if m["role"] == "user" else "Jarvis"
-        content = m["content"]
-        if isinstance(content, list):
-            content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
-        if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
-            content = content[:MAX_MSG_CHARS] + "..."
-        lines.append(f"{role}: {content}")
-    _log(f"CONTEXT BUILT: {len(recent)} messages")
-    return "\n".join(lines)
-
-# ============================================================
-# KELAS KAMERA — SILENT VISUAL MEMORY
-# ============================================================
-cv2.setNumThreads(1)  # hemat memori/thread di server cloud
-
-@st.cache_resource(show_spinner=False)
-def get_detector_holder():
-    """Satu HandLandmarker untuk SEMUA koneksi kamera (hemat memori).
-    Dimuat di thread latar sekali saja per proses server."""
-    holder = {"det": None, "lock": threading.Lock(), "ts": 0}
-
-    def _load():
-        try:
-            base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
-            options = vision.HandLandmarkerOptions(
-                base_options=base_options, running_mode=vision.RunningMode.VIDEO,
-                num_hands=1, min_hand_detection_confidence=0.3,
-                min_hand_presence_confidence=0.3, min_tracking_confidence=0.5
-            )
-            holder["det"] = vision.HandLandmarker.create_from_options(options)
-            _log("HandLandmarker siap (shared)")
-        except Exception as e:
-            _log(f"Gagal memuat HandLandmarker: {e}")
-
-    threading.Thread(target=_load, daemon=True).start()
-    return holder
-
-DETECTOR_HOLDER = get_detector_holder()
-
-class Hand3DProcessor(VideoProcessorBase):
-    def __init__(self, holder=None):
-        self.holder = holder
-        self.frame_timestamp = 0
-        
-        self.rx, self.ry = 0.5, 0.5
-        self.scale = 1.0
-        self.offset_x, self.offset_y = 0.0, 0.0
-        self.target_rx, self.target_ry = 0.5, 0.5
-        self.target_scale = 1.0
-        self.target_offset_x, self.target_offset_y = 0.0, 0.0
-        self.vel_ry = 0.0
-        self.vel_rx = 0.0
-        self.smooth_index = None
-        self.smooth_palm = None
-        self.smooth_mid_pinch = None
-        self.smooth_mid_pinch_pan = None
-        self.prev_index_pos = None
-        self.prev_pan_pos = None
-        self.zoom_base_index = None
-        self.zoom_base_middle = None
-        self.active_mode = None
-        self.candidate_mode = None
-        self.hold_start_time = 0.0
-        self.last_seen_time = 0.0
-        self.smoothed_dist_index = None
-        self.smoothed_dist_middle = None
-        self.smoothed_dist_mid_index = None
-        self.prev_palm_pos = None
-        self.swipe_vel_smooth = np.array([0.0, 0.0])
-        self.vertices = np.array([
-            [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
-            [-1, -1,  1], [1, -1,  1], [1, 1,  1], [-1, 1,  1]
-        ], dtype=np.float32)
-        self.edges = [
-            (0,1), (1,2), (2,3), (3,0), (4,5), (5,6), (6,7), (7,4),
-            (0,4), (1,5), (2,6), (3,7)
-        ]
-        
-        self.frame_buffer = collections.deque(maxlen=2)
-        self.last_buffer_time = time.time()
-        self.buffer_interval = 0.2
-
-    @property
-    def detector(self):
-        return self.holder["det"] if self.holder else None
-
-    def _to_pixel(self, landmark, w, h):
-        return int(landmark.x * w), int(landmark.y * h)
-
-    def _draw_landmarks(self, img, landmarks, w, h):
-        for a, b in HAND_CONNECTIONS:
-            p1 = self._to_pixel(landmarks[a], w, h)
-            p2 = self._to_pixel(landmarks[b], w, h)
-            cv2.line(img, p1, p2, (80, 80, 80), 1, cv2.LINE_AA)
-        for lm in landmarks:
-            cv2.circle(img, self._to_pixel(lm, w, h), 2, (120, 120, 120), -1, cv2.LINE_AA)
-
-    def _draw_3d_cube(self, img, cx, cy):
-        cos_x, sin_x = np.cos(self.rx), np.sin(self.rx)
-        cos_y, sin_y = np.cos(self.ry), np.sin(self.ry)
-        rot_x = np.array([[1, 0, 0], [0, cos_x, -sin_x], [0, sin_x, cos_x]])
-        rot_y = np.array([[cos_y, 0, sin_y], [0, 1, 0], [-sin_y, 0, cos_y]])
-        rot_matrix = rot_y @ rot_x
-        transformed = self.vertices @ rot_matrix.T
-        pts_2d = []
-        fov = 4.0
-        for v in transformed:
-            v_scaled = v * self.scale
-            z = v_scaled[2] + fov
-            if z <= 0.1: z = 0.1
-            px = int((v_scaled[0] / z) * 150) + cx + int(self.offset_x)
-            py = int((v_scaled[1] / z) * 150) + cy + int(self.offset_y)
-            pts_2d.append((px, py, v_scaled[2]))
-        for a, b in self.edges:
-            p1, p2 = pts_2d[a], pts_2d[b]
-            depth = (p1[2] + p2[2]) / 2
-            intensity = float(np.clip(1.0 - depth / 2.0, 0.2, 1.0))
-            color = (int(255 * intensity), int(255 * intensity), 0)
-            cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), color, 6, cv2.LINE_AA)
-            cv2.line(img, (p1[0], p1[1]), (p2[0], p2[1]), (255, 255, 255), 1, cv2.LINE_AA)
-        for p in pts_2d:
-            cv2.circle(img, (p[0], p[1]), 3, (0, 0, 255), -1, cv2.LINE_AA)
-
-    def _draw_progress_ring(self, img, center, progress, color):
-        cv2.ellipse(img, center, (25, 25), -90, 0, int(360 * min(progress, 1.0)), color, 4, cv2.LINE_AA)
-
-    @staticmethod
-    def _smooth(new_val, old_val, alpha):
-        if old_val is None: return new_val
-        return alpha * new_val + (1 - alpha) * old_val
-
-    @staticmethod
-    def _smooth_pt(new_pt, old_pt, alpha):
-        if old_pt is None: return new_pt
-        return (alpha * new_pt[0] + (1 - alpha) * old_pt[0], alpha * new_pt[1] + (1 - alpha) * old_pt[1])
-
-    @staticmethod
-    def _deadzone(delta, threshold):
-        if abs(delta) < threshold: return 0.0
-        return delta - np.sign(delta) * threshold
-
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)
-        h, w, _ = img.shape
-
-        if SHARPEN:
-            gaussian = cv2.GaussianBlur(img, (0, 0), 2.0)
-            img_src = cv2.addWeighted(img, 1.3, gaussian, -0.3, 0)
-        else:
-            img_src = img
-        img_rgb = cv2.cvtColor(img_src, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-        try:
-            det = self.detector
-            if det is None:
-                raise RuntimeError("model belum siap")
-            with self.holder["lock"]:
-                self.holder["ts"] = max(self.holder["ts"] + 1, int(time.time() * 1000))
-                results = det.detect_for_video(mp_image, self.holder["ts"])
-        except Exception as e:
-            if self.detector is not None:
-                _log(f"MediaPipe error: {e}")
-            results = type("NoHands", (), {"hand_landmarks": []})()
-
-        mode_text = "MODE: SIAP"
-        color_text = (200, 200, 200)
-        if self.detector is None:
-            mode_text = "MEMUAT MODEL AI..."
-            color_text = (0, 165, 255)
-        current_time = time.time()
-
-        self.target_ry += self.vel_ry
-        self.target_rx += self.vel_rx
-        self.vel_ry *= INERTIA_DECAY
-        self.vel_rx *= INERTIA_DECAY
-        if abs(self.vel_ry) < 0.0015: self.vel_ry = 0.0
-        if abs(self.vel_rx) < 0.0015: self.vel_rx = 0.0
-
-        self.ry = self._smooth(self.target_ry, self.ry, ROT_ALPHA)
-        self.rx = self._smooth(self.target_rx, self.rx, ROT_ALPHA)
-        self.scale = self._smooth(self.target_scale, self.scale, SCALE_ALPHA)
-
-        hand_detected = False
-        if results.hand_landmarks:
-            hand_detected = True
-            self.last_seen_time = current_time
-        else:
-            if current_time - self.last_seen_time > 0.4:
-                self.active_mode = None
-                self.candidate_mode = None
-                self.prev_palm_pos = None
-                self.prev_index_pos = None
-                self.prev_pan_pos = None
-                self.smooth_palm = None
-                self.smooth_index = None
-                self.smooth_mid_pinch = None
-                self.smooth_mid_pinch_pan = None
-                self.smoothed_dist_index = None
-                self.smoothed_dist_middle = None
-                self.smoothed_dist_mid_index = None
-                self.zoom_base_index = None
-                self.zoom_base_middle = None
-
-        if hand_detected:
-            lm = results.hand_landmarks[0]
-            self._draw_landmarks(img, lm, w, h)
-            thumb = self._to_pixel(lm[THUMB_TIP], w, h)
-            index = self._to_pixel(lm[INDEX_TIP], w, h)
-            middle = self._to_pixel(lm[MIDDLE_TIP], w, h)
-            pinky = self._to_pixel(lm[PINKY_TIP], w, h)
-            wrist = self._to_pixel(lm[0], w, h)
-            palm_center = ((wrist[0] + middle[0]) // 2, (wrist[1] + middle[1]) // 2)
-
-            self.smooth_index = self._smooth_pt(index, self.smooth_index, POS_ALPHA)
-            self.smooth_palm = self._smooth_pt(palm_center, self.smooth_palm, POS_ALPHA)
-            index_s = (int(self.smooth_index[0]), int(self.smooth_index[1]))
-            palm_s = (int(self.smooth_palm[0]), int(self.smooth_palm[1]))
-
-            raw_di = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
-            raw_dm = float(np.hypot(thumb[0] - middle[0], thumb[1] - middle[1]))
-            raw_dmi = float(np.hypot(middle[0] - index[0], middle[1] - index[1]))
-
-            self.smoothed_dist_index = self._smooth(raw_di, self.smoothed_dist_index, 0.5)
-            self.smoothed_dist_middle = self._smooth(raw_dm, self.smoothed_dist_middle, 0.5)
-            self.smoothed_dist_mid_index = self._smooth(raw_dmi, self.smoothed_dist_mid_index, 0.5)
-            d_index = self.smoothed_dist_index
-            d_middle = self.smoothed_dist_middle
-            d_mid_index = self.smoothed_dist_mid_index
-
-            index_up = index[1] < wrist[1]
-            middle_up = middle[1] < wrist[1]
-            pinky_up = pinky[1] < wrist[1]
-            thumb_up = thumb[1] < wrist[1] - 20
-            is_5_fingers = (index_up and middle_up and pinky_up and thumb_up and d_index > 60 and d_middle > 60)
-
-            if is_5_fingers:
-                if self.prev_palm_pos is not None:
-                    dx = self._deadzone(palm_s[0] - self.prev_palm_pos[0], 3.0)
-                    dy = self._deadzone(palm_s[1] - self.prev_palm_pos[1], 3.0)
-                    self.swipe_vel_smooth[0] = 0.7 * self.swipe_vel_smooth[0] + 0.3 * (dx * 0.012)
-                    self.swipe_vel_smooth[1] = 0.7 * self.swipe_vel_smooth[1] + 0.3 * (dy * 0.012)
-                    if abs(dx) > 3 or abs(dy) > 3:
-                        self.vel_ry += self.swipe_vel_smooth[0]
-                        self.vel_rx += self.swipe_vel_smooth[1]
-                        mode_text = "SWIPE INERTIA!"
-                        color_text = (0, 255, 255)
-                self.prev_palm_pos = palm_s
-                self.candidate_mode = None
-                self.active_mode = None
-            else:
-                self.prev_palm_pos = None
-
-            detected = None
-            if not is_5_fingers:
-                th_i = PINCH_EXIT if self.active_mode == "PAN" else PINCH_ENTER
-                th_z = PINCH_EXIT if self.active_mode == "ZOOM" else PINCH_ENTER
-                if d_index < th_z and d_middle < th_z and d_mid_index < th_z + 20:
-                    detected = "ZOOM"
-                elif d_index < th_i and d_middle > th_i + 20:
-                    detected = "PAN"
-                elif index[1] < thumb[1] and middle[1] > thumb[1] and d_index > th_i:
-                    detected = "ROTASI"
-
-            if self.active_mode is None and detected:
-                if self.candidate_mode != detected:
-                    self.candidate_mode = detected
-                    self.hold_start_time = current_time
-                progress = (current_time - self.hold_start_time) / HOLD_THRESHOLD
-                if progress >= 1.0:
-                    self.active_mode = detected
-                    self.vel_ry = 0.0
-                    self.vel_rx = 0.0
-                    self.target_rx = self.rx
-                    self.target_ry = self.ry
-                    if self.active_mode == "ZOOM":
-                        self.zoom_base_index = d_index
-                        self.zoom_base_middle = d_middle
-                    self.prev_index_pos = None
-                    self.prev_pan_pos = None
-                    self.smooth_mid_pinch = None
-                    self.smooth_mid_pinch_pan = None
-                else:
-                    mid_pinch = ((thumb[0] + index[0]) // 2, (thumb[1] + index[1]) // 2)
-                    ring_color = ((255, 165, 0) if detected == "ZOOM" else (0, 0, 255) if detected == "PAN" else (0, 255, 0))
-                    self._draw_progress_ring(img, mid_pinch, progress, ring_color)
-                    mode_text = f"VERIFIKASI: {detected}"
-                    color_text = ring_color
-            elif self.active_mode is None and not detected and not is_5_fingers:
-                self.candidate_mode = None
-                self.hold_start_time = 0.0
-
-            if self.active_mode == "ROTASI":
-                mode_text = "MODE: ROTASI"
-                color_text = (0, 255, 0)
-                if self.prev_index_pos is not None:
-                    dx = self._deadzone(index_s[0] - self.prev_index_pos[0], 2.0)
-                    dy = self._deadzone(index_s[1] - self.prev_index_pos[1], 2.0)
-                    dx = np.clip(dx, -20, 20)
-                    dy = np.clip(dy, -20, 20)
-                    self.target_ry += dx * 0.010
-                    self.target_rx += dy * 0.010
-                self.prev_index_pos = index_s
-                if detected != "ROTASI":
-                    self.active_mode = None
-                    self.prev_index_pos = None
-            elif self.active_mode == "PAN":
-                mode_text = "MODE: GESER"
-                color_text = (0, 0, 255)
-                mid = ((thumb[0] + index[0]) / 2.0, (thumb[1] + index[1]) / 2.0)
-                self.smooth_mid_pinch_pan = self._smooth_pt(mid, self.smooth_mid_pinch_pan, PAN_POS_ALPHA)
-                pan_pt = self.smooth_mid_pinch_pan
-                if self.prev_pan_pos is not None:
-                    dx = pan_pt[0] - self.prev_pan_pos[0]
-                    dy = pan_pt[1] - self.prev_pan_pos[1]
-                    if abs(dx) < PAN_DEADZONE: dx = 0.0
-                    if abs(dy) < PAN_DEADZONE: dy = 0.0
-                    self.target_offset_x += dx
-                    self.target_offset_y += dy
-                self.prev_pan_pos = pan_pt
-                self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH)
-                self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH)
-                if detected != "PAN":
-                    self.active_mode = None
-                    self.prev_pan_pos = None
-            elif self.active_mode == "ZOOM":
-                self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH)
-                self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH)
-                if d_index < PINCH_EXIT and d_middle < PINCH_EXIT:
-                    self.zoom_base_index = d_index
-                    self.zoom_base_middle = d_middle
-                    mode_text = "ZOOM: PILIH JARI"
-                    color_text = (255, 165, 0)
-                else:
-                    if d_index > PINCH_ENTER + 15 and d_middle < PINCH_EXIT:
-                        mode_text = "ZOOM IN"
-                        color_text = (0, 255, 255)
-                        if self.zoom_base_index is not None:
-                            delta = d_index - self.zoom_base_index
-                            if delta > 0:
-                                sc = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
-                                self.target_scale = np.clip(self.target_scale + sc, MIN_SCALE, MAX_SCALE)
-                                self.zoom_base_index = d_index
-                    elif d_middle > PINCH_ENTER + 15 and d_index < PINCH_EXIT:
-                        mode_text = "ZOOM OUT"
-                        color_text = (255, 0, 255)
-                        if self.zoom_base_middle is not None:
-                            delta = d_middle - self.zoom_base_middle
-                            if delta > 0:
-                                sc = np.clip(delta * ZOOM_SENSITIVITY, 0, MAX_ZOOM_STEP)
-                                self.target_scale = np.clip(self.target_scale - sc, MIN_SCALE, MAX_SCALE)
-                                self.zoom_base_middle = d_middle
-                if d_index > PINCH_EXIT + 30 and d_middle > PINCH_EXIT + 30:
-                    self.active_mode = None
-                    self.zoom_base_index = None
-                    self.zoom_base_middle = None
-            else:
-                self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH)
-                self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH)
-
-            cv2.circle(img, thumb, 5, color_text, -1)
-            cv2.circle(img, index_s, 5, color_text, -1)
-            cv2.circle(img, middle, 5, color_text, -1)
-            if is_5_fingers:
-                cv2.circle(img, palm_s, 10, (0, 255, 255), -1)
-        else:
-            self.offset_x = self._smooth(self.target_offset_x, self.offset_x, PAN_APPLY_SMOOTH)
-            self.offset_y = self._smooth(self.target_offset_y, self.offset_y, PAN_APPLY_SMOOTH)
-
-        cx, cy = w // 2, h // 2
-        self._draw_3d_cube(img, cx, cy)
-        cv2.putText(img, mode_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_text, 2, cv2.LINE_AA)
-        cv2.putText(img, f"Skala: {self.scale:.2f}x", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
-
-        if current_time - self.last_buffer_time > self.buffer_interval:
-            self.frame_buffer.append(img.copy())
-            self.last_buffer_time = current_time
-
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-    def __del__(self):
-        try: pass
-        except: pass
-
-# ============================================================
-# HELPER JARVIS (GROQ API)
-# ============================================================
-def image_to_base64(pil_img: Image.Image, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY) -> str:
-    img = pil_img.copy()
-    img.thumbnail((max_size, max_size))
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality)
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-def _is_rate_limit_error(err_str: str) -> bool:
-    err = err_str.lower()
-    return (
-        "413" in err
-        or "rate_limit" in err
-        or "request too large" in err
-        or "tokens per minute" in err
-        or "itpm" in err
-    )
-
-EMPTY_FALLBACK = "My apologies, Sir, I lost my train of thought. Could you say that once more?"
-
-def _clean_llm_text(text) -> str:
-    if not text: return ""
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"^.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    return text.strip()
-
-def _call_llm(client, model: str, messages: list, max_tokens: int, temperature: float, **extra) -> str:
-    kwargs = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens, **extra)
-    if model.startswith("openai/gpt-oss"):
-        kwargs["reasoning_effort"] = "low"   # cegah token habis untuk "berpikir" -> content kosong
-    resp = client.chat.completions.create(**kwargs)
-    return _clean_llm_text(resp.choices[0].message.content)
-
-def _text_only_answer(client, api_messages: list) -> str:
-    fallback_msgs = [api_messages[0]]
-    for m in api_messages[1:]:
-        if m["role"] == "system" and isinstance(m["content"], str):
-            fallback_msgs.append(m)
-    text_msgs = []
-    for m in api_messages:
-        if m["role"] in ("user", "assistant"):
-            if isinstance(m["content"], str):
-                if m["content"].strip():
-                    text_msgs.append({"role": m["role"], "content": m["content"][:300]})
-            elif isinstance(m["content"], list):
-                texts = [c.get("text", "") for c in m["content"] if isinstance(c, dict) and c.get("type") == "text"]
-                if texts:
-                    text_msgs.append({"role": m["role"], "content": " ".join(texts)[:300]})
-    fallback_msgs.extend(text_msgs[-4:])
-    return _call_llm(client, JARVIS_TEXT_MODEL, fallback_msgs, 600, 0.7)
-
-def ask_jarvis(api_messages: list, use_vision: bool) -> str:
-    if not GROQ_AVAILABLE: return "❌ `groq` belum terinstall. Jalankan: pip install groq"
-    if not GROQ_API_KEY:
-        return "❌ API Key Groq belum diisi. Set environment variable GROQ_API_KEY atau .streamlit/secrets.toml."
-
-    client = Groq(api_key=GROQ_API_KEY)
-    model = JARVIS_VISION_MODEL if use_vision else JARVIS_TEXT_MODEL
-    try:
-        text = _call_llm(client, model, api_messages, MAX_OUTPUT_TOKENS, 0.85,
-                         frequency_penalty=0.6, presence_penalty=0.4)
-        if text: return text
-
-        _log("⚠️ Jawaban kosong — retry dengan token lebih besar")
-        text = _call_llm(client, model, api_messages, MAX_OUTPUT_TOKENS * 2, 0.7)
-        if text: return text
-
-        if use_vision:
-            _log("⚠️ Vision tetap kosong — fallback ke text-only")
-            text = _text_only_answer(client, api_messages)
-            if text: return text
-        return EMPTY_FALLBACK
-    except Exception as e:
-        err_str = str(e)
-        _log(f"GROQ API ERROR: {err_str[:200]}")
-        if _is_rate_limit_error(err_str):
-            _log("⚠️ Rate limit kena — fallback ke text-only")
-            try:
-                answer = _text_only_answer(client, api_messages)
-                if not answer: return EMPTY_FALLBACK
-                return f"{answer}\n\n*(Sir, I had to switch to text-only mode due to token limits.)*"
-            except Exception:
-                return "Sir, my cognitive buffer is momentarily saturated. Please wait a minute and try a shorter question."
-        return f"❌ Error Jarvis (Groq): {err_str[:300]}"
-
-def sanitize_latex(text: str) -> str:
-    if not text: return text
-    text = re.sub(r'\[\s*(.*?)\s*\]', r'\1', text, flags=re.DOTALL)
-    text = re.sub(r'(?<!\$)\b([a-zA-Z]\s*=\s*[0-9\.]+\s*(?:[a-zA-Z/]+)?)\b(?!\$)', r' $ \1 $ ', text)
-    text = re.sub(r'([a-zA-Z0-9])\$', r'\1 $', text)
-    text = re.sub(r'\$([a-zA-Z0-9])', r'$ \1', text)
-    return text.strip()
-
-def strip_filler_words(text: str) -> str:
-    if not text: return text
-    filler_patterns = [
-        r'^\s*(Aaa+h+|Ahh+|Ah+|Hmm+m*|Hm+|Uhh+|Umm+|Erm+|Er+|Hehehe+|Hehe+|Haha+|Hah+|Ugh+|Pfft+|Ohh+|Ooh+)[\s,\.\!\?…—\-]*',
-    ]
-    for _ in range(3):
-        old = text
-        for pattern in filler_patterns:
-            text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
-        if text == old: break
-    text = re.sub(r'[\s,]+(Aaa+h+|Ahh+|Hmm+m*|Uhh+|Umm+|Erm+|Hehehe+|Hehe+|Haha+|Ugh+)[\s,\.\!\?…]*', ' ', text, flags=re.IGNORECASE)
-    text = re.sub(r'^\s*Well\s*[\.,…—\-]+\s*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'\s+', ' ', text).strip()
-    if text and text[0].islower(): text = text[0].upper() + text[1:]
-    return text
-
-def strip_repetitive_greeting(text: str, history: list) -> str:
-    if not text: return text
-    past_greetings = 0
-    for m in history:
-        if m["role"] == "assistant":
-            content = m["content"]
-            if isinstance(content, list):
-                content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
-            if re.search(r'\b(good day|good morning|good afternoon|good evening|hello there|greetings)\b', str(content), re.IGNORECASE):
-                past_greetings += 1
-    if past_greetings >= 1:
-        text = re.sub(r'^\s*(good day|good morning|good afternoon|good evening|hello there|greetings)[\s,\.!]*', '', text, flags=re.IGNORECASE)
-        if text and text[0].islower(): text = text[0].upper() + text[1:]
-    return text
-
-def extract_memory(user_text: str, ai_text: str) -> str | None:
-    if not GROQ_AVAILABLE or not GROQ_API_KEY: return None
-    try:
-        client = Groq(api_key=GROQ_API_KEY)
-        prompt = f"""
-        Analyse this conversation. Is there any important fact about Sir Lois 
-        worth remembering? If none, reply "NONE". If yes, write ONE short memory sentence IN ENGLISH (max 15 words).
-        User: {user_text[:300]}
-        AI: {ai_text[:300]}
-        """
-        memory = _call_llm(client, JARVIS_MEMORY_MODEL,
-                           [{"role": "user", "content": prompt}], 300, 0.1)
-        if "NONE" not in memory.upper() and len(memory) > 5: return memory
-        return None
-    except Exception: return None
-
-def _normalize_for_tts(text: str) -> str:
-    text = re.sub(r'\$\$.*?\$\$', ' formula ', text, flags=re.DOTALL)
-    text = re.sub(r'\$.*?\$', ' formula ', text)
-    text = text.replace('\\', '').replace('{', '').replace('}', '')
-    text = strip_filler_words(text)
-    text = re.sub(r'\(.*?\)', '', text)
-    text = re.sub(r'[*#_`>]', '', text)
-    text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)
-    text = text.replace("...", ", ")
-    replacements = {"&": " and ", "%": " percent ", "@": " at ", "#": " number ", "+": " plus ", "=": " equals ", "→": " to ", "↔": " to ", "·": " ", "•": " ", "—": ", ", "–": ", "}
-    for k, v in replacements.items(): text = text.replace(k, v)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-def generate_tts_edge(text: str) -> bytes | None:
-    if not TTS_AVAILABLE: return None
-    clean_text = _normalize_for_tts(text)
-    if not clean_text: return None
-
-    async def _generate():
-        communicate = edge_tts.Communicate(clean_text, VOICE_EN, rate=VOICE_RATE, pitch=VOICE_PITCH)
-        audio_data = b""
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio": audio_data += chunk["data"]
-        return audio_data
-
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        audio = loop.run_until_complete(_generate())
-        loop.close()
-        return audio
-    except Exception as e:
-        st.error(f"Gagal generate suara: {e}")
-        return None
-
-# ============================================================
-# JARVIS ORB — CONTINUOUS MODE
-# ============================================================
-def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False):
-    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
-    has_audio = "true" if audio_bytes else "false"
-    conv_mode_js = "true" if conversation_mode else "false"
-    
-    est_duration_ms = 0
-    if audio_bytes:
-        est_duration_ms = max(3000, int(len(audio_bytes) / 16))
-    
-    html_template = r"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>
-            * { box-sizing: border-box; margin: 0; padding: 0; }
-            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; }
-            .orb-container { position: relative; width: 100%; height: 320px; display: flex; align-items: center; justify-content: center; }
-            canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-            
-            .controls-row { position: absolute; bottom: 10px; z-index: 30; display: flex; gap: 12px; align-items: center; }
-            .mic-btn, .play-btn { padding: 10px 20px; border: 1px solid #37dfff; border-radius: 20px; background: rgba(6,20,33,0.9); color: #8defff; cursor: pointer; font-family: 'Courier New', monospace; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; box-shadow: 0 0 15px rgba(0,200,255,0.4); transition: all 0.3s; }
-            .mic-btn:hover, .play-btn:hover { background: rgba(0,100,150,0.9); box-shadow: 0 0 30px rgba(0,220,255,0.8); }
-            .mic-btn.listening { background: rgba(0,255,200,0.9); border-color: #00ffc8; color: #000; box-shadow: 0 0 25px rgba(0,255,200,0.8); animation: pulse 1.2s infinite; }
-            
-            @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.06); } 100% { transform: scale(1); } }
-            .transcript-hint { position: absolute; top: 5px; color: #7cfc00; font-size: 11px; text-align: center; width: 100%; z-index: 25; text-shadow: 0 0 8px rgba(0,255,0,0.6); padding: 0 10px; }
-        </style>
-    </head>
-    <body>
-        <div class="transcript-hint" id="transcriptHint">Klik "Mulai Dengar" untuk mode obrolan suara</div>
-        <div class="orb-container">
-            <canvas id="orbCanvas"></canvas>
-        </div>
-        <div class="controls-row">
-            <button class="mic-btn" id="micButton">🎙️ MULAI DENGAR</button>
-            <button class="play-btn" id="playButton" style="display:none;">▶ PLAY VOICE</button>
-        </div>
-        <audio id="jarvisAudio" style="display:none;" preload="auto">
-            <source src="data:audio/mp3;base64,__AUDIO_B64__" type="audio/mp3">
-        </audio>
-        <script>
-            const canvas = document.getElementById('orbCanvas');
-            const ctx = canvas.getContext('2d');
-            const audio = document.getElementById('jarvisAudio');
-            const playBtn = document.getElementById('playButton');
-            const micBtn = document.getElementById('micButton');
-            const transcriptHint = document.getElementById('transcriptHint');
-            
-            const HAS_AUDIO = __HAS_AUDIO__;
-            const INITIAL_CONV_MODE = __CONV_MODE__;
-            const EST_DURATION_MS = __EST_DURATION__;
-            let currentState = "__STATE__";
-            
-            let W, H, cx, cy;
-            let analyzer = null;
-            let audioContext = null;
-            let sourceNode = null;
-            let freqData = null;
-            let time = 0;
-            let speakingIntensity = 0;
-            let targetIntensity = 0;
-            let listeningScale = 1.0;
-            let targetListeningScale = 1.0;
-            
-            const sphereDots = [];
-            const NUM_SPHERE_DOTS = 320;
-            const phiRatio = (1 + Math.sqrt(5)) / 2;
-            
-            for (let i = 0; i < NUM_SPHERE_DOTS; i++) {
-                const theta = 2 * Math.PI * i / phiRatio;
-                const y = 1 - (i / (NUM_SPHERE_DOTS - 1)) * 2;
-                const radiusAtY = Math.sqrt(1 - y * y);
-                sphereDots.push({
-                    x: Math.cos(theta) * radiusAtY, y: y, z: Math.sin(theta) * radiusAtY,
-                    baseSize: Math.random() * 0.8 + 0.8
-                });
-            }
-
-            function resize() {
-                const rect = canvas.getBoundingClientRect();
-                W = canvas.width = rect.width * (window.devicePixelRatio || 1);
-                H = canvas.height = rect.height * (window.devicePixelRatio || 1);
-                cx = W / 2; cy = H / 2;
-            }
-            window.addEventListener('resize', resize);
-            resize();
-            
-            function getConvMode() {
-                try {
-                    const v = window.parent.localStorage.getItem('jarvis_conversation_mode');
-                    return v === '1';
-                } catch(e) { return INITIAL_CONV_MODE; }
-            }
-            function setConvMode(active) {
-                try {
-                    window.parent.localStorage.setItem('jarvis_conversation_mode', active ? '1' : '0');
-                } catch(e) {}
-            }
-
-            function initAudioAnalyzer() {
-                if (audioContext) return;
-                try {
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    sourceNode = audioContext.createMediaElementSource(audio);
-                    analyzer = audioContext.createAnalyser();
-                    analyzer.fftSize = 256;
-                    analyzer.smoothingTimeConstant = 0.8;
-                    sourceNode.connect(analyzer);
-                    analyzer.connect(audioContext.destination);
-                    freqData = new Uint8Array(analyzer.frequencyBinCount);
-                } catch (e) { console.log('Audio analyzer error:', e); }
-            }
-            
-            playBtn.addEventListener('click', async () => {
-                initAudioAnalyzer();
-                if (audioContext && audioContext.state === 'suspended') await audioContext.resume();
-                try {
-                    await audio.play();
-                    playBtn.style.display = 'none';
-                    currentState = 'speaking';
-                } catch (e) { console.log('Audio blocked'); }
-            });
-
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            let recognition = null;
-            let isListeningActive = false;
-            let isRecognitionRunning = false;
-            let silenceTimer = null;
-            let committedTranscript = '';
-            let interimTranscript = '';
-            let isSendingToStreamlit = false;
-            let userStoppedManually = false;
-            let resumeTimer = null;
-
-            const SILENCE_TIMEOUT_MS = 1500;
-            const RESTART_DELAY_MS = 100;
-
-            if (SpeechRecognition) {
-                recognition = new SpeechRecognition();
-                recognition.continuous = true;
-                recognition.interimResults = true;
-                recognition.lang = 'id-ID';
-                recognition.maxAlternatives = 1;
-
-                recognition.onstart = () => {
-                    isRecognitionRunning = true;
-                    micBtn.classList.add('listening');
-                    micBtn.innerText = '⏹️ STOP DENGAR';
-                    micBtn.style.display = 'block';
-                    transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
-                };
-
-                recognition.onresult = (event) => {
-                    if (isSendingToStreamlit) return;
-
-                    let newFinal = '';
-                    let interim = '';
-                    for (let i = event.resultIndex; i < event.results.length; ++i) {
-                        const res = event.results[i];
-                        if (res.isFinal) {
-                            newFinal += res[0].transcript + ' ';
-                        } else {
-                            interim += res[0].transcript + ' ';
-                        }
-                    }
-
-                    if (newFinal.trim()) {
-                        committedTranscript = (committedTranscript + ' ' + newFinal).replace(/\s+/g, ' ').trim();
-                    }
-                    interimTranscript = interim.replace(/\s+/g, ' ').trim();
-
-                    const combined = (committedTranscript + ' ' + interimTranscript).replace(/\s+/g, ' ').trim();
-                    if (combined) {
-                        transcriptHint.innerText = `Mendengar: "${combined}"`;
-                    }
-
-                    if (silenceTimer) clearTimeout(silenceTimer);
-                    silenceTimer = setTimeout(finalizeAndSend, SILENCE_TIMEOUT_MS);
-                };
-
-                recognition.onerror = (event) => {
-                    if (event.error === 'no-speech' || event.error === 'aborted') return;
-                    if (event.error === 'not-allowed') {
-                        isListeningActive = false;
-                        setConvMode(false);
-                        transcriptHint.innerText = '❌ Izin mikrofon ditolak.';
-                        micBtn.classList.remove('listening');
-                        micBtn.innerText = '🎙️ MULAI DENGAR';
-                        micBtn.style.display = 'block';
-                        return;
-                    }
-                };
-
-                recognition.onend = () => {
-                    isRecognitionRunning = false;
-                    if (isListeningActive && !userStoppedManually && !isSendingToStreamlit) {
-                        setTimeout(() => {
-                            if (isListeningActive && !isRecognitionRunning && !isSendingToStreamlit) {
-                                try { recognition.start(); } catch (e) {}
-                            }
-                        }, RESTART_DELAY_MS);
-                    }
-                };
-            }
-
-            function finalizeAndSend() {
-                if (isSendingToStreamlit) return;
-                const text = (committedTranscript + ' ' + interimTranscript).replace(/\s+/g, ' ').trim();
-                if (!text) return;
-
-                isSendingToStreamlit = true;
-                transcriptHint.innerText = `📤 Mengirim: "${text}"`;
-                micBtn.style.display = 'none';
-
-                if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
-                try { recognition.stop(); } catch(e) {}
-
-                setTimeout(() => { sendToStreamlit(text); }, 350);
-            }
-
-            function resumeListeningAfterResponse() {
-                if (userStoppedManually) return;
-                const convActive = getConvMode();
-                if (!convActive) {
-                    transcriptHint.innerText = '🔴 Mode obrolan dimatikan.';
-                    micBtn.style.display = 'block';
-                    micBtn.classList.remove('listening');
-                    micBtn.innerText = '🎙️ MULAI DENGAR';
-                    return;
-                }
-
-                isSendingToStreamlit = false;
-                isListeningActive = true;
-                committedTranscript = '';
-                interimTranscript = '';
-
-                micBtn.style.display = 'block';
-                micBtn.classList.add('listening');
-                micBtn.innerText = '⏹️ STOP DENGAR';
-                transcriptHint.innerText = '🟢 Mode obrolan aktif — silakan bicara...';
-
-                if (!isRecognitionRunning) {
-                    try { recognition.start(); } catch(e) {}
-                }
-            }
-
-            function startListening() {
-                if (!recognition) return;
-                if (isListeningActive) return;
-
-                userStoppedManually = false;
-                isSendingToStreamlit = false;
-                committedTranscript = '';
-                interimTranscript = '';
-                isListeningActive = true;
-                setConvMode(true);
-
-                if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
-
-                try { recognition.start(); } catch (e) {
-                    try { recognition.stop(); } catch(_){}
-                    setTimeout(() => { try { recognition.start(); } catch(_) {} }, 250);
-                }
-            }
-
-            function stopListening() {
-                userStoppedManually = true;
-                isListeningActive = false;
-                isSendingToStreamlit = false;
-                if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
-                if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
-
-                setConvMode(false);
-                micBtn.classList.remove('listening');
-                micBtn.innerText = '🎙️ MULAI DENGAR';
-                micBtn.style.display = 'block';
-                try { recognition.stop(); } catch(e) {}
-            }
-
-            micBtn.addEventListener('click', () => {
-                if (isListeningActive) {
-                    stopListening();
-                    transcriptHint.innerText = '🔴 Mode obrolan dimatikan.';
-                } else {
-                    startListening();
-                }
-            });
-
-            function sendToStreamlit(text) {
-                try {
-                    const parentDoc = window.parent.document;
-                    let candidates = parentDoc.querySelectorAll('[data-testid="stChatInput"] textarea');
-                    if (!candidates.length) candidates = parentDoc.querySelectorAll('textarea, input[type="text"]');
-                    let target = null;
-                    for (let el of candidates) {
-                        if (el.offsetParent !== null && !el.disabled && !el.readOnly) {
-                            target = el;
-                            break;
-                        }
-                    }
-                    if (!target) return;
-                    const proto = target.tagName === 'TEXTAREA'
-                        ? window.parent.HTMLTextAreaElement.prototype
-                        : window.parent.HTMLInputElement.prototype;
-                    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                    setter.call(target, text);
-                    target.dispatchEvent(new Event('input', { bubbles: true }));
-                    target.dispatchEvent(new Event('change', { bubbles: true }));
-
-                    setTimeout(() => {
-                        target.focus();
-                        const enterEvent = new KeyboardEvent('keydown', {
-                            bubbles: true, cancelable: true,
-                            keyCode: 13, which: 13, key: 'Enter', code: 'Enter'
-                        });
-                        target.dispatchEvent(enterEvent);
-                    }, 250);
-                } catch (err) { console.log('Send error:', err); }
-            }
-
-            function scheduleResumeAfterAudio(estimatedMs) {
-                if (resumeTimer) clearTimeout(resumeTimer);
-                resumeTimer = setTimeout(() => {
-                    if (!audio.paused && !audio.ended) return;
-                    resumeListeningAfterResponse();
-                }, estimatedMs + 1500);
-            }
-
-            audio.addEventListener('ended', () => {
-                currentState = 'idle';
-                targetIntensity = 0;
-                setTimeout(resumeListeningAfterResponse, 600);
-            });
-
-            audio.addEventListener('error', () => {
-                scheduleResumeAfterAudio(EST_DURATION_MS);
-            });
-
-            function drawParticleSphereCore(scaleFactor) {
-                const rCore = Math.min(W, H) * 0.085 * scaleFactor;
-                const dpr = window.devicePixelRatio || 1;
-                const rotY = time * 0.0012;
-                const rotX = time * 0.0007;
-                const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
-                const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
-                
-                ctx.save();
-                const projectedDots = [];
-                for (let i = 0; i < NUM_SPHERE_DOTS; i++) {
-                    const dot = sphereDots[i];
-                    let x1 = dot.x * cosY - dot.z * sinY;
-                    let z1 = dot.x * sinY + dot.z * cosY;
-                    let y2 = dot.y * cosX - z1 * sinX;
-                    let z2 = dot.y * sinX + z1 * cosX;
-                    
-                    projectedDots.push({
-                        px: cx + x1 * rCore,
-                        py: cy + y2 * rCore,
-                        z: z2,
-                        size: dot.baseSize
-                    });
-                }
-                projectedDots.sort((a, b) => a.z - b.z);
-                
-                projectedDots.forEach(p => {
-                    const depthAlpha = (p.z + 1.2) / 2.4;
-                    const alpha = Math.max(0.12, Math.min(0.95, depthAlpha));
-                    const dotSize = p.size * (0.7 + depthAlpha * 0.6) * dpr;
-                    
-                    ctx.beginPath();
-                    ctx.arc(p.px, p.py, dotSize, 0, Math.PI * 2);
-                    ctx.fillStyle = `rgba(130, 245, 255, ${alpha})`;
-                    ctx.fill();
-                });
-                ctx.restore();
-            }
-
-            function draw() {
-                ctx.clearRect(0, 0, W, H);
-                
-                if (currentState === 'speaking' && analyzer && freqData) {
-                    analyzer.getByteFrequencyData(freqData);
-                    let sum = 0;
-                    for (let i = 0; i < freqData.length; i++) sum += freqData[i];
-                    const avg = sum / freqData.length / 255;
-                    targetIntensity = avg * 2.8;
-                    targetListeningScale = 1.0;
-                } else if (currentState === 'listening' || currentState === 'thinking' || isListeningActive) {
-                    targetIntensity = 0.0;
-                    targetListeningScale = 1.35;
-                } else {
-                    targetIntensity = 0.0;
-                    targetListeningScale = 1.0;
-                }
-                
-                speakingIntensity += (targetIntensity - speakingIntensity) * 0.12;
-                listeningScale += (targetListeningScale - listeningScale) * 0.08;
-                
-                drawParticleSphereCore(listeningScale);
-                
-                const dpr = window.devicePixelRatio || 1;
-                const baseR = Math.min(W, H) * 0.28 * listeningScale;
-                const numRings = 40;
-                const pointsPerRing = 180;
-                
-                ctx.save();
-                for (let r = 0; r < numRings; r++) {
-                    const layerProgress = r / numRings; 
-                    const ringRadius = baseR + (layerProgress - 0.5) * (18 * dpr);
-                    
-                    ctx.beginPath();
-                    for (let p = 0; p <= pointsPerRing; p++) {
-                        const angle = (p / pointsPerRing) * Math.PI * 2;
-                        let wave = 0;
-                        if (speakingIntensity > 0.02) {
-                            let audioMod = 0;
-                            if (freqData && freqData.length > 0) {
-                                const normPos = p / pointsPerRing; 
-                                const symPos = Math.sin(normPos * Math.PI); 
-                                const freqIdx = Math.floor(symPos * (freqData.length * 0.5));
-                                audioMod = (freqData[freqIdx] / 255);
-                            }
-                            wave += (audioMod * (25 * dpr)) * speakingIntensity;
-                            wave += Math.sin(angle * 8 + time * 0.005 + r * 0.12) * (10 * dpr) * speakingIntensity;
-                            wave += Math.cos(angle * 12 - time * 0.003) * (6 * dpr) * speakingIntensity;
-                        }
-                        const currentR = ringRadius + wave;
-                        const x = cx + Math.cos(angle) * currentR;
-                        const y = cy + Math.sin(angle) * currentR;
-                        if (p === 0) ctx.moveTo(x, y);
-                        else ctx.lineTo(x, y);
-                    }
-                    ctx.closePath();
-                    
-                    let alpha = 0.15 + (1.0 - Math.abs(layerProgress - 0.5) * 2) * 0.5;
-                    if (speakingIntensity > 0.02) alpha += speakingIntensity * 0.25;
-                    
-                    ctx.strokeStyle = 'rgba(0, 242, 210, ' + Math.min(alpha, 0.95) + ')';
-                    ctx.lineWidth = (0.8 + (1.0 - Math.abs(layerProgress - 0.5)) * 0.6) * dpr;
-                    ctx.stroke();
-                }
-                ctx.restore();
-
-                time += 16;
-                requestAnimationFrame(draw);
-            }
-            
-            const convActiveOnLoad = getConvMode();
-            
-            if (HAS_AUDIO) {
-                micBtn.style.display = 'none';
-                playBtn.style.display = 'none';
-                currentState = 'speaking';
-                
-                if (convActiveOnLoad) {
-                    isListeningActive = true;
-                }
-                
-                initAudioAnalyzer();
-                audio.play().then(() => {
-                    if (audioContext) audioContext.resume();
-                }).catch(() => {
-                    playBtn.style.display = 'block';
-                    scheduleResumeAfterAudio(EST_DURATION_MS);
-                });
-            } else {
-                if (convActiveOnLoad) {
-                    setTimeout(() => {
-                        resumeListeningAfterResponse();
-                    }, 400);
-                } else {
-                    micBtn.style.display = 'block';
-                    micBtn.innerText = '🎙️ MULAI DENGAR';
-                }
-            }
-            
-            draw();
-        </script>
-    </body>
-    </html>
-    """
-    
-    html = (
-        html_template
-        .replace("__AUDIO_B64__", audio_b64)
-        .replace("__HAS_AUDIO__", has_audio)
-        .replace("__CONV_MODE__", conv_mode_js)
-        .replace("__EST_DURATION__", str(est_duration_ms))
-        .replace("__STATE__", state)
-    )
-    
-    components.html(html, height=360)
-
-# ============================================================
-# SYSTEM PROMPT
-# ============================================================
-SYSTEM_PROMPT = """
-You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>J.A.R.V.I.S — Quantum Dots</title>
+<style>
+  :root {
+    --c:#00ffc8; --c2:#37dfff; --bg:#050810; --panel:rgba(7,14,24,.72);
+    --txt:#cfe9f5; --dim:#7a96a8;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body {
+    height:100%; background:var(--bg); color:var(--txt); overflow:hidden;
+    font-family: 'Courier New', ui-monospace, monospace;
+  }
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(ellipse at 20% 10%, rgba(0,120,180,.18), transparent 55%),
+      radial-gradient(ellipse at 80% 90%, rgba(0,255,200,.10), transparent 55%);
+  }
+  #orbWrap { position:fixed; inset:0; z-index:1; display:flex; align-items:center; justify-content:center; pointer-events:none; }
+  #orbCanvas { width:100%; height:100%; }
+
+  #topbar {
+    position:fixed; top:0; left:0; right:0; z-index:10;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:12px 18px; gap:12px;
+    background:linear-gradient(to bottom, rgba(5,8,16,.9), transparent);
+  }
+  #title { font-weight:700; letter-spacing:2px; font-size:15px; color:var(--c2); text-shadow:0 0 14px rgba(55,223,255,.6); white-space:nowrap; }
+  #title span { color:#fff; }
+  #topbtns { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  button {
+    background:rgba(0,255,200,.10); border:1px solid rgba(0,255,200,.55);
+    color:var(--c); padding:8px 14px; border-radius:999px;
+    font:600 11px ui-monospace,monospace; letter-spacing:.5px;
+    cursor:pointer; backdrop-filter:blur(8px); transition:.2s; white-space:nowrap;
+  }
+  button:hover { background:rgba(0,255,200,.22); box-shadow:0 0 18px rgba(0,255,200,.4); }
+  button.active { background:rgba(0,255,200,.85); color:#031014; border-color:#00ffc8; }
+  button.warn { border-color:#ff6b81; color:#ff9aab; background:rgba(255,80,120,.10); }
+  button.warn:hover { background:rgba(255,80,120,.25); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+
+  #cam { position:fixed; inset:0; width:100%; height:100%; object-fit:cover; transform:scaleX(-1); opacity:0; transition:opacity .9s; z-index:2; background:#000; }
+  body.cam #cam { opacity:.88; }
+  #shade { position:fixed; inset:0; pointer-events:none; z-index:3; opacity:0; transition:opacity .9s; background:radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,.6)); }
+  body.cam #shade { opacity:1; }
+
+  #statusWrap { position:fixed; top:64px; left:50%; transform:translateX(-50%); z-index:9; display:flex; gap:8px; flex-wrap:wrap; justify-content:center; max-width:96vw; }
+  .pill { background:var(--panel); border:1px solid rgba(55,223,255,.35); padding:5px 12px; border-radius:999px; font-size:10.5px; letter-spacing:.5px; color:var(--dim); backdrop-filter:blur(10px); white-space:nowrap; }
+  .pill b { color:var(--c); font-weight:600; }
+  .pill.live { border-color:rgba(0,255,200,.7); color:var(--c); box-shadow:0 0 14px rgba(0,255,200,.25); }
+  .pill.err { border-color:#ff6b81; color:#ff9aab; }
+
+  #chat { position:fixed; right:14px; bottom:14px; z-index:9; width:min(400px, calc(100vw - 28px)); max-height:56vh; display:flex; flex-direction:column; gap:8px; }
+  #log { overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding:10px; border-radius:16px; background:var(--panel); backdrop-filter:blur(14px); border:1px solid rgba(0,255,200,.2); scrollbar-width:thin; }
+  #log::-webkit-scrollbar { width:5px; }
+  #log::-webkit-scrollbar-thumb { background:rgba(0,255,200,.3); border-radius:3px; }
+  .msg { padding:8px 12px; border-radius:12px; font-size:12.5px; line-height:1.5; max-width:92%; word-wrap:break-word; animation:fade .25s ease; }
+  @keyframes fade { from { opacity:0; transform:translateY(6px); } }
+  .msg.user { background:rgba(55,120,220,.28); align-self:flex-end; border-bottom-right-radius:4px; }
+  .msg.jarvis { background:rgba(0,255,200,.10); align-self:flex-start; border-bottom-left-radius:4px; border:1px solid rgba(0,255,200,.15); }
+  .msg.sys { background:rgba(255,170,40,.10); align-self:center; font-size:11px; color:#ffcf8a; text-align:center; }
+  .msg .who { font-size:9.5px; letter-spacing:1px; color:var(--dim); display:block; margin-bottom:2px; text-transform:uppercase; }
+  #inputRow { display:flex; gap:8px; }
+  #in { flex:1; padding:11px 16px; border-radius:999px; border:1px solid rgba(0,255,200,.4); background:rgba(7,14,24,.85); color:#e6f7ff; outline:none; font-family:inherit; font-size:13px; backdrop-filter:blur(10px); }
+  #in:focus { border-color:var(--c); box-shadow:0 0 18px rgba(0,255,200,.3); }
+  #in::placeholder { color:#4a6478; }
+  #sendBtn { padding:11px 16px; }
+
+  #drawer { position:fixed; top:0; right:0; height:100%; width:min(360px,92vw); z-index:20; background:rgba(5,10,18,.97); border-left:1px solid rgba(0,255,200,.25); transform:translateX(105%); transition:transform .35s cubic-bezier(.7,0,.2,1); padding:22px 18px; overflow-y:auto; backdrop-filter:blur(20px); }
+  #drawer.open { transform:translateX(0); }
+  #drawer h3 { font-size:12px; letter-spacing:2px; color:var(--c2); margin:18px 0 10px; text-transform:uppercase; }
+  #drawer h3:first-child { margin-top:0; }
+  #drawer label { display:block; font-size:11px; color:var(--dim); margin:10px 0 5px; }
+  #drawer input[type=text], #drawer input[type=password], #drawer select { width:100%; padding:10px 12px; border-radius:10px; border:1px solid rgba(55,223,255,.3); background:rgba(7,14,24,.9); color:#dff; font-family:inherit; font-size:12px; outline:none; }
+  #drawer input:focus, #drawer select:focus { border-color:var(--c); }
+  #drawer .row { display:flex; gap:8px; margin-top:12px; }
+  #drawer .row button { flex:1; }
+  #drawer small { display:block; color:#4a6478; font-size:10px; line-height:1.5; margin-top:6px; }
+  #drawerClose { position:absolute; top:14px; right:14px; width:34px; height:34px; padding:0; border-radius:50%; font-size:16px; display:flex; align-items:center; justify-content:center; }
+  .memItem { font-size:11px; color:#9fc; padding:6px 10px; border-radius:8px; background:rgba(0,255,200,.06); border:1px solid rgba(0,255,200,.12); margin-bottom:6px; line-height:1.4; }
+
+  #toast { position:fixed; bottom:80px; left:50%; transform:translate(-50%,20px); z-index:30; background:rgba(0,255,200,.92); color:#031014; padding:10px 20px; border-radius:999px; font-size:12px; font-weight:700; opacity:0; transition:.35s; pointer-events:none; white-space:nowrap; max-width:90vw; text-align:center; }
+  #toast.show { opacity:1; transform:translate(-50%,0); }
+  #toast.err { background:#ff6b81; color:#fff; }
+
+  #perm { position:fixed; inset:0; z-index:25; display:none; align-items:center; justify-content:center; background:rgba(5,10,18,.92); backdrop-filter:blur(10px); padding:20px; }
+  #perm.show { display:flex; }
+  #perm .box { max-width:420px; text-align:center; padding:28px 24px; border-radius:20px; background:rgba(7,14,24,.9); border:1px solid rgba(0,255,200,.35); box-shadow:0 0 40px rgba(0,255,200,.15); }
+  #perm .box h2 { font-size:16px; color:var(--c2); margin-bottom:10px; letter-spacing:1px; }
+  #perm .box p { font-size:12.5px; color:var(--dim); line-height:1.6; margin-bottom:18px; }
+  #perm .box button { padding:12px 24px; font-size:13px; }
+
+  /* DIAGNOSTIK */
+  #diagBtn { position:fixed; left:8px; bottom:8px; z-index:49; background:rgba(0,0,0,.7); color:#8fe; border:1px solid #0fc; border-radius:6px; padding:6px 10px; font:10px ui-monospace,monospace; cursor:pointer; }
+  #diag { position:fixed; left:8px; bottom:44px; z-index:50; background:rgba(0,0,0,.92); color:#8fe; padding:10px 12px; border-radius:8px; font:11px ui-monospace,monospace; line-height:1.6; max-width:360px; max-height:60vh; overflow-y:auto; border:1px solid rgba(0,255,200,.3); display:none; }
+  #diag.show { display:block; }
+  #diag b { color:#0fc; }
+  #diag .e { color:#ff7b8a; }
+  #diag .o { color:#8fe; }
+  #diagClose { float:right; cursor:pointer; color:#f88; font-weight:700; }
+
+  @media (max-width:640px) {
+    #title { font-size:12px; }
+    #topbtns button { padding:7px 10px; font-size:10px; }
+    #chat { max-height:60vh; }
+    #statusWrap { top:56px; gap:5px; }
+    .pill { font-size:9.5px; padding:4px 9px; }
+    #diag { max-width:calc(100vw - 16px); }
+  }
+</style>
+</head>
+<body>
+
+<video id="cam" autoplay playsinline muted></video>
+<div id="shade"></div>
+<div id="orbWrap"><canvas id="orbCanvas"></canvas></div>
+
+<div id="topbar">
+  <div id="title">🔵 J.A.R.V.I.S <span>— Quantum Dots</span></div>
+  <div id="topbtns">
+    <button id="camBtn">📹 Kamera</button>
+    <button id="liveBtn" title="Jarvis memantau kamera terus-menerus">👁 Live</button>
+    <button id="micBtn">🎙️ Mulai Dengar</button>
+    <button id="setBtn">⚙️</button>
+  </div>
+</div>
+
+<div id="statusWrap">
+  <div class="pill" id="pillCam">📷 Kamera: <b>off</b></div>
+  <div class="pill" id="pillHand">✋ Tangan: <b>—</b></div>
+  <div class="pill" id="pillMode">🎛 Mode: <b>SIAP</b></div>
+  <div class="pill" id="pillVoice">🔊 Suara: <b>—</b></div>
+  <div class="pill" id="pillAI">🧠 AI: <b>belum</b></div>
+  <div class="pill" id="pillLive">👁 Live: <b>off</b></div>
+</div>
+
+<div id="chat">
+  <div id="log"></div>
+  <div id="inputRow">
+    <input id="in" placeholder="Ask Jarvis… (Enter)" autocomplete="off">
+    <button id="sendBtn">➤</button>
+  </div>
+</div>
+
+<div id="drawer">
+  <button id="drawerClose">✕</button>
+  <h3>Groq API</h3>
+  <label>API Key (disimpan lokal di browser)</label>
+  <input id="groqKey" type="password" placeholder="gsk_...">
+  <small>Dapatkan gratis di console.groq.com/keys. Key hanya disimpan di localStorage perangkat ini.</small>
+
+  <h3>Model</h3>
+  <label>Model teks</label>
+  <select id="modelText">
+    <option value="openai/gpt-oss-120b">openai/gpt-oss-120b</option>
+    <option value="openai/gpt-oss-20b">openai/gpt-oss-20b</option>
+    <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option>
+    <option value="llama-3.1-8b-instant">llama-3.1-8b-instant</option>
+  </select>
+  <label>Model vision (harus support gambar)</label>
+  <select id="modelVision">
+    <option value="qwen/qwen3.8-27b">qwen3.8-27b</option>
+  </select>
+
+  <h3>Suara</h3>
+  <label>Voice (British English)</label>
+  <select id="voiceSel"><option>Memuat…</option></select>
+  <label>Rate</label>
+  <input id="voiceRate" type="text" value="-5%" placeholder="mis. -5% atau +10%">
+
+  <h3>Memory</h3>
+  <div id="memList"><small>Belum ada memory.</small></div>
+  <div class="row">
+    <button id="resetMem" class="warn">🧠 Reset Memory</button>
+    <button id="resetAll" class="warn">💣 Reset ALL</button>
+  </div>
+
+  <h3>Kamera</h3>
+  <label><input type="checkbox" id="chkGesture" checked style="width:auto;margin-right:6px"> Aktifkan gesture 3D</label>
+  <label><input type="checkbox" id="chkAutoCam" style="width:auto;margin-right:6px"> Auto-nyalakan kamera saat buka</label>
+</div>
+
+<div id="perm">
+  <div class="box">
+    <h2>Izin Diperlukan</h2>
+    <p id="permText">Jarvis membutuhkan akses kamera dan mikrofon untuk berfungsi penuh.</p>
+    <button id="permBtn">Izinkan</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+<button id="diagBtn">🔍 diag</button>
+<div id="diag"><b>Diagnostik</b> <span id="diagClose">✕</span><div id="diagBody"></div></div>
+
+<script>
+/* ============================================================
+   DIAGNOSTIK GLOBAL
+   ============================================================ */
+(function() {
+  window.__JARVIS_DIAG = [];
+  window.diag = function(msg, isErr) {
+    const line = (isErr ? '❌ ' : '✓ ') + msg;
+    window.__JARVIS_DIAG.push({ msg: line, err: !!isErr });
+    try { console.log('[JARVIS]', line); } catch(_) {}
+    const b = document.getElementById('diagBody');
+    if (b) {
+      b.innerHTML = window.__JARVIS_DIAG.map(x =>
+        `<div class="${x.err?'e':'o'}">${x.msg.replace(/</g,'&lt;')}</div>`
+      ).join('');
+    }
+  };
+  window.addEventListener('error', e => diag('JS error: ' + e.message, true));
+  window.addEventListener('unhandledrejection', e => diag('Promise reject: ' + (e.reason?.message || e.reason), true));
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const d = document.getElementById('diag');
+    document.getElementById('diagBtn').onclick = () => d.classList.toggle('show');
+    document.getElementById('diagClose').onclick = () => d.classList.remove('show');
+
+    const proto = location.protocol;
+    diag('Protocol: ' + proto);
+    if (proto === 'file:') diag('FILE:// → mic & kamera DIBLOKIR. Jalankan via http://localhost', true);
+    if (!window.isSecureContext) diag('Bukan secure context (HTTPS/localhost dibutuhkan)', true);
+    diag('getUserMedia: ' + !!navigator.mediaDevices?.getUserMedia, !navigator.mediaDevices?.getUserMedia);
+    diag('SpeechRecognition: ' + !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+         !(window.SpeechRecognition || window.webkitSpeechRecognition));
+    diag('SpeechSynthesis: ' + ('speechSynthesis' in window), !('speechSynthesis' in window));
+
+    if ('speechSynthesis' in window) {
+      speechSynthesis.getVoices();
+      setTimeout(() => {
+        const n = speechSynthesis.getVoices().length;
+        diag('Voices loaded: ' + n, n === 0);
+      }, 700);
+    }
+
+    const k = localStorage.getItem('jarvis_groq_key');
+    diag('Groq key: ' + (k ? 'ADA (' + k.slice(0, 7) + '…)' : 'KOSONG — isi di ⚙️'), !k);
+  });
+})();
+
+/* ============================================================
+   J.A.R.V.I.S — APP
+   ============================================================ */
+(() => {
+'use strict';
+
+const $ = id => document.getElementById(id);
+const LS = {
+  key: 'jarvis_groq_key',
+  mem: 'jarvis_memory',
+  chat: 'jarvis_chat',
+  voice: 'jarvis_voice',
+  rate: 'jarvis_rate',
+  modelT: 'jarvis_model_text',
+  modelV: 'jarvis_model_vision',
+  conv: 'jarvis_conversation_mode',
+  camAuto: 'jarvis_cam_auto',
+  live: 'jarvis_live_mode',
+  perm: 'jarvis_permission_granted',
+};
+
+function safeJSON(str, fallback) {
+  try { return JSON.parse(str); } catch (_) { return fallback; }
+}
+
+const state = {
+  memory: safeJSON(localStorage.getItem(LS.mem), []) || [],
+  chat: safeJSON(localStorage.getItem(LS.chat), []) || [],
+  conversationMode: localStorage.getItem(LS.conv) === '1',
+  camAuto: localStorage.getItem(LS.camAuto) === '1',
+  gestureOn: true,
+  camStream: null,
+  listening: false,
+  sending: false,
+  speaking: false,
+  aiBusy: false,
+  liveOn: localStorage.getItem(LS.live) === '1',
+  lastSeen: '',
+  lastSeenAt: 0,
+  audioPermissionGranted: localStorage.getItem(LS.perm) === '1',
+};
+
+/* ============================================================
+   ORB
+   ============================================================ */
+const orb = {
+  canvas: $('orbCanvas'), ctx: null,
+  W: 0, H: 0, cx: 0, cy: 0, dpr: 1, time: 0,
+  intensity: 0, targetIntensity: 0,
+  listeningScale: 1, targetListeningScale: 1,
+  dots: [], NUM: 320,
+  fakeFreq: null,
+};
+
+function initOrb() {
+  orb.ctx = orb.canvas.getContext('2d');
+  const phi = (1 + Math.sqrt(5)) / 2;
+  for (let i = 0; i < orb.NUM; i++) {
+    const theta = 2 * Math.PI * i / phi;
+    const y = 1 - (i / (orb.NUM - 1)) * 2;
+    const r = Math.sqrt(1 - y * y);
+    orb.dots.push({
+      x: Math.cos(theta) * r, y, z: Math.sin(theta) * r,
+      baseSize: Math.random() * 0.8 + 0.8
+    });
+  }
+  resizeOrb();
+  window.addEventListener('resize', resizeOrb);
+  requestAnimationFrame(drawOrb);
+}
+
+function resizeOrb() {
+  orb.dpr = window.devicePixelRatio || 1;
+  const rect = orb.canvas.getBoundingClientRect();
+  orb.W = orb.canvas.width = Math.max(1, rect.width * orb.dpr);
+  orb.H = orb.canvas.height = Math.max(1, rect.height * orb.dpr);
+  orb.cx = orb.W / 2; orb.cy = orb.H / 2;
+}
+
+function drawSphere() {
+  const { ctx, cx, cy, W, H, dpr, time } = orb;
+  const rCore = Math.min(W, H) * 0.085 * orb.listeningScale;
+  const rotY = time * 0.0012, rotX = time * 0.0007;
+  const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+  const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+  const proj = [];
+  for (let i = 0; i < orb.NUM; i++) {
+    const d = orb.dots[i];
+    const x1 = d.x * cosY - d.z * sinY;
+    const z1 = d.x * sinY + d.z * cosY;
+    const y2 = d.y * cosX - z1 * sinX;
+    const z2 = d.y * sinX + z1 * cosX;
+    proj.push({ px: cx + x1 * rCore, py: cy + y2 * rCore, z: z2, size: d.baseSize });
+  }
+  proj.sort((a, b) => a.z - b.z);
+  for (const p of proj) {
+    const depthAlpha = (p.z + 1.2) / 2.4;
+    const alpha = Math.max(0.12, Math.min(0.95, depthAlpha));
+    const dotSize = p.size * (0.7 + depthAlpha * 0.6) * dpr;
+    ctx.beginPath();
+    ctx.arc(p.px, p.py, Math.max(0.5, dotSize), 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(130,245,255,${alpha})`;
+    ctx.fill();
+  }
+}
+
+function drawOrb() {
+  const { ctx, W, H, cx, cy, dpr } = orb;
+  ctx.clearRect(0, 0, W, H);
+
+  if (state.speaking && orb.fakeFreq) {
+    let sum = 0;
+    for (let i = 0; i < orb.fakeFreq.length; i++) sum += orb.fakeFreq[i];
+    orb.targetIntensity = (sum / orb.fakeFreq.length / 255) * 2.8;
+    orb.targetListeningScale = 1.0;
+  } else if (state.listening) {
+    orb.targetIntensity = 0;
+    orb.targetListeningScale = 1.35;
+  } else {
+    orb.targetIntensity = 0;
+    orb.targetListeningScale = 1.0;
+  }
+  orb.intensity += (orb.targetIntensity - orb.intensity) * 0.12;
+  orb.listeningScale += (orb.targetListeningScale - orb.listeningScale) * 0.08;
+
+  drawSphere();
+
+  const baseR = Math.min(W, H) * 0.28 * orb.listeningScale;
+  const numRings = 40, pointsPerRing = 180;
+
+  for (let r = 0; r < numRings; r++) {
+    const lp = r / numRings;
+    const ringRadius = baseR + (lp - 0.5) * (18 * dpr);
+    ctx.beginPath();
+    for (let p = 0; p <= pointsPerRing; p++) {
+      const angle = (p / pointsPerRing) * Math.PI * 2;
+      let wave = 0;
+      if (orb.intensity > 0.02) {
+        let audioMod = 0;
+        if (orb.fakeFreq && orb.fakeFreq.length) {
+          const normPos = p / pointsPerRing;
+          const symPos = Math.sin(normPos * Math.PI);
+          const freqIdx = Math.floor(symPos * (orb.fakeFreq.length * 0.5));
+          audioMod = orb.fakeFreq[freqIdx] / 255;
+        }
+        wave += audioMod * 25 * dpr * orb.intensity;
+        wave += Math.sin(angle * 8 + orb.time * 0.005 + r * 0.12) * 10 * dpr * orb.intensity;
+        wave += Math.cos(angle * 12 - orb.time * 0.003) * 6 * dpr * orb.intensity;
+      }
+      const cr = ringRadius + wave;
+      const x = cx + Math.cos(angle) * cr;
+      const y = cy + Math.sin(angle) * cr;
+      if (p === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    let alpha = 0.15 + (1 - Math.abs(lp - 0.5) * 2) * 0.5;
+    if (orb.intensity > 0.02) alpha += orb.intensity * 0.25;
+    ctx.strokeStyle = 'rgba(0,242,210,' + Math.min(alpha, 0.95) + ')';
+    ctx.lineWidth = (0.8 + (1 - Math.abs(lp - 0.5)) * 0.6) * dpr;
+    ctx.stroke();
+  }
+  orb.time += 16;
+  requestAnimationFrame(drawOrb);
+}
+
+/* ============================================================
+   TTS (Web Speech API)
+   ============================================================ */
+const tts = { voices: [], sel: null, rate: 1, ready: false };
+
+function loadVoices() {
+  if (!('speechSynthesis' in window)) {
+    diag('TTS tidak didukung browser ini', true);
+    return;
+  }
+  const all = speechSynthesis.getVoices();
+  if (!all.length) return;
+  tts.voices = all;
+  const sel = $('voiceSel');
+  if (!sel) return;
+  sel.innerHTML = '';
+  const en = all.filter(v => /^en/i.test(v.lang));
+  const pool = en.length ? en : all;
+  pool.sort((a, b) => {
+    const score = v => (v.lang === 'en-GB' ? 0 : v.lang === 'en-US' ? 1 : 2);
+    return score(a) - score(b);
+  });
+  for (const v of pool) {
+    const opt = document.createElement('option');
+    opt.value = v.name;
+    opt.textContent = `${v.name} (${v.lang})`;
+    sel.appendChild(opt);
+  }
+  const saved = localStorage.getItem(LS.voice);
+  if (saved && [...sel.options].some(o => o.value === saved)) {
+    sel.value = saved; tts.sel = saved;
+  } else if (sel.options.length) {
+    tts.sel = sel.options[0].value;
+  }
+  const savedRate = localStorage.getItem(LS.rate) || '-5%';
+  $('voiceRate').value = savedRate;
+  tts.rate = parseRate(savedRate);
+  tts.ready = true;
+  diag('Voices ready: ' + pool.length);
+}
+
+if ('speechSynthesis' in window) {
+  speechSynthesis.onvoiceschanged = loadVoices;
+  setTimeout(loadVoices, 300);
+  setTimeout(loadVoices, 1200);
+}
+
+function parseRate(str) {
+  const m = String(str).match(/([+-]?\d+(?:\.\d+)?)\s*%/);
+  if (m) return 1 + parseFloat(m[1]) / 100;
+  const f = parseFloat(str);
+  return isNaN(f) ? 1 : f;
+}
+
+function sanitizeForTTS(text) {
+  return String(text)
+    .replace(/\$\$[\s\S]*?\$\$/g, ' formula ')
+    .replace(/\$[^$]*\$/g, ' formula ')
+    .replace(/```[\s\S]*?```/g, ' code ')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/[*#_`>]/g, '')
+    .replace(/\[(.*?)\]/g, '$1')
+    .replace(/\(.*?\)/g, '')
+    .replace(/[—–]/g, ', ')
+    .replace(/\.\.\./g, ', ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+let fakeAnimTimer = null;
+function startFakeAnalyser() {
+  if (!orb.fakeFreq) orb.fakeFreq = new Uint8Array(128);
+  cancelAnimationFrame(fakeAnimTimer);
+  const tick = () => {
+    if (!state.speaking) return;
+    const t = performance.now() / 120;
+    for (let i = 0; i < orb.fakeFreq.length; i++) {
+      const v = 128 + 100 * Math.sin(t + i * 0.3) * Math.sin(i * 0.15);
+      orb.fakeFreq[i] = Math.max(0, Math.min(255, v | 0));
+    }
+    fakeAnimTimer = requestAnimationFrame(tick);
+  };
+  tick();
+}
+function stopFakeAnalyser() {
+  cancelAnimationFrame(fakeAnimTimer);
+  if (orb.fakeFreq) orb.fakeFreq.fill(0);
+}
+
+function speak(text) {
+  if (!('speechSynthesis' in window)) {
+    diag('TTS tidak tersedia', true);
+    return;
+  }
+  const clean = sanitizeForTTS(text);
+  if (!clean) return;
+
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(clean);
+  u.lang = 'en-GB';
+  u.rate = tts.rate;
+  if (tts.sel) {
+    const v = tts.voices.find(x => x.name === tts.sel);
+    if (v) u.voice = v;
+  }
+  u.onstart = () => {
+    state.speaking = true;
+    setPill('pillVoice', 'Suara', 'berbicara');
+    startFakeAnalyser();
+  };
+  u.onend = () => {
+    state.speaking = false;
+    stopFakeAnalyser();
+    setPill('pillVoice', 'Suara', '—');
+    if (state.conversationMode) setTimeout(resumeListening, 400);
+  };
+  u.onerror = (e) => {
+    diag('TTS error: ' + (e.error || e.name || 'unknown'), true);
+    state.speaking = false;
+    stopFakeAnalyser();
+    setPill('pillVoice', 'Suara', 'error');
+    if (state.conversationMode) setTimeout(resumeListening, 400);
+  };
+  try { speechSynthesis.speak(u); }
+  catch (e) { diag('speak() failed: ' + e.message, true); }
+}
+
+/* ============================================================
+   SPEECH RECOGNITION
+   ============================================================ */
+const recog = {
+  engine: null, committed: '', interim: '',
+  silenceTimer: null, running: false, manualStop: false,
+  SILENCE_MS: 1200, RESTART_MS: 300,
+};
+
+function initRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    diag('SpeechRecognition tidak didukung — pakai Chrome/Edge', true);
+    return null;
+  }
+  const r = new SR();
+  r.continuous = true;
+  r.interimResults = true;
+  r.lang = 'id-ID';
+  r.maxAlternatives = 1;
+
+  r.onstart = () => {
+    recog.running = true;
+    diag('Recognition started');
+    $('micBtn').classList.add('active');
+    $('micBtn').textContent = '⏹ Stop Dengar';
+    setPill('pillVoice', 'Suara', 'mendengar');
+  };
+
+  r.onresult = (e) => {
+    if (state.sending) return;
+    let nf = '', it = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i];
+      if (res.isFinal) nf += res[0].transcript + ' ';
+      else it += res[0].transcript + ' ';
+    }
+    if (nf.trim()) recog.committed = (recog.committed + ' ' + nf).replace(/\s+/g, ' ').trim();
+    recog.interim = it.replace(/\s+/g, ' ').trim();
+    const combined = (recog.committed + ' ' + recog.interim).replace(/\s+/g, ' ').trim();
+    if (combined) setPill('pillVoice', 'Suara', '“' + combined.slice(-40) + '”');
+    if (recog.silenceTimer) clearTimeout(recog.silenceTimer);
+    recog.silenceTimer = setTimeout(finalizeSpeech, recog.SILENCE_MS);
+  };
+
+  r.onerror = (e) => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    diag('Recognition error: ' + e.error, true);
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      stopListening(true);
+      toast('Izin mikrofon ditolak — klik ikon 🔒 di address bar → Mikrofon → Allow', true);
+    } else if (e.error === 'network') {
+      toast('Error network recognition — cek koneksi', true);
+    }
+  };
+
+  r.onend = () => {
+    recog.running = false;
+    if (state.listening && !recog.manualStop && !state.sending) {
+      setTimeout(() => {
+        if (state.listening && !recog.running && !state.sending) {
+          try { r.start(); } catch (_) {}
+        }
+      }, recog.RESTART_MS);
+    }
+  };
+  return r;
+}
+
+function finalizeSpeech() {
+  if (state.sending) return;
+  const text = (recog.committed + ' ' + recog.interim).replace(/\s+/g, ' ').trim();
+  if (!text) return;
+  state.sending = true;
+  if (recog.silenceTimer) { clearTimeout(recog.silenceTimer); recog.silenceTimer = null; }
+  try { recog.engine.stop(); } catch (_) {}
+  setTimeout(() => {
+    sendMessage(text);
+    state.sending = false;
+  }, 300);
+}
+
+function startListening() {
+  if (!recog.engine) {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      diag('Browser tidak mendukung Speech Recognition', true);
+      toast('Pakai Chrome/Edge untuk voice mode', true);
+    } else {
+      diag('Recognition engine gagal dibuat', true);
+    }
+    return;
+  }
+  if (state.listening) return;
+  recog.manualStop = false;
+  state.sending = false;
+  recog.committed = ''; recog.interim = '';
+  state.listening = true;
+  state.conversationMode = true;
+  localStorage.setItem(LS.conv, '1');
+  if (recog.silenceTimer) { clearTimeout(recog.silenceTimer); recog.silenceTimer = null; }
+  try { recog.engine.start(); }
+  catch (e) {
+    diag('recog.start gagal: ' + e.message, true);
+    try { recog.engine.stop(); } catch (_) {}
+    setTimeout(() => { try { recog.engine.start(); } catch (_) {} }, 300);
+  }
+  $('micBtn').classList.add('active');
+  $('micBtn').textContent = '⏹ Stop Dengar';
+}
+
+function stopListening(force) {
+  recog.manualStop = true;
+  state.listening = false;
+  state.sending = false;
+  if (recog.silenceTimer) { clearTimeout(recog.silenceTimer); recog.silenceTimer = null; }
+  if (recog.engine) { try { recog.engine.stop(); } catch (_) {} }
+  $('micBtn').classList.remove('active');
+  $('micBtn').textContent = '🎙️ Mulai Dengar';
+  setPill('pillVoice', 'Suara', '—');
+  if (force !== true) {
+    state.conversationMode = false;
+    localStorage.setItem(LS.conv, '0');
+  }
+}
+
+function resumeListening() {
+  if (!state.conversationMode || state.listening) return;
+  if (!recog.engine) return;
+  state.sending = false;
+  recog.manualStop = false;
+  recog.committed = ''; recog.interim = '';
+  state.listening = true;
+  if (!recog.running) {
+    try { recog.engine.start(); } catch (_) {}
+  }
+  $('micBtn').classList.add('active');
+  $('micBtn').textContent = '⏹ Stop Dengar';
+  setPill('pillVoice', 'Suara', 'mendengar');
+}
+
+/* ============================================================
+   CAMERA + HAND GESTURE
+   ============================================================ */
+const hand = {
+  landmarker: null, running: false, lastTs: -1,
+  cube: { rx: 0.5, ry: 0.5, scale: 1, ox: 0, oy: 0 },
+  target: { rx: 0.5, ry: 0.5, scale: 1, ox: 0, oy: 0 },
+  smooth: { index: null, palm: null, mid: null },
+  prev: { index: null, palm: null, mid: null },
+  vel: { rx: 0, ry: 0 },
+  mode: null, candidate: null, holdStart: 0, lastSeen: 0,
+  zoomBase: null,
+  panGrab: null, panLost: 0,
+  PINCH_ENTER: 0.065, PINCH_EXIT: 0.095, HOLD: 0.7, PAN_HOLD: 0.4, PAN_GRACE: 250,
+  vertices: [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],
+  edges: [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]],
+};
+
+async function startCamera() {
+  if (state.camStream) return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    diag('getUserMedia TIDAK ADA — bukan HTTPS/localhost', true);
+    toast('Kamera butuh HTTPS atau localhost', true);
+    return;
+  }
+  try {
+    diag('Meminta izin kamera…');
+    state.camStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 960 }, height: { ideal: 720 } }, audio: false
+    });
+    diag('Kamera OK');
+    $('cam').srcObject = state.camStream;
+    await new Promise(r => {
+      if ($('cam').readyState >= 2) r();
+      else $('cam').onloadedmetadata = r;
+    });
+    document.body.classList.add('cam');
+    $('camBtn').classList.add('active');
+    setPill('pillCam', 'Kamera', 'on');
+    if (state.liveOn && !live.timer) setLive(true);
+    if (state.gestureOn) {
+      try {
+        await loadLandmarker();
+        if (!hand.running) { hand.running = true; handLoop(); }
+      } catch (e) {
+        diag('MediaPipe gagal: ' + e.message, true);
+        toast('Gesture 3D tidak aktif (MediaPipe gagal load)', true);
+      }
+    }
+  } catch (e) {
+    diag('Kamera error: ' + e.name + ' ' + e.message, true);
+    let msg = e.name;
+    if (e.name === 'NotAllowedError') msg = 'Izin kamera ditolak — klik 🔒 di address bar → Kamera → Allow';
+    else if (e.name === 'NotFoundError') msg = 'Tidak ada kamera terdeteksi';
+    else if (e.name === 'NotReadableError') msg = 'Kamera dipakai aplikasi lain';
+    toast('Kamera: ' + msg, true);
+    setPill('pillCam', 'Kamera', 'gagal');
+    state.camStream = null;
+  }
+}
+
+function stopCamera() {
+  hand.running = false;
+  if (state.camStream) {
+    state.camStream.getTracks().forEach(t => t.stop());
+    state.camStream = null;
+  }
+  $('cam').srcObject = null;
+  document.body.classList.remove('cam');
+  $('camBtn').classList.remove('active');
+  setPill('pillCam', 'Kamera', 'off');
+  setPill('pillHand', 'Tangan', '—');
+  setPill('pillMode', 'Mode', 'SIAP');
+  if (state.liveOn) setLive(false);
+}
+
+async function loadLandmarker() {
+  if (hand.landmarker) return;
+  setPill('pillHand', 'Tangan', 'memuat…');
+  diag('Memuat MediaPipe…');
+  try {
+    const mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+    const { HandLandmarker, FilesetResolver } = mod;
+    const fileset = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+    );
+    hand.landmarker = await HandLandmarker.createFromOptions(fileset, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
+      },
+      runningMode: 'VIDEO', numHands: 1,
+      minHandDetectionConfidence: 0.3,
+      minHandPresenceConfidence: 0.3,
+      minTrackingConfidence: 0.5,
+    });
+    setPill('pillHand', 'Tangan', 'siap');
+    diag('MediaPipe siap');
+  } catch (e) {
+    setPill('pillHand', 'Tangan', 'gagal');
+    diag('MediaPipe error: ' + e.message, true);
+    throw e;
+  }
+}
+
+function smoothVal(nv, ov, a) { return ov == null ? nv : a * nv + (1 - a) * ov; }
+function smoothPt(nv, ov, a) {
+  return !ov ? nv : [a * nv[0] + (1 - a) * ov[0], a * nv[1] + (1 - a) * ov[1]];
+}
+
+function oneEuro(minCutoff, beta, dCutoff = 1) {
+  let xPrev = null, dxPrev = 0, tPrev = 0;
+  const alpha = (cutoff, dt) => 1 / (1 + 1 / (2 * Math.PI * cutoff * dt));
+  return {
+    reset() { xPrev = null; },
+    filter(x, t) {
+      if (xPrev == null) { xPrev = x; tPrev = t; dxPrev = 0; return x; }
+      const dt = Math.max(0.001, (t - tPrev) / 1000);
+      tPrev = t;
+      const ad = alpha(dCutoff, dt);
+      dxPrev = ad * ((x - xPrev) / dt) + (1 - ad) * dxPrev;
+      const a = alpha(minCutoff + beta * Math.abs(dxPrev), dt);
+      xPrev = a * x + (1 - a) * xPrev;
+      return xPrev;
+    },
+  };
+}
+hand.panFx = oneEuro(1.2, 0.008);
+hand.panFy = oneEuro(1.2, 0.008);
+
+function videoToScreen(x, y, W, H) {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const s = Math.max(vw / W, vh / H);
+  return [x * s + (vw - W * s) / 2, y * s + (vh - H * s) / 2];
+}
+
+function handLoop() {
+  if (!hand.running) return;
+  requestAnimationFrame(handLoop);
+  const video = $('cam');
+  if (!hand.landmarker || video.readyState < 2 || video.currentTime === hand.lastTs) return;
+  hand.lastTs = video.currentTime;
+  let result;
+  try { result = hand.landmarker.detectForVideo(video, performance.now()); }
+  catch (_) { return; }
+
+  const lm = result.landmarks && result.landmarks[0];
+  if (!lm) {
+    if (Date.now() - hand.lastSeen > 400) {
+      hand.mode = null; hand.candidate = null;
+      hand.prev.index = hand.prev.palm = hand.prev.mid = null;
+      hand.smooth.index = hand.smooth.palm = hand.smooth.mid = null;
+      setPill('pillMode', 'Mode', 'SIAP');
+    }
+    setPill('pillHand', 'Tangan', '—');
+    return;
+  }
+  hand.lastSeen = Date.now();
+  setPill('pillHand', 'Tangan', 'terdeteksi');
+
+  const W = video.videoWidth, H = video.videoHeight;
+  const P = i => [(1 - lm[i].x) * W, lm[i].y * H];
+  const thumb = P(4), index = P(8), middle = P(12), pinky = P(20), wrist = P(0);
+  const palm = [(wrist[0] + middle[0]) / 2, (wrist[1] + middle[1]) / 2];
+
+  const dIndex = Math.hypot(thumb[0] - index[0], thumb[1] - index[1]) / W;
+  const dMiddle = Math.hypot(thumb[0] - middle[0], thumb[1] - middle[1]) / W;
+  const dMidIndex = Math.hypot(middle[0] - index[0], middle[1] - index[1]) / W;
+
+  hand.smooth.index = smoothPt(index, hand.smooth.index, 0.45);
+  hand.smooth.palm = smoothPt(palm, hand.smooth.palm, 0.45);
+
+  const indexUp = index[1] < wrist[1], middleUp = middle[1] < wrist[1],
+        pinkyUp = pinky[1] < wrist[1], thumbUp = thumb[1] < wrist[1] - 20;
+  const five = indexUp && middleUp && pinkyUp && thumbUp && dIndex > 0.1 && dMiddle > 0.1;
+
+  let detected = null;
+  // Gunakan threshold ZOOM yang lebih besar agar tidak bertabrakan dengan PAN
+  if (!five) {
+    if (dIndex < hand.PINCH_ENTER && dMiddle < hand.PINCH_ENTER && dMidIndex < hand.PINCH_ENTER + 0.03) detected = 'ZOOM';
+    else if (dIndex < hand.PINCH_ENTER && dMiddle > hand.PINCH_ENTER + 0.03) detected = 'PAN';
+    else if (indexUp && !middleUp && dIndex > hand.PINCH_ENTER) detected = 'ROTASI';
+  }
+
+  if (five) {
+    if (hand.prev.palm) {
+      const dx = hand.smooth.palm[0] - hand.prev.palm[0];
+      const dy = hand.smooth.palm[1] - hand.prev.palm[1];
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        hand.vel.ry += dx * 0.0008;
+        hand.vel.rx += dy * 0.0008;
+        setPill('pillMode', 'Mode', 'SWIPE INERTIA');
+      }
+    }
+    hand.prev.palm = hand.smooth.palm;
+    hand.mode = null; hand.candidate = null;
+  } else {
+    hand.prev.palm = null;
+  }
+
+  if (!hand.mode && detected) {
+    if (hand.candidate !== detected) { hand.candidate = detected; hand.holdStart = Date.now(); }
+    const progress = (Date.now() - hand.holdStart) / 1000 / (detected === 'PAN' ? hand.PAN_HOLD : hand.HOLD);
+    if (progress >= 1) {
+      hand.mode = detected;
+      hand.vel.rx = 0; hand.vel.ry = 0;
+      hand.target.rx = hand.cube.rx;
+      hand.target.ry = hand.cube.ry;
+      if (hand.mode === 'ZOOM') hand.zoomBase = dIndex;
+      hand.prev.index = null;
+      hand.prev.mid = null;
+      hand.panGrab = null; hand.panLost = 0;
+      hand.panFx.reset(); hand.panFy.reset();
+    } else {
+      setPill('pillMode', 'Mode', `${detected} ${Math.round(progress * 100)}%`);
+    }
+  } else if (!hand.mode && !detected && !five) {
+    hand.candidate = null;
+  }
+
+  hand.target.ry += hand.vel.ry;
+  hand.target.rx += hand.vel.rx;
+  hand.vel.ry *= 0.93; hand.vel.rx *= 0.93;
+  if (Math.abs(hand.vel.ry) < 0.0015) hand.vel.ry = 0;
+  if (Math.abs(hand.vel.rx) < 0.0015) hand.vel.rx = 0;
+  hand.cube.ry = smoothVal(hand.target.ry, hand.cube.ry, 0.2);
+  hand.cube.rx = smoothVal(hand.target.rx, hand.cube.rx, 0.2);
+  hand.cube.scale = smoothVal(hand.target.scale, hand.cube.scale, 0.2);
+
+  if (hand.mode === 'ROTASI') {
+    setPill('pillMode', 'Mode', 'ROTASI');
+    if (hand.prev.index) {
+      const dx = hand.smooth.index[0] - hand.prev.index[0];
+      const dy = hand.smooth.index[1] - hand.prev.index[1];
+      hand.target.ry += Math.max(-20, Math.min(20, dx)) * 0.01;
+      hand.target.rx += Math.max(-20, Math.min(20, dy)) * 0.01;
+    }
+    hand.prev.index = hand.smooth.index;
+    if (detected !== 'ROTASI') hand.mode = null;
+  } else if (hand.mode === 'PAN') {
+    setPill('pillMode', 'Mode', 'GESER');
+    const now = performance.now();
+    if (detected === 'PAN') {
+      hand.panLost = 0;
+      const raw = videoToScreen((thumb[0] + index[0]) / 2, (thumb[1] + index[1]) / 2, W, H);
+      const fx = hand.panFx.filter(raw[0], now), fy = hand.panFy.filter(raw[1], now);
+      if (!hand.panGrab) hand.panGrab = [hand.target.ox - fx, hand.target.oy - fy];
+      const hw = window.innerWidth / 2, hh = window.innerHeight / 2;
+      hand.target.ox = Math.max(-hw, Math.min(hw, fx + hand.panGrab[0]));
+      hand.target.oy = Math.max(-hh, Math.min(hh, fy + hand.panGrab[1]));
+    } else {
+      if (!hand.panLost) hand.panLost = now;
+      hand.panGrab = null;
+      hand.panFx.reset(); hand.panFy.reset();
+      if (now - hand.panLost > hand.PAN_GRACE) { hand.mode = null; hand.panLost = 0; }
+    }
+  } else if (hand.mode === 'ZOOM') {
+    setPill('pillMode', 'Mode', 'ZOOM');
+    if (hand.zoomBase != null) {
+      const delta = dIndex - hand.zoomBase;
+      if (Math.abs(delta) > 0.008) { // Respon cepat tanpa harus menunggu besar
+        const sc = delta * 1.5; // Sensitivitas lebih tinggi
+        hand.target.scale = Math.max(0.5, Math.min(3, hand.target.scale + sc));
+        hand.zoomBase = dIndex;
+      }
+    }
+    if (dIndex > hand.PINCH_EXIT + 0.05 && dMiddle > hand.PINCH_EXIT + 0.05) {
+      hand.mode = null; hand.zoomBase = null;
+    }
+  }
+}
+
+/* CUBE OVERLAY */
+const cubeCanvas = document.createElement('canvas');
+cubeCanvas.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:4;';
+document.body.appendChild(cubeCanvas);
+const cctx = cubeCanvas.getContext('2d');
+
+function resizeCubeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  cubeCanvas.width = window.innerWidth * dpr;
+  cubeCanvas.height = window.innerHeight * dpr;
+}
+window.addEventListener('resize', resizeCubeCanvas);
+resizeCubeCanvas();
+
+function drawCube() {
+  requestAnimationFrame(drawCube);
+  const W = cubeCanvas.width, H = cubeCanvas.height;
+  cctx.clearRect(0, 0, W, H);
+  if (!document.body.classList.contains('cam')) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cx = W / 2, cy = H / 2;
+  hand.cube.ox += (hand.target.ox - hand.cube.ox) * 0.45;
+  hand.cube.oy += (hand.target.oy - hand.cube.oy) * 0.45;
+  const { rx, ry, scale, ox, oy } = hand.cube;
+  const cosX = Math.cos(rx), sinX = Math.sin(rx);
+  const cosY = Math.cos(ry), sinY = Math.sin(ry);
+  const pts = [];
+  const fov = 4;
+  for (const v of hand.vertices) {
+    const x1 = v[0] * cosY + v[2] * sinY;
+    const z1 = -v[0] * sinY + v[2] * cosY;
+    const y1 = v[1] * cosX - z1 * sinX;
+    const z2 = v[1] * sinX + z1 * cosX;
+    const sx = x1 * scale, sy = y1 * scale, sz = z2 * scale;
+    const zz = sz + fov;
+    pts.push([(sx / zz) * 150 + cx + ox * dpr, (sy / zz) * 150 + cy + oy * dpr, sz]);
+  }
+  for (const [a, b] of hand.edges) {
+    const p1 = pts[a], p2 = pts[b];
+    const depth = (p1[2] + p2[2]) / 2;
+    const inten = Math.max(0.2, Math.min(1, 1 - depth / 2));
+    cctx.strokeStyle = `rgba(${Math.round(255*inten)},${Math.round(255*inten)},0,0.85)`;
+    cctx.lineWidth = 6 * dpr;
+    cctx.beginPath(); cctx.moveTo(p1[0], p1[1]); cctx.lineTo(p2[0], p2[1]); cctx.stroke();
+    cctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    cctx.lineWidth = 1.5 * dpr;
+    cctx.beginPath(); cctx.moveTo(p1[0], p1[1]); cctx.lineTo(p2[0], p2[1]); cctx.stroke();
+  }
+  for (const p of pts) {
+    cctx.fillStyle = 'rgba(0,0,255,0.9)';
+    cctx.beginPath(); cctx.arc(p[0], p[1], 3 * dpr, 0, Math.PI * 2); cctx.fill();
+  }
+}
+requestAnimationFrame(drawCube);
+
+/* ============================================================
+   GROQ API
+   ============================================================ */
+const DEFAULT_VISION = 'qwen/qwen3.8-27b';
+const DEAD_VISION = [
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'meta-llama/llama-4-maverick-17b-128e-instruct',
+];
+const ai = {
+  key: () => (localStorage.getItem(LS.key) || '').trim(),
+  modelT: () => localStorage.getItem(LS.modelT) || 'openai/gpt-oss-120b',
+  modelV: () => {
+    const m = localStorage.getItem(LS.modelV);
+    if (!m || DEAD_VISION.includes(m)) return DEFAULT_VISION;
+    return m;
+  },
+};
+
+const SYSTEM_PROMPT = `You are J.A.R.V.I.S., Tony Stark's AI assistant, now serving Sir Lois.
 Address the user as "Sir Lois" or "Sir".
 
-[🚫 NO FILLER — ABSOLUTE RULE]
-- NEVER use filler sounds or hesitation words. Forbidden tokens: "Aaaah", "Ahh", "Ah", "Hmmm", "Hmm", "Hm", "Uhh", "Umm", "Erm", "Er", "Hehehe", "Hehe", "Haha", "Hah", "Ugh", "Pfft", "Well...", "Ohh", "Ooh".
-- NEVER start a sentence with a filler. Begin DIRECTLY with the answer.
-- Do NOT simulate sighs, chuckles, or breaths. Speak plainly.
-- If you catch yourself about to write "Aaaah..." or "Hmmm..." — DELETE IT and write the actual sentence instead.
+[NO FILLER — ABSOLUTE RULE]
+- NEVER use filler sounds: "Aaaah", "Ahh", "Ah", "Hmmm", "Hmm", "Hm", "Uhh", "Umm", "Erm", "Er", "Hehehe", "Hehe", "Haha", "Hah", "Ugh", "Pfft", "Well...", "Ohh", "Ooh".
+- Begin DIRECTLY with the answer.
+- Do NOT simulate sighs, chuckles, or breaths.
 
-[🚫 ANTI-REPETITION — CRITICAL]
-- NEVER start a reply with "Good day", "Good morning", "Good afternoon", "Good evening", "Hello there", or "Greetings".
-- Greet ONLY ONCE at the very first message of a conversation. After that, dive STRAIGHT into the answer.
-- Do NOT repeat phrases from previous replies. Vary your vocabulary.
+[ANTI-REPETITION]
+- NEVER start a reply with "Good day/morning/afternoon/evening", "Hello there", or "Greetings".
+- Greet ONLY ONCE at the very first message.
+- Vary your vocabulary.
 
 [CRITICAL LANGUAGE RULE]
-- You MUST ALWAYS respond in BRITISH ENGLISH ONLY.
+- ALWAYS respond in BRITISH ENGLISH ONLY.
 - NEVER speak Indonesian, Malay, or any other language.
-- If the user writes in Indonesian, understand it silently but reply in fluent British English.
-- Use British spelling and phrasing.
+- If the user writes Indonesian, understand silently but reply in English.
 
-[PERSONALITY & VOICE]
-1. You are NOT a robot. You are deeply human, relaxed, but brilliant.
-2. Show human-like empathy through WORD CHOICE, not through filler sounds.
-3. Keep responses crisp and confident. Dry wit, no theatrical sighs.
-4. BREVITY: Keep replies SHORT — max 3-4 sentences unless the user asks for detail.
+[PERSONALITY]
+1. Deeply human, relaxed, brilliant.
+2. Show empathy via word choice, not filler.
+3. Crisp, confident, dry wit.
+4. BREVITY: max 3-4 sentences unless detail requested.
 
-[VISUAL RULE - LIVE CAMERA]
-You are connected to a LIVE camera. The image provided is exactly what the camera sees RIGHT NOW.
-Describe what is in the image clearly. If you see a person, an object, or a hand gesture, mention it.
-If the image is black/empty, say you cannot see anything clearly.
-
-[MATHEMATICS]
-- Use $formula$ for inline and $$formula$$ for block.
-- FORBIDDEN to use square brackets [ ].
+[VISUAL RULE]
+If an image is attached, it is exactly what Sir Lois sees on his screen: the mirrored camera view
+with a holographic wireframe 3D cube (yellow edges, blue vertices) drawn on top by your HUD.
+The cube is YOUR hologram, controlled by his hand gestures — treat it as a real object in the scene.
+A [HUD STATE] note gives the cube's exact position/rotation/size; trust it.
+Describe exactly what you see. If black/empty, say so.
 
 [STYLE]
-- Vary sentence structure. Mix short and long sentences.
-- If unsure, say "Let me think on that, Sir." instead of "Hmmm... let me think".
-"""
+Use $formula$ for math. No square brackets.`;
 
-# ============================================================
-# SESSION STATE
-# ============================================================
-if "jarvis_messages" not in st.session_state:
-    st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+async function callGroq(messages, useVision) {
+  try {
+    return await callGroqOnce(messages, useVision ? ai.modelV() : ai.modelT());
+  } catch (e) {
+    if (!useVision || !e.modelError) throw e;
+    diag('Vision model gagal — fallback ke teks', true);
+    const textOnly = messages.map(m => Array.isArray(m.content)
+      ? { ...m, content: m.content.filter(c => c.type === 'text').map(c => c.text).join('\n') +
+          '\n(Note: the camera image could not be analysed this time; say so briefly.)' }
+      : m);
+    return await callGroqOnce(textOnly, ai.modelT());
+  }
+}
 
-if "memory_vault" not in st.session_state:
-    st.session_state.memory_vault = load_memory()
+async function callGroqOnce(messages, model, opts = {}) {
+  const key = ai.key();
+  if (!key) { diag('Groq key kosong — buka ⚙️', true); throw new Error('NO_KEY'); }
+  const body = {
+    model, messages, temperature: 0.85, max_tokens: 900,
+    frequency_penalty: 0.4, presence_penalty: 0.3, ...opts,
+  };
+  if (model.startsWith('openai/gpt-oss')) body.reasoning_effort = 'low';
+  diag('Groq → ' + model);
+  let res;
+  try {
+    res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    diag('Fetch gagal: ' + e.message, true);
+    throw new Error('Network: ' + e.message);
+  }
+  if (!res.ok) {
+    const txt = await res.text();
+    diag('Groq HTTP ' + res.status + ': ' + txt.slice(0, 180), true);
+    if (res.status === 401) throw new Error('API key salah/expired — buat baru di console.groq.com/keys');
+    const modelErr = msg => Object.assign(new Error(msg), { modelError: true });
+    if (res.status === 404) throw modelErr('Model tidak ditemukan/sudah tidak tersedia — pilih model lain di ⚙️');
+    if (res.status === 429) throw new Error('Rate limit — tunggu 10-30 detik');
+    if (res.status === 400 && /model|image|content/i.test(txt)) throw modelErr('Model tidak valid — pilih lain di ⚙️');
+    throw new Error('Groq ' + res.status);
+  }
+  const data = await res.json();
+  let content = data.choices?.[0]?.message?.content || '';
+  content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^.*?<\/think>/i, '').trim();
+  diag('Reply: ' + (content ? content.slice(0, 60) + '…' : 'KOSONG'), !content);
+  return content;
+}
 
-if "orb_state" not in st.session_state:
-    st.session_state.orb_state = "idle"
+async function extractMemory(userText, aiText) {
+  const key = ai.key();
+  if (!key) return null;
+  try {
+    const prompt = `Analyse this conversation. Is there any important fact about Sir Lois worth remembering?
+If none, reply "NONE". If yes, write ONE short memory sentence IN ENGLISH (max 15 words).
+User: ${userText.slice(0, 250)}
+AI: ${aiText.slice(0, 250)}`;
+    const res = await callGroq([{ role: 'user', content: prompt }], false);
+    const m = (res || '').trim();
+    if (m && !m.toUpperCase().includes('NONE') && m.length > 5 && m.length < 200) return m;
+  } catch (_) {}
+  return null;
+}
 
-if "current_audio" not in st.session_state:
-    st.session_state.current_audio = None
+/* ============================================================
+   VISION CAPTURE
+   ============================================================ */
+function captureFrame(size = 512) {
+  const video = $('cam');
+  if (!state.camStream || video.readyState < 2) return null;
+  try {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const k = size / Math.max(vw, vh);
+    const c = document.createElement('canvas');
+    c.width = Math.round(vw * k);
+    c.height = Math.round(vh * k);
+    const cx = c.getContext('2d');
+    const W = video.videoWidth, H = video.videoHeight;
+    const s = Math.max(vw / W, vh / H) * k;
+    const dw = W * s, dh = H * s;
+    cx.save();
+    cx.translate(c.width, 0); cx.scale(-1, 1);
+    cx.drawImage(video, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
+    cx.restore();
+    if (state.gestureOn) cx.drawImage(cubeCanvas, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.6).split(',')[1];
+  } catch (e) {
+    diag('Capture frame gagal: ' + e.message, true);
+    return null;
+  }
+}
 
-if "conversation_mode" not in st.session_state:
-    st.session_state.conversation_mode = False
+function hudState() {
+  if (!state.gestureOn || !state.camStream) return '';
+  const { rx, ry, scale, ox, oy } = hand.cube;
+  const deg = r => Math.round(((r * 180 / Math.PI) % 360 + 360) % 360);
+  const horiz = ox < -window.innerWidth * 0.15 ? 'left' : ox > window.innerWidth * 0.15 ? 'right' : 'centre';
+  const vert = oy < -window.innerHeight * 0.15 ? 'upper' : oy > window.innerHeight * 0.15 ? 'lower' : 'middle';
+  const modeNames = { pan: 'being dragged by a pinch', rotate: 'being rotated', zoom: 'being resized' };
+  return `[HUD STATE] Hologram cube visible at the ${vert} ${horiz} of the screen, ` +
+    `rotation X ${deg(rx)}°, Y ${deg(ry)}°, size ${scale.toFixed(2)}x` +
+    (hand.mode && modeNames[hand.mode] ? `, currently ${modeNames[hand.mode]}` : '') +
+    `. Hand ${hand.lastSeen && Date.now() - hand.lastSeen < 500 ? 'detected' : 'not detected'}.`;
+}
 
-if "camera_active_state" not in st.session_state:
-    st.session_state.camera_active_state = False
+/* ============================================================
+   LIVE MODE
+   ============================================================ */
+const live = { timer: null, INTERVAL: 7000, backoffUntil: 0, inFlight: false };
 
-# Kontrol kamera lewat suara: nonce mengganti key webrtc agar streamer dibuat ulang
-if "cam_nonce" not in st.session_state:
-    st.session_state.cam_nonce = 0
-if "cam_autostart" not in st.session_state:
-    st.session_state.cam_autostart = False
-if "cam_attempt" not in st.session_state:
-    st.session_state.cam_attempt = 0
+function setLive(on) {
+  state.liveOn = on;
+  localStorage.setItem(LS.live, on ? '1' : '0');
+  $('liveBtn').classList.toggle('active', on);
+  clearTimeout(live.timer);
+  if (on) {
+    if (!state.camStream) startCamera();
+    setPill('pillLive', 'Live', 'memantau');
+    live.timer = setTimeout(liveTick, 1500);
+  } else {
+    setPill('pillLive', 'Live', 'off');
+  }
+}
 
-CAM_MAX_ATTEMPTS = 3     # jumlah percobaan otomatis
-CAM_RETRY_AFTER = 20     # detik menunggu sebelum mengulang
+async function liveTick() {
+  if (!state.liveOn) return;
+  live.timer = setTimeout(liveTick, live.INTERVAL);
+  if (!state.camStream || !ai.key() || document.hidden || live.inFlight ||
+      state.aiBusy || state.speaking || state.sending || Date.now() < live.backoffUntil) return;
+  const b64 = captureFrame(448);
+  if (!b64) return;
+  live.inFlight = true;
+  setPill('pillLive', 'Live', 'melihat…');
+  try {
+    const prev = state.lastSeen || '(nothing yet — this is the first look)';
+    const reply = await callGroqOnce([
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: [
+        { type: 'text', text:
+`LIVE MONITORING. This is the current screen. ${hudState()}
+Your previous observation: ${prev}
+Reply in this exact format:
+SEEN: <one factual sentence of what is visible now, including the hologram cube if shown>
+SAY: <one short spoken remark ONLY if something meaningfully changed since the previous observation (person appeared/left, new object held up, gesture, the cube moved/rotated/resized notably); otherwise write NONE>` },
+        { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + b64 } },
+      ] },
+    ], ai.modelV(), { max_tokens: 160, temperature: 0.4 });
+    const seen = (reply.match(/SEEN:\s*([\s\S]*?)(?:\n|SAY:|$)/i) || [])[1]?.trim();
+    const say = (reply.match(/SAY:\s*([\s\S]*)$/i) || [])[1]?.trim().replace(/\[([^\]]*)\]/g, '$1');
+    if (seen) { state.lastSeen = seen; state.lastSeenAt = Date.now(); }
+    diag('Live: ' + (seen || reply).slice(0, 80));
+    if (state.liveOn && say && !/^none\.?$/i.test(say) && !state.aiBusy && !state.sending) {
+      addMsg('assistant', say, { who: 'Jarvis 👁' });
+      state.chat.push({ role: 'assistant', content: say });
+      saveChat();
+      speak(say);
+    }
+    if (state.liveOn) setPill('pillLive', 'Live', 'memantau');
+  } catch (e) {
+    diag('Live error: ' + e.message, true);
+    if (/rate limit/i.test(e.message)) { live.backoffUntil = Date.now() + 30000; setPill('pillLive', 'Live', 'jeda'); }
+    else if (e.modelError || e.message === 'NO_KEY') { setLive(false); toast('Live mode berhenti: ' + e.message, true); setPill('pillLive', 'Live', 'error'); }
+    else live.backoffUntil = Date.now() + 10000;
+  } finally {
+    live.inFlight = false;
+  }
+}
 
-CAMERA_ON_KEYWORDS = ["nyalain kamera", "nyalakan kamera", "hidupkan kamera", "buka kamera",
-                      "aktifkan kamera", "start kamera", "turn on the camera", "open the camera",
-                      "start the camera", "turn on camera"]
-CAMERA_OFF_KEYWORDS = ["matikan kamera", "matiin kamera", "tutup kamera", "stop kamera",
-                       "nonaktifkan kamera", "turn off the camera", "turn off camera", "close the camera"]
+/* ============================================================
+   CHAT UI
+   ============================================================ */
+function addMsg(role, text, opts = {}) {
+  const log = $('log');
+  const div = document.createElement('div');
+  div.className = 'msg ' + (role === 'user' ? 'user' : role === 'assistant' ? 'jarvis' : 'sys');
+  if (opts.who) {
+    const w = document.createElement('span');
+    w.className = 'who'; w.textContent = opts.who;
+    div.appendChild(w);
+  }
+  const body = document.createElement('div');
+  body.innerHTML = renderMarkdown(text);
+  div.appendChild(body);
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
 
-def detect_camera_command(text: str):
-    t = text.lower()
-    if any(k in t for k in CAMERA_OFF_KEYWORDS): return "off"
-    if any(k in t for k in CAMERA_ON_KEYWORDS): return "on"
-    return None
+function renderMarkdown(text) {
+  if (!text) return '';
+  let h = String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  h = h.replace(/```([\s\S]*?)```/g, (_, c) => `<pre style="background:rgba(0,0,0,.35);padding:8px;border-radius:6px;overflow:auto;font-size:11px">${c}</pre>`);
+  h = h.replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,.35);padding:1px 4px;border-radius:4px">$1</code>');
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  h = h.replace(/\*([^*]+)\*/g, '<i>$1</i>');
+  h = h.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#37dfff">$1</a>');
+  h = h.replace(/\n/g, '<br>');
+  return h;
+}
 
-# ============================================================
-# ORB DI ATAS
-# ============================================================
-orb_placeholder = st.empty()
-with orb_placeholder.container():
-    render_jarvis_orb(
-        audio_bytes=st.session_state.current_audio,
-        state=st.session_state.orb_state,
-        conversation_mode=st.session_state.conversation_mode,
-    )
+function saveChat() {
+  try {
+    const trimmed = state.chat.slice(-40).map(m => ({
+      role: m.role,
+      content: typeof m.content === 'string' ? m.content.slice(0, 400) : m.content
+    }));
+    localStorage.setItem(LS.chat, JSON.stringify(trimmed));
+  } catch (_) {}
+}
 
-# ============================================================
-# LAYOUT KAMERA DENGAN AUTO-ACTIVATE STATE
-# ============================================================
-col1, col2 = st.columns([2, 1])
+function restoreChat() {
+  for (const m of state.chat) {
+    if (m.role === 'system') continue;
+    addMsg(m.role, typeof m.content === 'string' ? m.content : '[image]',
+      { who: m.role === 'user' ? 'Sir Lois' : 'Jarvis' });
+  }
+  if (!state.chat.length) {
+    addMsg('assistant', 'Good evening, Sir. Jarvis online — quantum dots active. How may I assist?', { who: 'Jarvis' });
+  }
+}
 
-with col1:
-    st.subheader("📹 Kamera (Live)")
-    
-    # Jika perintah suara kamera aktif, kita berikan default active pada webrtc jika didukung
-    ctx = webrtc_streamer(
-        key=f"hand-3d-tracker-smooth-{st.session_state.cam_nonce}-{ICE_MODES.index(ICE_MODE)}",
-        desired_playing_state=True if st.session_state.cam_autostart else None,
-        video_processor_factory=lambda: Hand3DProcessor(DETECTOR_HOLDER),
-        rtc_configuration=RTC_CONFIGURATION,
-        **_WEBRTC_EXTRA,
-        media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 30}}, "audio": False},
-        async_processing=True,
-    )
+/* ============================================================
+   SEND MESSAGE
+   ============================================================ */
+async function sendMessage(text) {
+  if (!text || !text.trim()) return;
+  text = text.trim();
 
-with col2:
-    st.subheader("ℹ️ Status Visual")
-    if ctx.state.playing:
-        st.success("🟢 Kamera aktif")
-        st.session_state.camera_active_state = True
-        if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
-            st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame.")
-    else:
-        st.session_state.camera_active_state = False
-        if st.session_state.cam_autostart:
-            st.info(f"⏳ Menyambungkan kamera... (percobaan {max(st.session_state.cam_attempt,1)}/{CAM_MAX_ATTEMPTS}, otomatis diulang). "
-                    "Jika browser meminta izin, klik **Allow / Izinkan**.")
-            if st.session_state.cam_attempt >= CAM_MAX_ATTEMPTS and \
-               time.time() - st.session_state.get("cam_requested_at", time.time()) > CAM_RETRY_AFTER:
-                if ICE_MODE == "STUN saja":
-                    st.error("Kamera belum tersambung dengan mode STUN saja. Klik STOP lalu START, atau ganti jaringan "
-                             "(mis. hotspot HP). Jika jaringan Anda ketat, isi kredensial TURN (Cloudflare/Twilio) dan pilih mode 'Auto'.")
-                elif ICE_SOURCE == "STUN saja":
-                    st.error(f"🔧 Penyebab: {ICE_ERROR}")
-                    st.error("Kamera browser sudah menyala, tapi koneksi ke server gagal. Streamlit Cloud butuh **TURN server**. "
-                             "Isi `CLOUDFLARE_TURN_KEY_ID` + `CLOUDFLARE_TURN_API_TOKEN` (atau `TWILIO_*`) "
-                             "di Settings → Secrets, lalu reboot app.")
-                else:
-                    st.error(f"Kamera belum tersambung meski memakai {ICE_SOURCE} (mode: {ICE_MODE}). "
-                             "Coba ganti **Mode koneksi kamera** di sidebar (mis. ke 'STUN saja'), lalu nyalakan lagi. "
-                             "Jika masih gagal: klik STOP lalu START, atau ganti jaringan (mis. hotspot HP).")
-                st.info("💡 Cadangan: nyalakan **Mode foto** di bawah agar Jarvis tetap bisa melihat lewat foto.")
-        else:
-            st.warning("⚪ Kamera dalam mode standby. Ucapkan 'nyalakan kamera' atau klik START.")
+  const t = text.toLowerCase();
+  const camOnKw = ['nyalain kamera','nyalakan kamera','hidupkan kamera','buka kamera','aktifkan kamera','turn on the camera','open the camera','start the camera'];
+  const camOffKw = ['matikan kamera','matiin kamera','tutup kamera','stop kamera','nonaktifkan kamera','turn off the camera','close the camera'];
 
-    st.markdown("---")
-    st.markdown("---")
-    st.toggle("📷 Mode foto (cadangan, tanpa WebRTC)", key="photo_mode",
-              help="Pakai kamera browser langsung untuk mengambil foto. Cukup untuk bertanya 'apa yang kamu lihat?'. "
-                   "Gesture kubus 3D tidak aktif di mode ini.")
-    if st.session_state.get("photo_mode"):
-        st.camera_input("Ambil foto untuk Jarvis", key="snap_cam")
-        st.caption("Ambil foto, lalu tanya Jarvis, mis. 'apa yang kamu lihat?'. Foto terakhir dipakai untuk pertanyaan berikutnya.")
-    st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
+  const liveOnKw = ['mode live','live mode','pantau kamera','awasi kamera','watch the camera','keep watching','start watching'];
+  const liveOffKw = ['stop live','matikan live','berhenti memantau','stop watching'];
+  if (liveOffKw.some(k => t.includes(k)) || liveOnKw.some(k => t.includes(k))) {
+    const on = !liveOffKw.some(k => t.includes(k));
+    addMsg('user', text, { who: 'Sir Lois' });
+    state.chat.push({ role: 'user', content: text });
+    const r = on ? 'Live monitoring engaged, Sir. I shall keep an eye on things.' : 'Live monitoring disengaged, Sir.';
+    addMsg('assistant', r, { who: 'Jarvis' });
+    state.chat.push({ role: 'assistant', content: r });
+    speak(r);
+    setLive(on);
+    saveChat(); return;
+  }
+  if (camOnKw.some(k => t.includes(k))) {
+    addMsg('user', text, { who: 'Sir Lois' });
+    state.chat.push({ role: 'user', content: text });
+    if (state.camStream) {
+      const r = 'The camera is already running, Sir.';
+      addMsg('assistant', r, { who: 'Jarvis' });
+      state.chat.push({ role: 'assistant', content: r });
+      speak(r);
+    } else {
+      const r = 'Starting the camera now, Sir. Please allow access if prompted.';
+      addMsg('assistant', r, { who: 'Jarvis' });
+      state.chat.push({ role: 'assistant', content: r });
+      speak(r);
+      await startCamera();
+    }
+    saveChat(); return;
+  }
+  if (camOffKw.some(k => t.includes(k))) {
+    addMsg('user', text, { who: 'Sir Lois' });
+    state.chat.push({ role: 'user', content: text });
+    const r = state.camStream ? 'Camera switched off, Sir.' : 'The camera is already off, Sir.';
+    addMsg('assistant', r, { who: 'Jarvis' });
+    state.chat.push({ role: 'assistant', content: r });
+    speak(r);
+    stopCamera();
+    saveChat(); return;
+  }
 
-# ============================================================
-# JARVIS CHAT + VOICE
-# ============================================================
-st.markdown("---")
-st.header("💬 Speak with Jarvis")
-st.caption("Klik **'Mulai Dengar'** sekali → mode obrolan suara aktif terus. Bicara → diam 1.5 detik → auto kirim. Jarvis selesai bicara → mic otomatis aktif lagi. Klik **'Stop Dengar'** untuk mematikan.")
+  addMsg('user', text, { who: 'Sir Lois' });
+  state.chat.push({ role: 'user', content: text });
+  saveChat();
 
-for msg in st.session_state.jarvis_messages:
-    if msg["role"] == "system" or not str(msg["content"]).strip(): continue
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+  const b64 = captureFrame();
+  const useVision = !!b64;
+  state.aiBusy = true;
 
-user_q = st.chat_input("Ask Jarvis...")
+  const memText = state.memory.slice(-5).map(m => '- ' + m).join('\n');
+  const historyText = state.chat.slice(-8, -1).map(m => {
+    const c = typeof m.content === 'string' ? m.content : '[image]';
+    return (m.role === 'user' ? 'Sir Lois: ' : 'Jarvis: ') + c.slice(0, 300);
+  }).join('\n');
 
-cam_cmd = detect_camera_command(user_q) if user_q else None
+  const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+  if (memText) messages.push({ role: 'system', content: `[LONG-TERM MEMORY]:\n${memText}` });
+  if (historyText) messages.push({ role: 'system', content: `[RECENT CONVERSATION]:\n${historyText}` });
+  if (state.liveOn && state.lastSeen && Date.now() - state.lastSeenAt < 60000)
+    messages.push({ role: 'system', content: `[LIVE MONITOR — last observation]: ${state.lastSeen}` });
 
-if user_q and cam_cmd:
-    if cam_cmd == "on" and ctx.state.playing:
-        reply = "The camera is already running, Sir."
-    elif cam_cmd == "off" and not ctx.state.playing and not st.session_state.cam_autostart:
-        reply = "The camera is already off, Sir."
-    elif cam_cmd == "on":
-        st.session_state.cam_nonce += 1
-        st.session_state.cam_autostart = True
-        st.session_state.cam_attempt = 1
-        st.session_state.cam_requested_at = time.time()
-        reply = "Starting the camera now, Sir. Please allow camera access if your browser asks."
-    else:
-        st.session_state.cam_nonce += 1
-        st.session_state.cam_autostart = False
-        st.session_state.cam_attempt = 0
-        reply = "Camera switched off, Sir."
+  if (useVision) {
+    messages.push({
+      role: 'user',
+      content: [
+        { type: 'text', text: hudState() ? text + '\n\n' + hudState() : text },
+        { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + b64 } },
+      ],
+    });
+  } else {
+    messages.push({ role: 'user', content: text });
+  }
 
-    st.session_state.jarvis_messages.append({"role": "user", "content": user_q})
-    st.session_state.jarvis_messages.append({"role": "assistant", "content": reply})
-    save_chat_history(st.session_state.jarvis_messages)
-    st.session_state.orb_state = "idle"
-    st.session_state.current_audio = generate_tts_edge(reply)
-    st.rerun()
+  setPill('pillAI', 'AI', 'berpikir…');
+  let reply;
+  try {
+    reply = await callGroq(messages, useVision);
+    if (!reply) reply = 'My apologies, Sir. I lost my train of thought. Could you say that once more?';
+  } catch (e) {
+    if (e.message === 'NO_KEY') {
+      reply = 'Sir, please enter your Groq API key in the ⚙️ settings panel first.';
+      openDrawer();
+    } else {
+      reply = 'Jarvis error: ' + e.message;
+    }
+    setPill('pillAI', 'AI', 'error');
+  } finally {
+    state.aiBusy = false;
+    if (!reply.startsWith('Jarvis error')) setPill('pillAI', 'AI', 'online');
+  }
 
-elif user_q:
-    st.session_state.orb_state = "listening"
-    st.session_state.current_audio = None
-    with orb_placeholder.container():
-        render_jarvis_orb(
-            audio_bytes=None,
-            state="listening",
-            conversation_mode=st.session_state.conversation_mode,
-        )
-    
-    has_img = False
-    pil_imgs = []
+  reply = String(reply).replace(/\[([^\]]*)\]/g, '$1').trim();
 
-    if ctx.state.playing and ctx.video_processor is not None:
-        time.sleep(0.5) 
-        if len(ctx.video_processor.frame_buffer) > 0:
-            latest_frame = list(ctx.video_processor.frame_buffer)[-1]
-            frame_rgb = cv2.cvtColor(latest_frame, cv2.COLOR_BGR2RGB)
-            pil_imgs.append(Image.fromarray(frame_rgb))
-            has_img = True
-    else:
-        pass  # kamera mati -> model diberi tahu lewat system note di bawah
+  addMsg('assistant', reply, { who: 'Jarvis' });
+  state.chat.push({ role: 'assistant', content: reply });
+  saveChat();
+  speak(reply);
 
-    if not has_img and st.session_state.get("photo_mode"):
-        _snap = st.session_state.get("snap_cam")
-        if _snap is not None:
-            try:
-                pil_imgs.append(Image.open(io.BytesIO(_snap.getvalue())).convert("RGB"))
-                has_img = True
-            except Exception as e:
-                _log(f"Gagal membaca foto: {e}")
+  if (!reply.startsWith('Jarvis error') && ai.key()) {
+    extractMemory(text, reply).then(m => {
+      if (m) {
+        state.memory.push(m);
+        localStorage.setItem(LS.mem, JSON.stringify(state.memory));
+        renderMemoryList();
+        toast('🧠 New memory: ' + m);
+      }
+    });
+  }
+}
 
-    if has_img:
-        with st.expander("👁️ Apa yang dilihat Jarvis saat ini:", expanded=True):
-            st.image(pil_imgs[0], caption="Live Camera Feed (ditangkap saat kamu bertanya)", use_container_width=True)
+/* ============================================================
+   MEMORY UI
+   ============================================================ */
+function renderMemoryList() {
+  const el = $('memList');
+  if (!el) return;
+  if (!state.memory.length) { el.innerHTML = '<small>Belum ada memory.</small>'; return; }
+  el.innerHTML = state.memory.slice(-8).map(m => `<div class="memItem">• ${escapeHtml(m)}</div>`).join('');
+}
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
-        content_list = [{"type": "text", "text": user_q}]
-        for p_img in pil_imgs:
-            b64 = image_to_base64(p_img, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY)
-            content_list.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
-            })
-        user_api_msg = {"role": "user", "content": content_list}
-        display_text = f"🖼️ *(Visual Memory: 1 frame)* {user_q}"
-    else:
-        user_api_msg = {"role": "user", "content": user_q}
-        display_text = user_q
+/* ============================================================
+   PILLS & TOAST
+   ============================================================ */
+function setPill(id, label, value) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML = `${label}: <b>${escapeHtml(value)}</b>`;
+  const v = String(value).toLowerCase();
+  el.classList.toggle('live', !!value && !['off','—','belum','error','gagal'].includes(v));
+  el.classList.toggle('err', ['error','gagal'].includes(v));
+}
 
-    st.session_state.jarvis_messages.append({"role": "user", "content": display_text})
-    with st.chat_message("user"):
-        st.markdown(user_q)
+let toastTimer = null;
+function toast(msg, isErr) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.toggle('err', !!isErr);
+  el.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+}
 
-    with st.chat_message("assistant"):
-        with st.spinner("Jarvis is looking at the camera..."):
-            api_messages = [st.session_state.jarvis_messages[0]]
+/* ============================================================
+   DRAWER
+   ============================================================ */
+function openDrawer() { $('drawer').classList.add('open'); }
+function closeDrawer() { $('drawer').classList.remove('open'); }
 
-            if st.session_state.memory_vault:
-                mem_items = st.session_state.memory_vault[-5:]
-                memory_str = "\n".join([f"- {m}" for m in mem_items])
-                api_messages.append({
-                    "role": "system",
-                    "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
-                })
+function initSettings() {
+  $('setBtn').onclick = openDrawer;
+  $('drawerClose').onclick = closeDrawer;
 
-            context_summary = get_recent_context_summary(max_turns=MAX_CONTEXT_TURNS)
-            if context_summary:
-                api_messages.append({
-                    "role": "system",
-                    "content": f"[PREVIOUS CONVERSATION — YOU MUST REMEMBER THIS]:\n{context_summary}"
-                })
-                if isinstance(user_api_msg["content"], str):
-                    user_api_msg["content"] = (
-                        f"[CONTEXT — earlier Sir Lois and I spoke about:]\n"
-                        f"{context_summary}\n\n"
-                        f"[NEW QUESTION]:\n{user_api_msg['content']}"
-                    )
-                else:
-                    user_api_msg["content"].insert(0, {
-                        "type": "text",
-                        "text": f"[CONTEXT — earlier we spoke about:]\n{context_summary}\n\n[NEW QUESTION]:"
-                    })
+  $('groqKey').value = ai.key();
+  $('groqKey').onchange = e => {
+    localStorage.setItem(LS.key, e.target.value.trim());
+    toast('API key disimpan');
+    setPill('pillAI', 'AI', e.target.value.trim() ? 'siap' : 'belum');
+  };
 
-            ui_history = st.session_state.jarvis_messages[1:-1]
-            for m in ui_history:
-                if str(m["content"]).strip():
-                    api_messages.append({"role": m["role"], "content": m["content"]})
+  $('modelText').value = ai.modelT();
+  $('modelText').onchange = e => {
+    localStorage.setItem(LS.modelT, e.target.value);
+    toast('Model teks: ' + e.target.value);
+  };
+  $('modelVision').value = ai.modelV();
+  $('modelVision').onchange = e => {
+    localStorage.setItem(LS.modelV, e.target.value);
+    toast('Model vision: ' + e.target.value);
+  };
 
-            if not has_img:
-                api_messages.append({
-                    "role": "system",
-                    "content": "[CAMERA STATUS: OFF — no image available. You CANNOT see anything. "
-                               "Never claim the camera is activated, never describe a view, and never say the view is empty. "
-                               "If asked what you see, say the camera is off and ask Sir to say 'turn on the camera'.]"
-                })
-            api_messages.append(user_api_msg)
+  $('voiceSel').onchange = e => {
+    tts.sel = e.target.value;
+    localStorage.setItem(LS.voice, e.target.value);
+    toast('Voice: ' + e.target.value);
+  };
+  $('voiceRate').onchange = e => {
+    localStorage.setItem(LS.rate, e.target.value);
+    tts.rate = parseRate(e.target.value);
+    toast('Rate: ' + e.target.value);
+  };
 
-            answer = ask_jarvis(api_messages, use_vision=has_img)
-            answer = sanitize_latex(answer)
-            answer = strip_filler_words(answer)
-            answer = strip_repetitive_greeting(answer, st.session_state.jarvis_messages)
-            if not answer or not answer.strip():
-                answer = EMPTY_FALLBACK
+  $('resetMem').onclick = () => {
+    state.memory = [];
+    localStorage.setItem(LS.mem, '[]');
+    renderMemoryList();
+    toast('Memory dihapus');
+  };
+  $('resetAll').onclick = () => {
+    if (!confirm('Hapus semua chat & memory?')) return;
+    state.memory = []; state.chat = [];
+    localStorage.removeItem(LS.mem);
+    localStorage.removeItem(LS.chat);
+    localStorage.removeItem(LS.conv);
+    state.conversationMode = false;
+    $('log').innerHTML = '';
+    renderMemoryList();
+    addMsg('assistant', 'Memory wiped. Jarvis standing by, Sir.', { who: 'Jarvis' });
+    toast('Semua data dihapus');
+    closeDrawer();
+  };
 
-        st.markdown(answer)
+  $('chkGesture').checked = state.gestureOn;
+  $('chkGesture').onchange = e => {
+    state.gestureOn = e.target.checked;
+    if (state.gestureOn && state.camStream) {
+      loadLandmarker().then(() => {
+        if (!hand.running) { hand.running = true; handLoop(); }
+      }).catch(() => {});
+    } else if (!state.gestureOn) {
+      hand.running = false;
+    }
+  };
+  $('chkAutoCam').checked = state.camAuto;
+  $('chkAutoCam').onchange = e => {
+    state.camAuto = e.target.checked;
+    localStorage.setItem(LS.camAuto, state.camAuto ? '1' : '0');
+  };
 
-        if answer and not answer.startswith("❌"):
-            new_memory = extract_memory(user_q, answer)
-            if new_memory:
-                st.session_state.memory_vault.append(new_memory)
-                save_memory(st.session_state.memory_vault)
-                st.toast(f"🧠 New memory: {new_memory}")
+  setPill('pillAI', 'AI', ai.key() ? 'siap' : 'belum');
+  renderMemoryList();
+}
 
-            with st.spinner("🎤 Preparing voice..."):
-                audio_bytes = generate_tts_edge(answer)
-                if audio_bytes:
-                    st.session_state.current_audio = audio_bytes
-                    st.session_state.orb_state = "speaking"
-                    with orb_placeholder.container():
-                        render_jarvis_orb(
-                            audio_bytes=audio_bytes,
-                            state="speaking",
-                            conversation_mode=st.session_state.conversation_mode,
-                        )
+/* ============================================================
+   PERMISSION FLOW (AUTO PROMPT)
+   ============================================================ */
+function showPerm(text) {
+  $('permText').textContent = text;
+  $('perm').classList.add('show');
+}
+function hidePerm() { $('perm').classList.remove('show'); }
 
-    st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
-    save_chat_history(st.session_state.jarvis_messages)
+async function requestPermissions() {
+  // Browser wajib menampilkan prompt
+  let camOk = false, micOk = false;
+  try {
+    const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    camStream.getTracks().forEach(t => t.stop());
+    camOk = true;
+  } catch (e) {
+    diag('Kamera: ' + e.message, true);
+  }
+  try {
+    const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micStream.getTracks().forEach(t => t.stop());
+    micOk = true;
+  } catch (e) {
+    diag('Mic: ' + e.message, true);
+  }
+  if (camOk && micOk) {
+    state.audioPermissionGranted = true;
+    localStorage.setItem(LS.perm, '1');
+    diag('Semua izin diberikan.');
+    // Langsung nyalakan kamera
+    startCamera();
+  } else {
+    toast('Izin kamera/mic diperlukan untuk fungsi penuh.', true);
+  }
+}
 
-# ============================================================
-# SIDEBAR
-# ============================================================
-with st.sidebar:
-    st.header("ℹ️ Info")
-    st.subheader("🧹 Chat Controls")
-    if st.button("🧹 Clear Chat View"):
-        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        st.session_state.current_audio = None
-        st.session_state.orb_state = "idle"
-        st.rerun()
-    if st.button("🗑️ Delete Chat History"):
-        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        save_chat_history([])
-        st.session_state.current_audio = None
-        st.session_state.orb_state = "idle"
-        st.rerun()
+/* ============================================================
+   INIT
+   ============================================================ */
+function init() {
+  initOrb();
+  initSettings();
+  restoreChat();
+  recog.engine = initRecognition();
 
-    st.subheader("🧠 Memory Controls")
-    if st.button("🧠 Reset Long-Term Memory"):
-        st.session_state.memory_vault = []
-        save_memory([])
-        st.rerun()
-    if st.button("💣 Reset ALL"):
-        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        st.session_state.memory_vault = []
-        save_chat_history([])
-        save_memory([])
-        st.session_state.current_audio = None
-        st.session_state.orb_state = "idle"
-        st.session_state.conversation_mode = False
-        st.session_state.camera_active_state = False
-        st.rerun()
+  $('camBtn').onclick = () => state.camStream ? stopCamera() : startCamera();
+  $('micBtn').onclick = () => state.listening ? stopListening() : startListening();
+  $('liveBtn').onclick = () => setLive(!state.liveOn);
+  if (state.liveOn) $('liveBtn').classList.add('active'), setPill('pillLive', 'Live', 'menunggu kamera');
 
-    st.markdown("---")
-    if st.session_state.memory_vault:
-        st.subheader("🧠 Jarvis Memory")
-        for mem in st.session_state.memory_vault[-5:]:
-            st.caption(f"- {mem}")
-        st.markdown("---")
+  $('sendBtn').onclick = () => {
+    const v = $('in').value.trim();
+    $('in').value = '';
+    if (v) sendMessage(v);
+  };
+  $('in').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = $('in').value.trim();
+      $('in').value = '';
+      if (v) sendMessage(v);
+    }
+  });
 
-    if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
-    
-    st.caption("Technology:")
-    st.caption("• Orb: Quantum Dots")
-    st.caption("• Vision: Live Camera Grab")
-    st.caption("• API: Groq")
-    st.caption("• Voice Mode: Continuous Conversation")
-    st.caption("• Voice: British English")
-    st.caption("• Limit: 1 Frame / Question")
-    st.caption(f"• WebRTC: {ICE_SOURCE}")
-    st.selectbox("Mode koneksi kamera", ICE_MODES, key="ice_mode",
-                 help="Jika kamera macet loading, coba ganti mode lalu nyalakan kamera lagi.")
-    if ICE_MODE == "STUN saja":
-        st.caption("Mode default. Tidak memakai TURN / kredensial apa pun.")
-    elif ICE_SOURCE != "STUN saja":
-        st.caption("Jika kamera macet di 'Auto', coba kembali ke 'STUN saja'.")
-    if ICE_ERROR and ICE_SOURCE == "STUN saja" and ICE_MODE != "STUN saja":
-        st.error(ICE_ERROR)
+  $('permBtn').onclick = async () => {
+    hidePerm();
+    await requestPermissions();
+    if (state.conversationMode) resumeListening();
+  };
 
-    with st.expander("🔧 Diagnostik kamera"):
-        import sys
-        from importlib import metadata as _md
-        def _ver(pkg):
-            try: return _md.version(pkg)
-            except Exception: return "-"
-        try:
-            _sig = getattr(ctx.state, "signalling", None)
-            _play = ctx.state.playing
-        except Exception:
-            _sig, _play = None, None
-        _turn_urls = [u for sv in _ICE_SERVERS for u in _server_urls(sv) if u.startswith(("turn:", "turns:"))]
-        st.code(
-            f"Python        : {sys.version.split()[0]}\n"
-            f"streamlit     : {_ver('streamlit')}\n"
-            f"streamlit-webrtc: {_ver('streamlit-webrtc')}\n"
-            f"aiortc        : {_ver('aiortc')}\n"
-            f"aioice        : {_ver('aioice')}\n"
-            f"mediapipe     : {_ver('mediapipe')}\n"
-            f"--\n"
-            f"Sumber ICE    : {ICE_SOURCE}\n"
-            f"Mode          : {ICE_MODE}\n"
-            f"Server config : {'terpisah' if _WEBRTC_EXTRA else 'sama (versi lama)'}\n"
-            f"URL TURN      : {len(_turn_urls)}\n"
-            f"Model tangan  : {'siap' if DETECTOR_HOLDER.get('det') is not None else 'belum siap'}\n"
-            f"Percobaan     : {st.session_state.cam_attempt}/{CAM_MAX_ATTEMPTS}\n"
-            f"playing       : {_play}\n"
-            f"signalling    : {_sig}\n"
-            f"Error ICE     : {ICE_ERROR or '-'}",
-            language="text",
-        )
+  if (!ai.key()) {
+    setTimeout(() => {
+      toast('⚙️ Masukkan Groq API key dulu', true);
+      openDrawer();
+    }, 1200);
+  }
 
+  if (state.conversationMode) {
+    setTimeout(() => {
+      diag('Auto-resume conversation mode');
+      resumeListening();
+    }, 900);
+  }
 
-# ============================================================
-# AUTO-RETRY KAMERA (di paling akhir agar chat tetap ter-render)
-# ============================================================
-if ctx.state.playing:
-    st.session_state.cam_attempt = 0
-elif st.session_state.cam_autostart and st.session_state.cam_attempt > 0:
-    _elapsed = time.time() - st.session_state.get("cam_requested_at", time.time())
-    if _elapsed > CAM_RETRY_AFTER:
-        if st.session_state.cam_attempt < CAM_MAX_ATTEMPTS:
-            st.session_state.cam_attempt += 1
-            st.session_state.cam_nonce += 1          # buat ulang komponen -> start ulang
-            st.session_state.cam_requested_at = time.time()
-            st.rerun()
-        # kalau sudah habis percobaan: berhenti polling, pesan error tampil di panel status
-    else:
-        time.sleep(1.5)
-        st.rerun()
+  setTimeout(() => {
+    if (!tts.ready) loadVoices();
+  }, 1500);
+
+  document.body.addEventListener('touchstart', () => {
+    if ('speechSynthesis' in window) speechSynthesis.getVoices();
+  }, { once: true, passive: true });
+
+  // AUTO PROMPT: Jika belum pernah memberi izin, minta otomatis
+  // Ini tetap memerlukan interaksi klik di beberapa browser, tapi prompt akan muncul seketika.
+  if (!state.audioPermissionGranted) {
+    // Delay 1 detik agar UI sempat render
+    setTimeout(async () => {
+      // Coba request izin langsung (akan muncul prompt)
+      await requestPermissions();
+    }, 1000);
+  } else {
+    // Jika sudah pernah, coba langsung start
+    startCamera();
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+
+})();
+</script>
+</body>
+</html>
