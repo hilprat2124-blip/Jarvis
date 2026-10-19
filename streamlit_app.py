@@ -146,7 +146,7 @@ def get_ice_servers():
 
 _ICE_SERVERS, ICE_SOURCE = get_ice_servers()
 ICE_MODES = ["STUN saja", "Auto (STUN + TURN)", "Paksa TURN relay"]
-st.session_state.setdefault("ice_mode", ICE_MODES[0] if ICE_SOURCE == "STUN saja" else ICE_MODES[1])
+st.session_state.setdefault("ice_mode", ICE_MODES[0])
 ICE_MODE = st.session_state.get("ice_mode", ICE_MODES[0])
 if ICE_MODE not in ICE_MODES:
     ICE_MODE = ICE_MODES[0]
@@ -1494,10 +1494,18 @@ with col2:
                     st.error(f"Kamera belum tersambung meski memakai {ICE_SOURCE} (mode: {ICE_MODE}). "
                              "Coba ganti **Mode koneksi kamera** di sidebar (mis. ke 'STUN saja'), lalu nyalakan lagi. "
                              "Jika masih gagal: klik STOP lalu START, atau ganti jaringan (mis. hotspot HP).")
+                st.info("💡 Cadangan: nyalakan **Mode foto** di bawah agar Jarvis tetap bisa melihat lewat foto.")
         else:
             st.warning("⚪ Kamera dalam mode standby. Ucapkan 'nyalakan kamera' atau klik START.")
 
     st.markdown("---")
+    st.markdown("---")
+    st.toggle("📷 Mode foto (cadangan, tanpa WebRTC)", key="photo_mode",
+              help="Pakai kamera browser langsung untuk mengambil foto. Cukup untuk bertanya 'apa yang kamu lihat?'. "
+                   "Gesture kubus 3D tidak aktif di mode ini.")
+    if st.session_state.get("photo_mode"):
+        st.camera_input("Ambil foto untuk Jarvis", key="snap_cam")
+        st.caption("Ambil foto, lalu tanya Jarvis, mis. 'apa yang kamu lihat?'. Foto terakhir dipakai untuk pertanyaan berikutnya.")
     st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
 
 # ============================================================
@@ -1562,6 +1570,15 @@ elif user_q:
             has_img = True
     else:
         pass  # kamera mati -> model diberi tahu lewat system note di bawah
+
+    if not has_img and st.session_state.get("photo_mode"):
+        _snap = st.session_state.get("snap_cam")
+        if _snap is not None:
+            try:
+                pil_imgs.append(Image.open(io.BytesIO(_snap.getvalue())).convert("RGB"))
+                has_img = True
+            except Exception as e:
+                _log(f"Gagal membaca foto: {e}")
 
     if has_img:
         with st.expander("👁️ Apa yang dilihat Jarvis saat ini:", expanded=True):
