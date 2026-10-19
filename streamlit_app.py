@@ -1454,4 +1454,340 @@ with orb_placeholder.container():
         conversation_mode=st.session_state.conversation_mode,
     )
 
-# =============================
+# ============================================================
+# LAYOUT KAMERA DENGAN AUTO-ACTIVATE STATE
+# ============================================================
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.subheader("📹 Kamera (Live)")
+    
+    # Jika perintah suara kamera aktif, kita berikan default active pada webrtc jika didukung
+    ctx = webrtc_streamer(
+        key=f"hand-3d-tracker-smooth-{st.session_state.cam_nonce}-{ICE_MODES.index(ICE_MODE)}",
+        desired_playing_state=True if st.session_state.cam_autostart else None,
+        video_processor_factory=lambda: Hand3DProcessor(DETECTOR_HOLDER),
+        rtc_configuration=RTC_CONFIGURATION,
+        **_WEBRTC_EXTRA,
+        media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 30}}, "audio": False},
+        async_processing=True,
+    )
+
+with col2:
+    st.subheader("ℹ️ Status Visual")
+    if ctx.state.playing:
+        st.success("🟢 Kamera aktif")
+        st.session_state.camera_active_state = True
+        if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
+            st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame.")
+    else:
+        st.session_state.camera_active_state = False
+        if st.session_state.cam_autostart:
+            st.info(f"⏳ Menyambungkan kamera... (percobaan {max(st.session_state.cam_attempt,1)}/{CAM_MAX_ATTEMPTS}, otomatis diulang). "
+                    "Jika browser meminta izin, klik **Allow / Izinkan**.")
+            if st.session_state.cam_attempt >= CAM_MAX_ATTEMPTS and \
+               time.time() - st.session_state.get("cam_requested_at", time.time()) > CAM_RETRY_AFTER:
+                if ICE_MODE == "STUN saja":
+                    st.error("Kamera belum tersambung dengan mode STUN saja. Klik STOP lalu START, atau ganti jaringan "
+                             "(mis. hotspot HP). Jika jaringan Anda ketat, isi kredensial TURN (Cloudflare/Twilio) dan pilih mode 'Auto'.")
+                elif ICE_SOURCE == "STUN saja":
+                    st.error(f"🔧 Penyebab: {ICE_ERROR}")
+                    st.error("Kamera browser sudah menyala, tapi koneksi ke server gagal. Streamlit Cloud butuh **TURN server**. "
+                             "Isi `CLOUDFLARE_TURN_KEY_ID` + `CLOUDFLARE_TURN_API_TOKEN` (atau `TWILIO_*`) "
+                             "di Settings → Secrets, lalu reboot app.")
+                else:
+                    st.error(f"Kamera belum tersambung meski memakai {ICE_SOURCE} (mode: {ICE_MODE}). "
+                             "Coba ganti **Mode koneksi kamera** di sidebar (mis. ke 'STUN saja'), lalu nyalakan lagi. "
+                             "Jika masih gagal: klik STOP lalu START, atau ganti jaringan (mis. hotspot HP).")
+                st.info("💡 Cadangan: nyalakan **Mode foto** di bawah agar Jarvis tetap bisa melihat lewat foto.")
+        else:
+            st.warning("⚪ Kamera dalam mode standby. Ucapkan 'nyalakan kamera' atau klik START.")
+
+    st.markdown("---")
+    st.markdown("---")
+    st.toggle("📷 Mode foto (cadangan, tanpa WebRTC)", key="photo_mode",
+              help="Pakai kamera browser langsung untuk mengambil foto. Cukup untuk bertanya 'apa yang kamu lihat?'. "
+                   "Gesture kubus 3D tidak aktif di mode ini.")
+    if st.session_state.get("photo_mode"):
+        st.camera_input("Ambil foto untuk Jarvis", key="snap_cam")
+        st.caption("Ambil foto, lalu tanya Jarvis, mis. 'apa yang kamu lihat?'. Foto terakhir dipakai untuk pertanyaan berikutnya.")
+    st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
+
+# ============================================================
+# JARVIS CHAT + VOICE
+# ============================================================
+st.markdown("---")
+st.header("💬 Speak with Jarvis")
+st.caption("Klik **'Mulai Dengar'** sekali → mode obrolan suara aktif terus. Bicara → diam 1.5 detik → auto kirim. Jarvis selesai bicara → mic otomatis aktif lagi. Klik **'Stop Dengar'** untuk mematikan.")
+
+for msg in st.session_state.jarvis_messages:
+    if msg["role"] == "system" or not str(msg["content"]).strip(): continue
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+user_q = st.chat_input("Ask Jarvis...")
+
+cam_cmd = detect_camera_command(user_q) if user_q else None
+
+if user_q and cam_cmd:
+    if cam_cmd == "on" and ctx.state.playing:
+        reply = "The camera is already running, Sir."
+    elif cam_cmd == "off" and not ctx.state.playing and not st.session_state.cam_autostart:
+        reply = "The camera is already off, Sir."
+    elif cam_cmd == "on":
+        st.session_state.cam_nonce += 1
+        st.session_state.cam_autostart = True
+        st.session_state.cam_attempt = 1
+        st.session_state.cam_requested_at = time.time()
+        reply = "Starting the camera now, Sir. Please allow camera access if your browser asks."
+    else:
+        st.session_state.cam_nonce += 1
+        st.session_state.cam_autostart = False
+        st.session_state.cam_attempt = 0
+        reply = "Camera switched off, Sir."
+
+    st.session_state.jarvis_messages.append({"role": "user", "content": user_q})
+    st.session_state.jarvis_messages.append({"role": "assistant", "content": reply})
+    save_chat_history(st.session_state.jarvis_messages)
+    st.session_state.orb_state = "idle"
+    st.session_state.current_audio = generate_tts_edge(reply)
+    st.rerun()
+
+elif user_q:
+    st.session_state.orb_state = "listening"
+    st.session_state.current_audio = None
+    with orb_placeholder.container():
+        render_jarvis_orb(
+            audio_bytes=None,
+            state="listening",
+            conversation_mode=st.session_state.conversation_mode,
+        )
+    
+    has_img = False
+    pil_imgs = []
+
+    if ctx.state.playing and ctx.video_processor is not None:
+        time.sleep(0.5) 
+        if len(ctx.video_processor.frame_buffer) > 0:
+            latest_frame = list(ctx.video_processor.frame_buffer)[-1]
+            frame_rgb = cv2.cvtColor(latest_frame, cv2.COLOR_BGR2RGB)
+            pil_imgs.append(Image.fromarray(frame_rgb))
+            has_img = True
+    else:
+        pass  # kamera mati -> model diberi tahu lewat system note di bawah
+
+    if not has_img and st.session_state.get("photo_mode"):
+        _snap = st.session_state.get("snap_cam")
+        if _snap is not None:
+            try:
+                pil_imgs.append(Image.open(io.BytesIO(_snap.getvalue())).convert("RGB"))
+                has_img = True
+            except Exception as e:
+                _log(f"Gagal membaca foto: {e}")
+
+    if has_img:
+        with st.expander("👁️ Apa yang dilihat Jarvis saat ini:", expanded=True):
+            st.image(pil_imgs[0], caption="Live Camera Feed (ditangkap saat kamu bertanya)", use_container_width=True)
+
+        content_list = [{"type": "text", "text": user_q}]
+        for p_img in pil_imgs:
+            b64 = image_to_base64(p_img, max_size=IMAGE_MAX_SIZE, quality=IMAGE_QUALITY)
+            content_list.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+            })
+        user_api_msg = {"role": "user", "content": content_list}
+        display_text = f"🖼️ *(Visual Memory: 1 frame)* {user_q}"
+    else:
+        user_api_msg = {"role": "user", "content": user_q}
+        display_text = user_q
+
+    st.session_state.jarvis_messages.append({"role": "user", "content": display_text})
+    with st.chat_message("user"):
+        st.markdown(user_q)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Jarvis is looking at the camera..."):
+            api_messages = [st.session_state.jarvis_messages[0]]
+
+            if st.session_state.memory_vault:
+                mem_items = st.session_state.memory_vault[-5:]
+                memory_str = "\n".join([f"- {m}" for m in mem_items])
+                api_messages.append({
+                    "role": "system",
+                    "content": f"[LONG-TERM MEMORY ABOUT SIR LOIS]:\n{memory_str}"
+                })
+
+            context_summary = get_recent_context_summary(max_turns=MAX_CONTEXT_TURNS)
+            if context_summary:
+                api_messages.append({
+                    "role": "system",
+                    "content": f"[PREVIOUS CONVERSATION — YOU MUST REMEMBER THIS]:\n{context_summary}"
+                })
+                if isinstance(user_api_msg["content"], str):
+                    user_api_msg["content"] = (
+                        f"[CONTEXT — earlier Sir Lois and I spoke about:]\n"
+                        f"{context_summary}\n\n"
+                        f"[NEW QUESTION]:\n{user_api_msg['content']}"
+                    )
+                else:
+                    user_api_msg["content"].insert(0, {
+                        "type": "text",
+                        "text": f"[CONTEXT — earlier we spoke about:]\n{context_summary}\n\n[NEW QUESTION]:"
+                    })
+
+            ui_history = st.session_state.jarvis_messages[1:-1]
+            for m in ui_history:
+                if str(m["content"]).strip():
+                    api_messages.append({"role": m["role"], "content": m["content"]})
+
+            if not has_img:
+                api_messages.append({
+                    "role": "system",
+                    "content": "[CAMERA STATUS: OFF — no image available. You CANNOT see anything. "
+                               "Never claim the camera is activated, never describe a view, and never say the view is empty. "
+                               "If asked what you see, say the camera is off and ask Sir to say 'turn on the camera'.]"
+                })
+            api_messages.append(user_api_msg)
+
+            answer = ask_jarvis(api_messages, use_vision=has_img)
+            answer = sanitize_latex(answer)
+            answer = strip_filler_words(answer)
+            answer = strip_repetitive_greeting(answer, st.session_state.jarvis_messages)
+            if not answer or not answer.strip():
+                answer = EMPTY_FALLBACK
+
+        st.markdown(answer)
+
+        if answer and not answer.startswith("❌"):
+            new_memory = extract_memory(user_q, answer)
+            if new_memory:
+                st.session_state.memory_vault.append(new_memory)
+                save_memory(st.session_state.memory_vault)
+                st.toast(f"🧠 New memory: {new_memory}")
+
+            with st.spinner("🎤 Preparing voice..."):
+                audio_bytes = generate_tts_edge(answer)
+                if audio_bytes:
+                    st.session_state.current_audio = audio_bytes
+                    st.session_state.orb_state = "speaking"
+                    with orb_placeholder.container():
+                        render_jarvis_orb(
+                            audio_bytes=audio_bytes,
+                            state="speaking",
+                            conversation_mode=st.session_state.conversation_mode,
+                        )
+
+    st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
+    save_chat_history(st.session_state.jarvis_messages)
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+with st.sidebar:
+    st.header("ℹ️ Info")
+    st.subheader("🧹 Chat Controls")
+    if st.button("🧹 Clear Chat View"):
+        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        st.session_state.current_audio = None
+        st.session_state.orb_state = "idle"
+        st.rerun()
+    if st.button("🗑️ Delete Chat History"):
+        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        save_chat_history([])
+        st.session_state.current_audio = None
+        st.session_state.orb_state = "idle"
+        st.rerun()
+
+    st.subheader("🧠 Memory Controls")
+    if st.button("🧠 Reset Long-Term Memory"):
+        st.session_state.memory_vault = []
+        save_memory([])
+        st.rerun()
+    if st.button("💣 Reset ALL"):
+        st.session_state.jarvis_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        st.session_state.memory_vault = []
+        save_chat_history([])
+        save_memory([])
+        st.session_state.current_audio = None
+        st.session_state.orb_state = "idle"
+        st.session_state.conversation_mode = False
+        st.session_state.camera_active_state = False
+        st.rerun()
+
+    st.markdown("---")
+    if st.session_state.memory_vault:
+        st.subheader("🧠 Jarvis Memory")
+        for mem in st.session_state.memory_vault[-5:]:
+            st.caption(f"- {mem}")
+        st.markdown("---")
+
+    if not TTS_AVAILABLE: st.warning("⚠️ `edge-tts` not installed.")
+    
+    st.caption("Technology:")
+    st.caption("• Orb: Quantum Dots")
+    st.caption("• Vision: Live Camera Grab")
+    st.caption("• API: Groq")
+    st.caption("• Voice Mode: Continuous Conversation")
+    st.caption("• Voice: British English")
+    st.caption("• Limit: 1 Frame / Question")
+    st.caption(f"• WebRTC: {ICE_SOURCE}")
+    st.selectbox("Mode koneksi kamera", ICE_MODES, key="ice_mode",
+                 help="Jika kamera macet loading, coba ganti mode lalu nyalakan kamera lagi.")
+    if ICE_MODE == "STUN saja":
+        st.caption("Mode default. Tidak memakai TURN / kredensial apa pun.")
+    elif ICE_SOURCE != "STUN saja":
+        st.caption("Jika kamera macet di 'Auto', coba kembali ke 'STUN saja'.")
+    if ICE_ERROR and ICE_SOURCE == "STUN saja" and ICE_MODE != "STUN saja":
+        st.error(ICE_ERROR)
+
+    with st.expander("🔧 Diagnostik kamera"):
+        import sys
+        from importlib import metadata as _md
+        def _ver(pkg):
+            try: return _md.version(pkg)
+            except Exception: return "-"
+        try:
+            _sig = getattr(ctx.state, "signalling", None)
+            _play = ctx.state.playing
+        except Exception:
+            _sig, _play = None, None
+        _turn_urls = [u for sv in _ICE_SERVERS for u in _server_urls(sv) if u.startswith(("turn:", "turns:"))]
+        st.code(
+            f"Python        : {sys.version.split()[0]}\n"
+            f"streamlit     : {_ver('streamlit')}\n"
+            f"streamlit-webrtc: {_ver('streamlit-webrtc')}\n"
+            f"aiortc        : {_ver('aiortc')}\n"
+            f"aioice        : {_ver('aioice')}\n"
+            f"mediapipe     : {_ver('mediapipe')}\n"
+            f"--\n"
+            f"Sumber ICE    : {ICE_SOURCE}\n"
+            f"Mode          : {ICE_MODE}\n"
+            f"Server config : {'terpisah' if _WEBRTC_EXTRA else 'sama (versi lama)'}\n"
+            f"URL TURN      : {len(_turn_urls)}\n"
+            f"Model tangan  : {'siap' if DETECTOR_HOLDER.get('det') is not None else 'belum siap'}\n"
+            f"Percobaan     : {st.session_state.cam_attempt}/{CAM_MAX_ATTEMPTS}\n"
+            f"playing       : {_play}\n"
+            f"signalling    : {_sig}\n"
+            f"Error ICE     : {ICE_ERROR or '-'}",
+            language="text",
+        )
+
+
+# ============================================================
+# AUTO-RETRY KAMERA (di paling akhir agar chat tetap ter-render)
+# ============================================================
+if ctx.state.playing:
+    st.session_state.cam_attempt = 0
+elif st.session_state.cam_autostart and st.session_state.cam_attempt > 0:
+    _elapsed = time.time() - st.session_state.get("cam_requested_at", time.time())
+    if _elapsed > CAM_RETRY_AFTER:
+        if st.session_state.cam_attempt < CAM_MAX_ATTEMPTS:
+            st.session_state.cam_attempt += 1
+            st.session_state.cam_nonce += 1          # buat ulang komponen -> start ulang
+            st.session_state.cam_requested_at = time.time()
+            st.rerun()
+        # kalau sudah habis percobaan: berhenti polling, pesan error tampil di panel status
+    else:
+        time.sleep(1.5)
+        st.rerun()
