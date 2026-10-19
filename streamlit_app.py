@@ -114,7 +114,7 @@ def get_ice_servers():
     return [stun], "STUN saja"
 
 _ICE_SERVERS, ICE_SOURCE = get_ice_servers()
-ICE_MODES = ["Auto (STUN + TURN)", "STUN saja", "Paksa TURN relay"]
+ICE_MODES = ["STUN saja", "Auto (STUN + TURN)", "Paksa TURN relay"]
 ICE_MODE = st.session_state.get("ice_mode", ICE_MODES[0])
 if ICE_MODE not in ICE_MODES:
     ICE_MODE = ICE_MODES[0]
@@ -1426,7 +1426,10 @@ with col2:
             st.info("⏳ Kamera sedang dinyalakan... Jika browser meminta izin, klik **Allow / Izinkan**. "
                     "Jika tidak berhasil dalam beberapa detik, klik tombol START di sebelah kiri.")
             if time.time() - st.session_state.get("cam_requested_at", time.time()) > 15:
-                if ICE_SOURCE == "STUN saja":
+                if ICE_MODE == "STUN saja":
+                    st.error("Kamera belum tersambung dengan mode STUN saja. Klik STOP lalu START, atau ganti jaringan "
+                             "(mis. hotspot HP). Jika jaringan Anda ketat, isi kredensial TURN dan pilih mode 'Auto'.")
+                elif ICE_SOURCE == "STUN saja":
                     st.error(f"🔧 Penyebab: {ICE_ERROR}")
                     st.error("Kamera browser sudah menyala, tapi koneksi ke server gagal. Streamlit Cloud butuh **TURN server**. "
                              "Isi `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` (atau `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`) "
@@ -1651,7 +1654,9 @@ with st.sidebar:
     st.caption(f"• WebRTC: {ICE_SOURCE}")
     st.selectbox("Mode koneksi kamera", ICE_MODES, key="ice_mode",
                  help="Jika kamera macet loading, coba ganti mode lalu nyalakan kamera lagi.")
-    if ICE_SOURCE == "Twilio TURN":
-        st.caption("Jika kamera macet di 'Auto', coba 'STUN saja'.")
-    if ICE_ERROR and ICE_SOURCE == "STUN saja":
+    if ICE_MODE == "STUN saja":
+        st.caption("Default. Jika kamera macet di jaringan lain, coba mode 'Auto' (butuh TURN).")
+    elif ICE_SOURCE == "Twilio TURN":
+        st.caption("Jika kamera macet di 'Auto', kembali ke 'STUN saja'.")
+    if ICE_ERROR and ICE_SOURCE == "STUN saja" and ICE_MODE != "STUN saja":
         st.error(ICE_ERROR)
