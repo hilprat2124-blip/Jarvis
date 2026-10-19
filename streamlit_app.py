@@ -144,12 +144,17 @@ def get_ice_servers():
                        "credential": _secret("TURN_CREDENTIAL")}], "TURN kustom"
     return [stun], "STUN saja"
 
-_ICE_SERVERS, ICE_SOURCE = get_ice_servers()
 ICE_MODES = ["STUN saja", "Auto (STUN + TURN)", "Paksa TURN relay"]
 st.session_state.setdefault("ice_mode", ICE_MODES[0])
 ICE_MODE = st.session_state.get("ice_mode", ICE_MODES[0])
 if ICE_MODE not in ICE_MODES:
     ICE_MODE = ICE_MODES[0]
+
+# Default = STUN saja (terbukti paling stabil). Kredensial TURN hanya diambil bila mode TURN dipilih.
+if ICE_MODE == "STUN saja":
+    _ICE_SERVERS, ICE_SOURCE = [], "STUN saja"
+else:
+    _ICE_SERVERS, ICE_SOURCE = get_ice_servers()
 
 def _server_urls(server: dict) -> list:
     u = server.get("urls") or server.get("url") or []
@@ -1424,7 +1429,7 @@ if "cam_attempt" not in st.session_state:
     st.session_state.cam_attempt = 0
 
 CAM_MAX_ATTEMPTS = 3     # jumlah percobaan otomatis
-CAM_RETRY_AFTER = 12     # detik menunggu sebelum mengulang
+CAM_RETRY_AFTER = 20     # detik menunggu sebelum mengulang
 
 CAMERA_ON_KEYWORDS = ["nyalain kamera", "nyalakan kamera", "hidupkan kamera", "buka kamera",
                       "aktifkan kamera", "start kamera", "turn on the camera", "open the camera",
@@ -1730,7 +1735,7 @@ with st.sidebar:
     st.selectbox("Mode koneksi kamera", ICE_MODES, key="ice_mode",
                  help="Jika kamera macet loading, coba ganti mode lalu nyalakan kamera lagi.")
     if ICE_MODE == "STUN saja":
-        st.caption("Default. Jika kamera macet di jaringan lain, coba mode 'Auto' (butuh TURN).")
+        st.caption("Mode default. Tidak memakai TURN / kredensial apa pun.")
     elif ICE_SOURCE != "STUN saja":
         st.caption("Jika kamera macet di 'Auto', coba kembali ke 'STUN saja'.")
     if ICE_ERROR and ICE_SOURCE == "STUN saja" and ICE_MODE != "STUN saja":
