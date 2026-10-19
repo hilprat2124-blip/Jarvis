@@ -305,11 +305,36 @@ def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
 # ============================================================
 # KELAS KAMERA — SILENT VISUAL MEMORY
 # ============================================================
+cv2.setNumThreads(1)  # hemat memori/thread di server cloud
+
+@st.cache_resource(show_spinner=False)
+def get_detector_holder():
+    """Satu HandLandmarker untuk SEMUA koneksi kamera (hemat memori).
+    Dimuat di thread latar sekali saja per proses server."""
+    holder = {"det": None, "lock": threading.Lock(), "ts": 0}
+
+    def _load():
+        try:
+            base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+            options = vision.HandLandmarkerOptions(
+                base_options=base_options, running_mode=vision.RunningMode.VIDEO,
+                num_hands=1, min_hand_detection_confidence=0.3,
+                min_hand_presence_confidence=0.3, min_tracking_confidence=0.5
+            )
+            holder["det"] = vision.HandLandmarker.create_from_options(options)
+            _log("HandLandmarker siap (shared)")
+        except Exception as e:
+            _log(f"Gagal memuat HandLandmarker: {e}")
+
+    threading.Thread(target=_load, daemon=True).start()
+    return holder
+
+DETECTOR_HOLDER = get_detector_holder()
+
 class Hand3DProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.detector = None  # dimuat di thread latar supaya video tidak menunggu model
+    def __init__(self, holder=None):
+        self.holder = holder
         self.frame_timestamp = 0
-        threading.Thread(target=self._load_detector, daemon=True).start()
         
         self.rx, self.ry = 0.5, 0.5
         self.scale = 1.0
@@ -349,18 +374,9 @@ class Hand3DProcessor(VideoProcessorBase):
         self.last_buffer_time = time.time()
         self.buffer_interval = 0.2
 
-    def _load_detector(self):
-        try:
-            base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
-            options = vision.HandLandmarkerOptions(
-                base_options=base_options, running_mode=vision.RunningMode.VIDEO,
-                num_hands=1, min_hand_detection_confidence=0.3,
-                min_hand_presence_confidence=0.3, min_tracking_confidence=0.5
-            )
-            self.detector = vision.HandLandmarker.create_from_options(options)
-            _log("HandLandmarker siap")
-        except Exception as e:
-            _log(f"Gagal memuat HandLandmarker: {e}")
+    @property
+    def detector(self):
+        return self.holder["det"] if self.holder else None
 
     def _to_pixel(self, landmark, w, h):
         return int(landmark.x * w), int(landmark.y * h)
@@ -429,11 +445,13 @@ class Hand3DProcessor(VideoProcessorBase):
             img_src = img
         img_rgb = cv2.cvtColor(img_src, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-        self.frame_timestamp = max(self.frame_timestamp + 1, int(time.time() * 1000))
         try:
-            if self.detector is None:
+            det = self.detector
+            if det is None:
                 raise RuntimeError("model belum siap")
-            results = self.detector.detect_for_video(mp_image, self.frame_timestamp)
+            with self.holder["lock"]:
+                self.holder["ts"] = max(self.holder["ts"] + 1, int(time.time() * 1000))
+                results = det.detect_for_video(mp_image, self.holder["ts"])
         except Exception as e:
             if self.detector is not None:
                 _log(f"MediaPipe error: {e}")
@@ -655,7 +673,7 @@ class Hand3DProcessor(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
     def __del__(self):
-        try: self.detector.close()
+        try: pass
         except: pass
 
 # ============================================================
@@ -1405,7 +1423,7 @@ if "cam_autostart" not in st.session_state:
 if "cam_attempt" not in st.session_state:
     st.session_state.cam_attempt = 0
 
-CAM_MAX_ATTEMPTS = 5     # jumlah percobaan otomatis
+CAM_MAX_ATTEMPTS = 3     # jumlah percobaan otomatis
 CAM_RETRY_AFTER = 12     # detik menunggu sebelum mengulang
 
 CAMERA_ON_KEYWORDS = ["nyalain kamera", "nyalakan kamera", "hidupkan kamera", "buka kamera",
@@ -1443,7 +1461,7 @@ with col1:
     ctx = webrtc_streamer(
         key=f"hand-3d-tracker-smooth-{st.session_state.cam_nonce}-{ICE_MODES.index(ICE_MODE)}",
         desired_playing_state=True if st.session_state.cam_autostart else None,
-        video_processor_factory=Hand3DProcessor,
+        video_processor_factory=lambda: Hand3DProcessor(DETECTOR_HOLDER),
         rtc_configuration=RTC_CONFIGURATION,
         **_WEBRTC_EXTRA,
         media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 30}}, "audio": False},
@@ -1700,6 +1718,38 @@ with st.sidebar:
         st.caption("Jika kamera macet di 'Auto', coba kembali ke 'STUN saja'.")
     if ICE_ERROR and ICE_SOURCE == "STUN saja" and ICE_MODE != "STUN saja":
         st.error(ICE_ERROR)
+
+    with st.expander("🔧 Diagnostik kamera"):
+        import sys
+        from importlib import metadata as _md
+        def _ver(pkg):
+            try: return _md.version(pkg)
+            except Exception: return "-"
+        try:
+            _sig = getattr(ctx.state, "signalling", None)
+            _play = ctx.state.playing
+        except Exception:
+            _sig, _play = None, None
+        _turn_urls = [u for sv in _ICE_SERVERS for u in _server_urls(sv) if u.startswith(("turn:", "turns:"))]
+        st.code(
+            f"Python        : {sys.version.split()[0]}\n"
+            f"streamlit     : {_ver('streamlit')}\n"
+            f"streamlit-webrtc: {_ver('streamlit-webrtc')}\n"
+            f"aiortc        : {_ver('aiortc')}\n"
+            f"aioice        : {_ver('aioice')}\n"
+            f"mediapipe     : {_ver('mediapipe')}\n"
+            f"--\n"
+            f"Sumber ICE    : {ICE_SOURCE}\n"
+            f"Mode          : {ICE_MODE}\n"
+            f"Server config : {'terpisah' if _WEBRTC_EXTRA else 'sama (versi lama)'}\n"
+            f"URL TURN      : {len(_turn_urls)}\n"
+            f"Model tangan  : {'siap' if DETECTOR_HOLDER.get('det') is not None else 'belum siap'}\n"
+            f"Percobaan     : {st.session_state.cam_attempt}/{CAM_MAX_ATTEMPTS}\n"
+            f"playing       : {_play}\n"
+            f"signalling    : {_sig}\n"
+            f"Error ICE     : {ICE_ERROR or '-'}",
+            language="text",
+        )
 
 
 # ============================================================
