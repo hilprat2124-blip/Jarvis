@@ -7,4 +7,3 @@ mediapipe
 pillow
 groq
 edge-tts
-twilio
