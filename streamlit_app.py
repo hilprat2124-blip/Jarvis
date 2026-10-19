@@ -84,7 +84,6 @@ ICE_ERROR = ""
 
 @st.cache_data(ttl=3000, show_spinner=False)
 def _twilio_ice_servers(sid: str, tok: str):
-    # Hanya hasil SUKSES yang di-cache (exception tidak pernah di-cache)
     from twilio.rest import Client
     return Client(sid, tok).tokens.create().ice_servers
 
@@ -106,8 +105,6 @@ def _cloudflare_ice_servers(key_id: str, api_token: str):
     return servers if isinstance(servers, list) else [servers]
 
 def get_ice_servers():
-    """Streamlit Cloud tidak bisa WebRTC tanpa TURN server.
-    Prioritas: (1) Twilio, (2) TURN generik, (3) STUN saja. Return: (ice_servers, sumber)"""
     global ICE_ERROR
     stun = {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}
 
@@ -118,7 +115,7 @@ def get_ice_servers():
         except Exception as e:
             detail = str(e)
             try:
-                detail += " " + e.read().decode()[:150]   # HTTPError membawa body
+                detail += " " + e.read().decode()[:150]
             except Exception:
                 pass
             ICE_ERROR = f"Cloudflare gagal: {detail[:250]}"
@@ -150,7 +147,6 @@ ICE_MODE = st.session_state.get("ice_mode", ICE_MODES[0])
 if ICE_MODE not in ICE_MODES:
     ICE_MODE = ICE_MODES[0]
 
-# Default = STUN saja (terbukti paling stabil). Kredensial TURN hanya diambil bila mode TURN dipilih.
 if ICE_MODE == "STUN saja":
     _ICE_SERVERS, ICE_SOURCE = [], "STUN saja"
 else:
@@ -164,8 +160,6 @@ def _is_turn(server: dict) -> bool:
     return any(x.startswith(("turn:", "turns:")) for x in _server_urls(server))
 
 def _udp_only(servers: list) -> list:
-    """Sisi server (aiortc/aioice) bisa lambat/macet saat mengumpulkan kandidat TURN lewat TCP/TLS.
-    Untuk server cukup STUN + TURN UDP; browser tetap memakai daftar lengkap."""
     out = []
     for sv in servers:
         urls = [x for x in _server_urls(sv) if x.startswith(("stun:", "stuns:")) or
@@ -197,7 +191,7 @@ _WEBRTC_EXTRA = {}
 if "server_rtc_configuration" in _inspect.signature(webrtc_streamer).parameters:
     _WEBRTC_EXTRA["server_rtc_configuration"] = SERVER_RTC_CONFIGURATION
 
-SHARPEN = False  # True = deteksi sedikit lebih tajam tapi lebih lambat di server cloud
+SHARPEN = False
 PINCH_ENTER = 40
 PINCH_EXIT = 60
 HOLD_THRESHOLD = 1.0
@@ -310,12 +304,10 @@ def get_recent_context_summary(max_turns: int = MAX_CONTEXT_TURNS) -> str:
 # ============================================================
 # KELAS KAMERA — SILENT VISUAL MEMORY
 # ============================================================
-cv2.setNumThreads(1)  # hemat memori/thread di server cloud
+cv2.setNumThreads(1)
 
 @st.cache_resource(show_spinner=False)
 def get_detector_holder():
-    """Satu HandLandmarker untuk SEMUA koneksi kamera (hemat memori).
-    Dimuat di thread latar sekali saja per proses server."""
     holder = {"det": None, "lock": threading.Lock(), "ts": 0}
 
     def _load():
@@ -712,7 +704,7 @@ def _clean_llm_text(text) -> str:
 def _call_llm(client, model: str, messages: list, max_tokens: int, temperature: float, **extra) -> str:
     kwargs = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens, **extra)
     if model.startswith("openai/gpt-oss"):
-        kwargs["reasoning_effort"] = "low"   # cegah token habis untuk "berpikir" -> content kosong
+        kwargs["reasoning_effort"] = "low"
     resp = client.chat.completions.create(**kwargs)
     return _clean_llm_text(resp.choices[0].message.content)
 
@@ -860,12 +852,13 @@ def generate_tts_edge(text: str) -> bytes | None:
         return None
 
 # ============================================================
-# JARVIS ORB — CONTINUOUS MODE
+# JARVIS ORB — CONTINUOUS MODE + DOCKED VARIANT
 # ============================================================
-def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False):
+def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversation_mode: bool = False, docked: bool = False):
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else ""
     has_audio = "true" if audio_bytes else "false"
     conv_mode_js = "true" if conversation_mode else "false"
+    docked_js = "true" if docked else "false"
     
     est_duration_ms = 0
     if audio_bytes:
@@ -877,8 +870,45 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
     <head>
         <style>
             * { box-sizing: border-box; margin: 0; padding: 0; }
-            body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; }
-            .orb-container { position: relative; width: 100%; height: 320px; display: flex; align-items: center; justify-content: center; }
+            html, body { background: transparent; overflow: hidden; font-family: 'Courier New', monospace; height: 100%; }
+            
+            .orb-container {
+                position: relative;
+                width: 100%;
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                transition: width .8s cubic-bezier(.4,0,.2,1),
+                            height .8s cubic-bezier(.4,0,.2,1),
+                            border-radius .8s,
+                            box-shadow .8s,
+                            background .8s;
+            }
+            .orb-container.docked {
+                position: fixed;
+                bottom: 22px;
+                right: 22px;
+                width: 200px;
+                height: 200px;
+                border-radius: 50%;
+                background: radial-gradient(circle, rgba(0,40,60,.55) 0%, rgba(0,10,20,.85) 100%);
+                box-shadow: 0 0 40px rgba(0,220,255,.55), inset 0 0 20px rgba(0,180,255,.25);
+                z-index: 999999;
+                pointer-events: none;
+                overflow: hidden;
+            }
+            .orb-container.docked canvas { pointer-events: none; }
+            .orb-container.docked .controls-row,
+            .orb-container.docked .transcript-hint { display: none !important; }
+            
+            .orb-canvas-wrap {
+                position: relative;
+                width: 100%;
+                flex: 1;
+                min-height: 0;
+            }
             canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
             
             .controls-row { position: absolute; bottom: 10px; z-index: 30; display: flex; gap: 12px; align-items: center; }
@@ -891,13 +921,15 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
         </style>
     </head>
     <body>
-        <div class="transcript-hint" id="transcriptHint">Klik "Mulai Dengar" untuk mode obrolan suara</div>
-        <div class="orb-container">
-            <canvas id="orbCanvas"></canvas>
-        </div>
-        <div class="controls-row">
-            <button class="mic-btn" id="micButton">🎙️ MULAI DENGAR</button>
-            <button class="play-btn" id="playButton" style="display:none;">▶ PLAY VOICE</button>
+        <div class="orb-container" id="orbWrap">
+            <div class="transcript-hint" id="transcriptHint">Klik "Mulai Dengar" untuk mode obrolan suara</div>
+            <div class="orb-canvas-wrap">
+                <canvas id="orbCanvas"></canvas>
+            </div>
+            <div class="controls-row">
+                <button class="mic-btn" id="micButton">🎙️ MULAI DENGAR</button>
+                <button class="play-btn" id="playButton" style="display:none;">▶ PLAY VOICE</button>
+            </div>
         </div>
         <audio id="jarvisAudio" style="display:none;" preload="auto">
             <source src="data:audio/mp3;base64,__AUDIO_B64__" type="audio/mp3">
@@ -909,11 +941,25 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
             const playBtn = document.getElementById('playButton');
             const micBtn = document.getElementById('micButton');
             const transcriptHint = document.getElementById('transcriptHint');
+            const orbWrap = document.getElementById('orbWrap');
             
             const HAS_AUDIO = __HAS_AUDIO__;
             const INITIAL_CONV_MODE = __CONV_MODE__;
             const EST_DURATION_MS = __EST_DURATION__;
+            const DOCKED = __DOCKED__;
             let currentState = "__STATE__";
+            
+            if (DOCKED) {
+                try {
+                    const wrap = window.parent.document.importNode(orbWrap, true);
+                    wrap.id = 'jarvisOrbDocked';
+                    wrap.classList.add('docked');
+                    window.parent.document.body.appendChild(wrap);
+                    window.__jarvisOrbDocked = true;
+                } catch(e) {
+                    orbWrap.classList.add('docked');
+                }
+            }
             
             let W, H, cx, cy;
             let analyzer = null;
@@ -942,8 +988,8 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
 
             function resize() {
                 const rect = canvas.getBoundingClientRect();
-                W = canvas.width = rect.width * (window.devicePixelRatio || 1);
-                H = canvas.height = rect.height * (window.devicePixelRatio || 1);
+                W = canvas.width = Math.max(1, rect.width) * (window.devicePixelRatio || 1);
+                H = canvas.height = Math.max(1, rect.height) * (window.devicePixelRatio || 1);
                 cx = W / 2; cy = H / 2;
             }
             window.addEventListener('resize', resize);
@@ -1351,9 +1397,10 @@ def render_jarvis_orb(audio_bytes: bytes = None, state: str = "idle", conversati
         .replace("__CONV_MODE__", conv_mode_js)
         .replace("__EST_DURATION__", str(est_duration_ms))
         .replace("__STATE__", state)
+        .replace("__DOCKED__", docked_js)
     )
     
-    components.html(html, height=360)
+    components.html(html, height=200 if docked else 360)
 
 # ============================================================
 # SYSTEM PROMPT
@@ -1420,7 +1467,6 @@ if "conversation_mode" not in st.session_state:
 if "camera_active_state" not in st.session_state:
     st.session_state.camera_active_state = False
 
-# Kontrol kamera lewat suara: nonce mengganti key webrtc agar streamer dibuat ulang
 if "cam_nonce" not in st.session_state:
     st.session_state.cam_nonce = 0
 if "cam_autostart" not in st.session_state:
@@ -1428,8 +1474,8 @@ if "cam_autostart" not in st.session_state:
 if "cam_attempt" not in st.session_state:
     st.session_state.cam_attempt = 0
 
-CAM_MAX_ATTEMPTS = 3     # jumlah percobaan otomatis
-CAM_RETRY_AFTER = 20     # detik menunggu sebelum mengulang
+CAM_MAX_ATTEMPTS = 3
+CAM_RETRY_AFTER = 20
 
 CAMERA_ON_KEYWORDS = ["nyalain kamera", "nyalakan kamera", "hidupkan kamera", "buka kamera",
                       "aktifkan kamera", "start kamera", "turn on the camera", "open the camera",
@@ -1444,7 +1490,32 @@ def detect_camera_command(text: str):
     return None
 
 # ============================================================
-# ORB DI ATAS
+# CSS GLOBAL — transisi halus antar state
+# ============================================================
+st.markdown("""
+<style>
+  /* Kamera fade-in saat muncul */
+  iframe[title*="streamlit_webrtc"] {
+    animation: fadeInCam .6s ease-out;
+    border-radius: 12px;
+  }
+  @keyframes fadeInCam {
+    from { opacity: 0; transform: scale(.985); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+  /* Video full-width */
+  [data-testid="stVideo"], .stVideo { border-radius: 12px; overflow: hidden; }
+</style>
+""", unsafe_allow_html=True)
+
+# ============================================================
+# TENTUKAN STATE KAMERA (dibaca sebelum render orb)
+# ============================================================
+_cam_on_initial = st.session_state.cam_autostart
+DOCKED = bool(_cam_on_initial)
+
+# ============================================================
+# ORB DI ATAS — center kalau kamera off, docked kalau on
 # ============================================================
 orb_placeholder = st.empty()
 with orb_placeholder.container():
@@ -1452,65 +1523,74 @@ with orb_placeholder.container():
         audio_bytes=st.session_state.current_audio,
         state=st.session_state.orb_state,
         conversation_mode=st.session_state.conversation_mode,
+        docked=DOCKED,
     )
 
 # ============================================================
-# LAYOUT KAMERA DENGAN AUTO-ACTIVATE STATE
+# KAMERA — full frame saat on, hilang saat off
 # ============================================================
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.subheader("📹 Kamera (Live)")
+ctx = None
+if st.session_state.cam_autostart:
+    cam_slot = st.empty()
+    with cam_slot.container():
+        ctx = webrtc_streamer(
+            key=f"hand-3d-tracker-smooth-{st.session_state.cam_nonce}-{ICE_MODES.index(ICE_MODE)}",
+            desired_playing_state=True,
+            video_processor_factory=lambda: Hand3DProcessor(DETECTOR_HOLDER),
+            rtc_configuration=RTC_CONFIGURATION,
+            **_WEBRTC_EXTRA,
+            media_stream_constraints={
+                "video": {"width": {"ideal": 1280}, "height": {"ideal": 720}, "frameRate": {"ideal": 30}},
+                "audio": False,
+            },
+            async_processing=True,
+        )
     
-    # Jika perintah suara kamera aktif, kita berikan default active pada webrtc jika didukung
-    ctx = webrtc_streamer(
-        key=f"hand-3d-tracker-smooth-{st.session_state.cam_nonce}-{ICE_MODES.index(ICE_MODE)}",
-        desired_playing_state=True if st.session_state.cam_autostart else None,
-        video_processor_factory=lambda: Hand3DProcessor(DETECTOR_HOLDER),
-        rtc_configuration=RTC_CONFIGURATION,
-        **_WEBRTC_EXTRA,
-        media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 30}}, "audio": False},
-        async_processing=True,
-    )
-
-with col2:
-    st.subheader("ℹ️ Status Visual")
-    if ctx.state.playing:
-        st.success("🟢 Kamera aktif")
-        st.session_state.camera_active_state = True
-        if ctx.video_processor and len(ctx.video_processor.frame_buffer) > 0:
-            st.info(f"📸 Buffer: {len(ctx.video_processor.frame_buffer)} frame.")
-    else:
-        st.session_state.camera_active_state = False
-        if st.session_state.cam_autostart:
-            st.info(f"⏳ Menyambungkan kamera... (percobaan {max(st.session_state.cam_attempt,1)}/{CAM_MAX_ATTEMPTS}, otomatis diulang). "
-                    "Jika browser meminta izin, klik **Allow / Izinkan**.")
-            if st.session_state.cam_attempt >= CAM_MAX_ATTEMPTS and \
-               time.time() - st.session_state.get("cam_requested_at", time.time()) > CAM_RETRY_AFTER:
-                if ICE_MODE == "STUN saja":
-                    st.error("Kamera belum tersambung dengan mode STUN saja. Klik STOP lalu START, atau ganti jaringan "
-                             "(mis. hotspot HP). Jika jaringan Anda ketat, isi kredensial TURN (Cloudflare/Twilio) dan pilih mode 'Auto'.")
-                elif ICE_SOURCE == "STUN saja":
-                    st.error(f"🔧 Penyebab: {ICE_ERROR}")
-                    st.error("Kamera browser sudah menyala, tapi koneksi ke server gagal. Streamlit Cloud butuh **TURN server**. "
-                             "Isi `CLOUDFLARE_TURN_KEY_ID` + `CLOUDFLARE_TURN_API_TOKEN` (atau `TWILIO_*`) "
-                             "di Settings → Secrets, lalu reboot app.")
-                else:
-                    st.error(f"Kamera belum tersambung meski memakai {ICE_SOURCE} (mode: {ICE_MODE}). "
-                             "Coba ganti **Mode koneksi kamera** di sidebar (mis. ke 'STUN saja'), lalu nyalakan lagi. "
-                             "Jika masih gagal: klik STOP lalu START, atau ganti jaringan (mis. hotspot HP).")
-                st.info("💡 Cadangan: nyalakan **Mode foto** di bawah agar Jarvis tetap bisa melihat lewat foto.")
+    # Panel status kamera + tombol stop
+    status_col1, status_col2 = st.columns([3, 1])
+    with status_col1:
+        if ctx.state.playing:
+            st.success("🟢 Kamera aktif — gesture kubus 3D aktif. Ucapkan 'matikan kamera' atau klik tombol untuk menutup.")
+            st.session_state.camera_active_state = True
         else:
-            st.warning("⚪ Kamera dalam mode standby. Ucapkan 'nyalakan kamera' atau klik START.")
-
-    st.markdown("---")
-    st.markdown("---")
+            st.session_state.camera_active_state = False
+            st.info(f"⏳ Menyambungkan kamera... (percobaan {max(st.session_state.cam_attempt,1)}/{CAM_MAX_ATTEMPTS})")
+    with status_col2:
+        if st.button("⏹ STOP KAMERA", use_container_width=True):
+            st.session_state.cam_nonce += 1
+            st.session_state.cam_autostart = False
+            st.session_state.cam_attempt = 0
+            st.session_state.camera_active_state = False
+            st.rerun()
+    
+    # Toggle mode foto tetap tersedia di dalam state kamera aktif
     st.toggle("📷 Mode foto (cadangan, tanpa WebRTC)", key="photo_mode",
-              help="Pakai kamera browser langsung untuk mengambil foto. Cukup untuk bertanya 'apa yang kamu lihat?'. "
-                   "Gesture kubus 3D tidak aktif di mode ini.")
+              help="Ambil foto langsung dari browser bila WebRTC bermasalah.")
     if st.session_state.get("photo_mode"):
         st.camera_input("Ambil foto untuk Jarvis", key="snap_cam")
-        st.caption("Ambil foto, lalu tanya Jarvis, mis. 'apa yang kamu lihat?'. Foto terakhir dipakai untuk pertanyaan berikutnya.")
+        st.caption("Ambil foto, lalu tanya Jarvis, mis. 'apa yang kamu lihat?'.")
+else:
+    # Kamera off — tampilkan tombol START besar & status
+    start_col1, start_col2 = st.columns([1, 1])
+    with start_col1:
+        if st.button("📹 NYALAKAN KAMERA", use_container_width=True, type="primary"):
+            st.session_state.cam_nonce += 1
+            st.session_state.cam_autostart = True
+            st.session_state.cam_attempt = 1
+            st.session_state.cam_requested_at = time.time()
+            st.rerun()
+    with start_col2:
+        st.caption("Atau ucapkan: *'nyalakan kamera'*")
+    
+    st.session_state.camera_active_state = False
+    st.info("⚪ Kamera standby. Orb di tengah. Nyalakan kamera untuk mode visual + gesture kubus 3D.")
+    
+    st.toggle("📷 Mode foto (cadangan, tanpa WebRTC)", key="photo_mode",
+              help="Pakai kamera browser langsung untuk mengambil foto.")
+    if st.session_state.get("photo_mode"):
+        st.camera_input("Ambil foto untuk Jarvis", key="snap_cam")
+        st.caption("Ambil foto, lalu tanya Jarvis, mis. 'apa yang kamu lihat?'.")
+    
     st.markdown("**Gesture Guide**\n| Gesture | Fungsi |\n|---|---|\n| ✋ Swipe | Rotasi |\n| ☝️ Telunjuk | Rotasi manual |\n| 👆 Pinch | Geser |\n| 🤏 Pinch 3 | Zoom |")
 
 # ============================================================
@@ -1530,9 +1610,10 @@ user_q = st.chat_input("Ask Jarvis...")
 cam_cmd = detect_camera_command(user_q) if user_q else None
 
 if user_q and cam_cmd:
-    if cam_cmd == "on" and ctx.state.playing:
+    cam_playing = bool(ctx and ctx.state.playing)
+    if cam_cmd == "on" and cam_playing:
         reply = "The camera is already running, Sir."
-    elif cam_cmd == "off" and not ctx.state.playing and not st.session_state.cam_autostart:
+    elif cam_cmd == "off" and not cam_playing and not st.session_state.cam_autostart:
         reply = "The camera is already off, Sir."
     elif cam_cmd == "on":
         st.session_state.cam_nonce += 1
@@ -1561,20 +1642,19 @@ elif user_q:
             audio_bytes=None,
             state="listening",
             conversation_mode=st.session_state.conversation_mode,
+            docked=DOCKED,
         )
     
     has_img = False
     pil_imgs = []
 
-    if ctx.state.playing and ctx.video_processor is not None:
+    if ctx is not None and ctx.state.playing and ctx.video_processor is not None:
         time.sleep(0.5) 
         if len(ctx.video_processor.frame_buffer) > 0:
             latest_frame = list(ctx.video_processor.frame_buffer)[-1]
             frame_rgb = cv2.cvtColor(latest_frame, cv2.COLOR_BGR2RGB)
             pil_imgs.append(Image.fromarray(frame_rgb))
             has_img = True
-    else:
-        pass  # kamera mati -> model diberi tahu lewat system note di bawah
 
     if not has_img and st.session_state.get("photo_mode"):
         _snap = st.session_state.get("snap_cam")
@@ -1676,6 +1756,7 @@ elif user_q:
                             audio_bytes=audio_bytes,
                             state="speaking",
                             conversation_mode=st.session_state.conversation_mode,
+                            docked=DOCKED,
                         )
 
     st.session_state.jarvis_messages.append({"role": "assistant", "content": answer})
@@ -1713,6 +1794,8 @@ with st.sidebar:
         st.session_state.orb_state = "idle"
         st.session_state.conversation_mode = False
         st.session_state.camera_active_state = False
+        st.session_state.cam_autostart = False
+        st.session_state.cam_nonce += 1
         st.rerun()
 
     st.markdown("---")
@@ -1748,8 +1831,8 @@ with st.sidebar:
             try: return _md.version(pkg)
             except Exception: return "-"
         try:
-            _sig = getattr(ctx.state, "signalling", None)
-            _play = ctx.state.playing
+            _sig = getattr(ctx.state, "signalling", None) if ctx else None
+            _play = ctx.state.playing if ctx else None
         except Exception:
             _sig, _play = None, None
         _turn_urls = [u for sv in _ICE_SERVERS for u in _server_urls(sv) if u.startswith(("turn:", "turns:"))]
@@ -1773,21 +1856,19 @@ with st.sidebar:
             language="text",
         )
 
-
 # ============================================================
-# AUTO-RETRY KAMERA (di paling akhir agar chat tetap ter-render)
+# AUTO-RETRY KAMERA
 # ============================================================
-if ctx.state.playing:
+if ctx is not None and ctx.state.playing:
     st.session_state.cam_attempt = 0
 elif st.session_state.cam_autostart and st.session_state.cam_attempt > 0:
     _elapsed = time.time() - st.session_state.get("cam_requested_at", time.time())
     if _elapsed > CAM_RETRY_AFTER:
         if st.session_state.cam_attempt < CAM_MAX_ATTEMPTS:
             st.session_state.cam_attempt += 1
-            st.session_state.cam_nonce += 1          # buat ulang komponen -> start ulang
+            st.session_state.cam_nonce += 1
             st.session_state.cam_requested_at = time.time()
             st.rerun()
-        # kalau sudah habis percobaan: berhenti polling, pesan error tampil di panel status
     else:
         time.sleep(1.5)
         st.rerun()
