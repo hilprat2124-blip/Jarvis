@@ -1370,6 +1370,11 @@ if "cam_nonce" not in st.session_state:
     st.session_state.cam_nonce = 0
 if "cam_autostart" not in st.session_state:
     st.session_state.cam_autostart = False
+if "cam_attempt" not in st.session_state:
+    st.session_state.cam_attempt = 0
+
+CAM_MAX_ATTEMPTS = 5     # jumlah percobaan otomatis
+CAM_RETRY_AFTER = 12     # detik menunggu sebelum mengulang
 
 CAMERA_ON_KEYWORDS = ["nyalain kamera", "nyalakan kamera", "hidupkan kamera", "buka kamera",
                       "aktifkan kamera", "start kamera", "turn on the camera", "open the camera",
@@ -1423,9 +1428,10 @@ with col2:
     else:
         st.session_state.camera_active_state = False
         if st.session_state.cam_autostart:
-            st.info("⏳ Kamera sedang dinyalakan... Jika browser meminta izin, klik **Allow / Izinkan**. "
-                    "Jika tidak berhasil dalam beberapa detik, klik tombol START di sebelah kiri.")
-            if time.time() - st.session_state.get("cam_requested_at", time.time()) > 15:
+            st.info(f"⏳ Menyambungkan kamera... (percobaan {max(st.session_state.cam_attempt,1)}/{CAM_MAX_ATTEMPTS}, otomatis diulang). "
+                    "Jika browser meminta izin, klik **Allow / Izinkan**.")
+            if st.session_state.cam_attempt >= CAM_MAX_ATTEMPTS and \
+               time.time() - st.session_state.get("cam_requested_at", time.time()) > CAM_RETRY_AFTER:
                 if ICE_MODE == "STUN saja":
                     st.error("Kamera belum tersambung dengan mode STUN saja. Klik STOP lalu START, atau ganti jaringan "
                              "(mis. hotspot HP). Jika jaringan Anda ketat, isi kredensial TURN dan pilih mode 'Auto'.")
@@ -1468,11 +1474,13 @@ if user_q and cam_cmd:
     elif cam_cmd == "on":
         st.session_state.cam_nonce += 1
         st.session_state.cam_autostart = True
+        st.session_state.cam_attempt = 1
         st.session_state.cam_requested_at = time.time()
         reply = "Starting the camera now, Sir. Please allow camera access if your browser asks."
     else:
         st.session_state.cam_nonce += 1
         st.session_state.cam_autostart = False
+        st.session_state.cam_attempt = 0
         reply = "Camera switched off, Sir."
 
     st.session_state.jarvis_messages.append({"role": "user", "content": user_q})
@@ -1660,3 +1668,22 @@ with st.sidebar:
         st.caption("Jika kamera macet di 'Auto', kembali ke 'STUN saja'.")
     if ICE_ERROR and ICE_SOURCE == "STUN saja" and ICE_MODE != "STUN saja":
         st.error(ICE_ERROR)
+
+
+# ============================================================
+# AUTO-RETRY KAMERA (di paling akhir agar chat tetap ter-render)
+# ============================================================
+if ctx.state.playing:
+    st.session_state.cam_attempt = 0
+elif st.session_state.cam_autostart and st.session_state.cam_attempt > 0:
+    _elapsed = time.time() - st.session_state.get("cam_requested_at", time.time())
+    if _elapsed > CAM_RETRY_AFTER:
+        if st.session_state.cam_attempt < CAM_MAX_ATTEMPTS:
+            st.session_state.cam_attempt += 1
+            st.session_state.cam_nonce += 1          # buat ulang komponen -> start ulang
+            st.session_state.cam_requested_at = time.time()
+            st.rerun()
+        # kalau sudah habis percobaan: berhenti polling, pesan error tampil di panel status
+    else:
+        time.sleep(1.5)
+        st.rerun()
